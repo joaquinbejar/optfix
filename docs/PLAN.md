@@ -175,6 +175,11 @@ pub fn implied_vol(opt: &EuropeanOption, m: &IvInputs, target: Price)
     -> Result<Volatility, PricingError>;
 ```
 
+`optfix::wide::mul_shr(a: u128, b: u128, shift: u32, r: Rounding) -> Result<u128, PricingError>`
+(added 2026-10-29 for varswap): the full 256-bit product shifted right with exact directed
+rounding (`MUL_SHR_MAX_ERROR_ULPS = 1`, the floor or the ceiling), `Overflow` when the rounded
+result does not fit; bench row `MulShr` (tag 8).
+
 `price_and_greeks` computes `d1`, `d2`, `N(d1)`, `N(d2)`, `n(d1)`, `sqrt(T)` and the two
 discount factors `e^{−rT}` and `e^{−qT}` once and derives all four greeks from them. `price` is a thin wrapper that skips the
 greeks.

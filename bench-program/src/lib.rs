@@ -11,7 +11,7 @@
 #![no_std]
 
 use bytemuck::Pod;
-use optfix::{Fixed, FixedBytes, PricingError};
+use optfix::{Fixed, FixedBytes, PricingError, Rounding};
 use pinocchio::cpi::set_return_data;
 use pinocchio::error::ProgramError;
 use pinocchio::{AccountView, Address, ProgramResult};
@@ -50,6 +50,10 @@ pub enum Instruction {
     NormCdf = 6,
     /// `optfix::norm_pdf`.
     NormPdf = 7,
+    /// `optfix::wide::mul_shr`: two `u128` (16 bytes each), the shift (`u32`, 4 bytes) and the
+    /// rounding (1 byte, `0` down, `1` up), all little endian. Tag 8 leaves 6 and 7 to the
+    /// normal CDF and PDF of milestone 4.
+    MulShr = 8,
 }
 
 impl Instruction {
@@ -69,6 +73,7 @@ impl Instruction {
             5 => Ok(Self::Ln),
             6 => Ok(Self::NormCdf),
             7 => Ok(Self::NormPdf),
+            8 => Ok(Self::MulShr),
             _ => Err(BenchError::UnknownInstruction),
         }
     }
@@ -137,6 +142,7 @@ pub fn process_instruction(
         Instruction::Ln => unary(args, optfix::ln)?,
         Instruction::NormCdf => unary(args, optfix::norm_cdf)?,
         Instruction::NormPdf => unary(args, optfix::norm_pdf)?,
+        Instruction::MulShr => mul_shr(args)?,
     };
     set_return_data(&encode_result(result));
     Ok(())
@@ -171,4 +177,26 @@ fn unary(
 ) -> Result<Result<Fixed, PricingError>, BenchError> {
     let a: FixedBytes = decode(args)?;
     Ok(f(a.get()))
+}
+
+#[inline(never)]
+fn mul_shr(args: &[u8]) -> Result<Result<Fixed, PricingError>, BenchError> {
+    let bytes = <[u8; 37]>::try_from(args).map_err(|_| BenchError::InvalidArguments)?;
+    let (a, rest) = bytes.split_at(16);
+    let (b, rest) = rest.split_at(16);
+    let (shift, rest) = rest.split_at(4);
+    let word = |s: &[u8]| -> Result<[u8; 16], BenchError> {
+        s.try_into().map_err(|_| BenchError::InvalidArguments)
+    };
+    let a = u128::from_le_bytes(word(a)?);
+    let b = u128::from_le_bytes(word(b)?);
+    let shift = u32::from_le_bytes(shift.try_into().map_err(|_| BenchError::InvalidArguments)?);
+    let r = match rest {
+        [0] => Rounding::Down,
+        [1] => Rounding::Up,
+        _ => return Err(BenchError::InvalidArguments),
+    };
+    // The u128 result travels in the 16 bytes of a `FixedBytes`, bit for bit.
+    Ok(optfix::wide::mul_shr(a, b, shift, r)
+        .map(|v| Fixed::from_raw(i128::from_le_bytes(v.to_le_bytes()))))
 }

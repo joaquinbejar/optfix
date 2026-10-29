@@ -101,6 +101,46 @@ impl U256 {
         Ok((join(self.w2, self.w1), self.w0))
     }
 
+    /// `floor(self / 2^s)` and whether any dropped bit was set, for any `s`.
+    ///
+    /// `Overflow` if the quotient does not fit in a `u128`.
+    pub(crate) fn shr(self, s: u32) -> Result<(u128, bool), PricingError> {
+        let words = [self.w0, self.w1, self.w2, self.w3];
+        if s >= 256 {
+            return Ok((0, words.iter().any(|&w| w != 0)));
+        }
+        // s < 256: a word offset in 0..4 and a bit offset in 0..64.
+        let offset = usize::try_from(s >> 6).map_err(|_| PricingError::Overflow)?;
+        let bit = s & 63;
+        let word = |i: usize| -> u64 {
+            i.checked_add(offset)
+                .and_then(|j| words.get(j))
+                .copied()
+                .unwrap_or(0)
+        };
+        // Quotient digit i takes bits from words i + offset and i + offset + 1.
+        let digit = |i: usize| -> u64 {
+            let low = word(i) >> bit;
+            let high = if bit == 0 {
+                0
+            } else {
+                word(i.saturating_add(1)) << 64u32.saturating_sub(bit)
+            };
+            low | high
+        };
+        if digit(2) != 0 || digit(3) != 0 {
+            return Err(PricingError::Overflow);
+        }
+        let below = words.iter().take(offset).any(|&w| w != 0);
+        let mask = if bit == 0 {
+            0
+        } else {
+            u64::MAX >> 64u32.saturating_sub(bit)
+        };
+        let inexact = below || word(0) & mask != 0;
+        Ok((join(digit(1), digit(0)), inexact))
+    }
+
     /// Number of leading zero bits, in `0..=256`.
     fn leading_zeros(self) -> u32 {
         // Each `leading_zeros` is at most 64, so the sums stay at or below 256.

@@ -18,6 +18,7 @@ mod kernel;
 mod norm;
 mod quantity;
 mod u256;
+pub mod wide;
 
 pub use error::PricingError;
 pub use explog::{exp, ln, EXP_MAX_ERROR_ULPS, LN_MAX_ERROR_ULPS};
