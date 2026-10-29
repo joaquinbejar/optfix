@@ -55,6 +55,17 @@ precision:
 	OPTFIX_PRECISION_SAMPLES=$(PRECISION_SAMPLES) OPTFIX_PRECISION_OUT=$(CURDIR)/docs/precision.md \
 	cargo test -p optfix --release --features bench-internals --test precision -- --nocapture
 
+# Regenerate README.md's example and tables from the constants and docs/benchmarks.md
+# (`make test` fails while it is stale)
+.PHONY: readme
+readme:
+	OPTFIX_README_WRITE=1 cargo test -p optfix --test readme
+
+# Package optfix as crates.io would and build the package; never uploads
+.PHONY: publish-dry-run
+publish-dry-run:
+	cargo publish -p optfix --dry-run
+
 # Run every test, including the million-case property tests and the LiteSVM bench
 # (which needs `make program` first). OPTFIX_PROPTEST_CASES=<n> lowers the case count.
 .PHONY: test

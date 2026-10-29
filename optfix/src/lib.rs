@@ -4,11 +4,38 @@
 //! arithmetic step is checked and every rounding is explicit: primitive operations take a
 //! direction (`mul_down`, `div_up`, a [`Rounding`] argument) and never round toward zero.
 //!
-//! [`Fixed`] is binary Q64.64 (`raw / 2^64`), chosen by measurement in milestone 3 of
-//! `docs/PLAN.md`. This release has the number, its 256-bit intermediates, the quantity
-//! newtypes, [`PricingError`], [`exp`] and [`ln`], the normal [`norm_cdf`] and [`norm_pdf`],
+//! [`Fixed`] is binary Q64.64 (`raw / 2^64`), chosen by measurement (`docs/PLAN.md`, milestone
+//! 3). The crate has the number, its 256-bit intermediates, the quantity newtypes,
+//! [`PricingError`], [`exp`] and [`ln`], the normal [`norm_cdf`] and [`norm_pdf`],
 //! Black-Scholes-Merton [`price`] and [`price_and_greeks`] with a continuous carry, and
-//! [`implied_vol`], each with its error bound.
+//! [`implied_vol`], each with its error bound as a public constant.
+//!
+//! ```
+//! use optfix::{
+//!     price_and_greeks, EuropeanOption, Fixed, MarketInputs, OptionKind, PricingError, Rate,
+//!     Rounding, Spot, Strike, Volatility, Years,
+//! };
+//!
+//! # fn main() -> Result<(), PricingError> {
+//! let opt = EuropeanOption {
+//!     kind: OptionKind::Put,
+//!     strike: Strike::try_new(Fixed::from_int(100))?,
+//!     expiry: Years::from_seconds(30 * 86_400, Rounding::Down)?,
+//! };
+//! let m = MarketInputs {
+//!     spot: Spot::try_new(Fixed::from_int(98))?,
+//!     vol: Volatility::try_new(Fixed::from_ratio(3, 10, Rounding::Down)?)?,
+//!     rate: Rate::try_new(Fixed::from_ratio(4, 100, Rounding::Down)?)?,
+//!     carry: Rate::try_new(Fixed::ZERO)?,
+//! };
+//! let priced = price_and_greeks(&opt, &m)?;
+//! assert!(priced.greeks.delta < Fixed::ZERO);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Error bounds, compute-unit costs and the supported input ranges are in the README; the
+//! measurements behind them are in the repository's `docs/`.
 
 #![cfg_attr(not(test), no_std)]
 

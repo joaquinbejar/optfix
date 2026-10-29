@@ -9,6 +9,9 @@ repository.workspace = true
 readme = "../README.md"
 keywords = ["options", "fixed-point", "black-scholes", "solana", "no-std"]
 categories = ["finance", "mathematics", "no-std"]
+# The library only: the tests read fixtures and references from the repository (`tools/`,
+# about 10 MB of `tests/data/`) and run there.
+include = ["/src", "/LICENSE"]
 
 [features]
 # Benchmark-only items (`bsm::baseline`); not public API.

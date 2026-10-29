@@ -537,7 +537,7 @@ Each milestone is one feature branch (`feat/m<N>-<name>`) and one PR.
    `q = 0`, `ArbitrageBound` and
    `NoConvergence` are each covered by tests, the `NoConvergence` rate over the milestone 5 grid is
    reported, and the worst-case CU (all iterations) is in the table.
-7. **README with error and CU tables, v0.1 on crates.io.** *Done when* README tables are
+7. **README with error and CU tables, v0.1 on crates.io.** (Done except the publication, which waits for the go-ahead.) *Done when* README tables are
    generated from the same constants and bench output, `cargo publish --dry-run` passes, a
    CHANGELOG entry and signed tag exist, and (after your go-ahead) `optfix 0.1.0` is published.
    The name is free on crates.io as of 2026-10-28.
@@ -848,3 +848,19 @@ Milestone 6 (2026-10-29):
   exact-root vega at `thr (1 + ε)`, `|ε|` from `2^-26` to `2^-6`) and codex's
   (`tests/data/iv_threshold_codex.csv`, `tools/iv_fixture/codex/`, 10,005 targets with the
   exact ratio at 85 digits): none below the threshold is answered.
+
+Milestone 7 (2026-10-29), release preparation:
+
+- **README generated from the sources**: its example is `optfix/tests/readme.rs` (compiled and
+  run by `make test`), its error table is formatted from the public bound constants and its CU
+  table from `docs/benchmarks.md`; `make readme` rewrites the three sections, and `make test`
+  fails while any is stale (with a failing control). Links into `docs/` are absolute, so they
+  resolve on crates.io.
+- **Package contents**: `include = ["/src", "/LICENSE"]` (with `README.md` and `Cargo.toml`):
+  19 files, about 70 KiB compressed. The tests stay in the repository, since they read
+  `tools/` and about 10 MB of `tests/data/`. `make publish-dry-run` (`cargo publish -p optfix
+  --dry-run`) packages and builds it.
+- **`CHANGELOG.md`** with the 0.1.0 entry, dated at release.
+- **Tag and publication**: the signed tag `v0.1.0` goes on the merge commit of this milestone's
+  PR, and `cargo publish` runs only on the explicit go-ahead (Joaquin's call, through the
+  coordinator).
