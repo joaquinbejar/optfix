@@ -179,9 +179,9 @@ instruction per public function, used only for CU measurement:
 | --- | --- | --- | --- |
 | 0 | `Noop` | none | none (baseline, subtracted from every row) |
 | 1 | `MulDown` | 2 × `Fixed` | none |
-| 2 | `Exp` | `Fixed` | none |
-| 3 | `Ln` | `Fixed` | none |
-| ... | one per public function | its arguments, little-endian | none |
+| 2 | `DivDown` | 2 × `Fixed` | none |
+| 3 | `SqrtDown` | `Fixed` | none |
+| ... | one per public function (`Exp`, `Ln` next) | its arguments, little-endian | none |
 
 Each handler decodes its arguments with `bytemuck`, calls optfix, and writes the result with
 `set_return_data`, so the LiteSVM test also checks the on-chain result equals the host result
@@ -232,8 +232,9 @@ loser is deleted, not kept behind a feature: one representation, one set of erro
 
 256-bit intermediates are implemented in-crate with only the operations needed (`mul_wide`,
 `div_rem` by a `u128`, shifts). `u128 × u128` is not native on SBF (it lowers to
-compiler-builtins `__multi3`), so limb width matters: milestone 2 benchmarks `MulDown` with
-2 × `u128` limbs and with 4 × `u64` limbs and keeps the cheaper one. No `ruint` or
+compiler-builtins `__multi3`), so the kernel matters: milestone 2 benchmarked the milestone 1
+kernel (2 × `u128` limbs) against a 4 × `u64` kernel with a short-division path and kept the
+latter (decision log). No `ruint` or
 `primitive-types`: they pull in more than we need and their CU cost is unknown.
 
 ### 4.2 `exp`
@@ -384,6 +385,10 @@ Each milestone is one feature branch (`feat/m<N>-<name>`) and one PR.
 - Crate name `optfix` is unclaimed on crates.io.
 - OptionStratLib local workspace is 0.22.0 and is under a release hold; market-maker-rs pins
   `optionstratlib` 0.23. The oracle pin must be chosen with that in mind (question 6).
+- Checked 2026-10-29 on the optfix machine: Agave CLI 4.4.0 (official installer,
+  `release.anza.xyz/v4.4.0`; GitHub flags the v4.4.0 release as a prerelease) ships
+  `cargo-build-sbf` 4.5.0 with platform-tools v1.57 and Rust 1.95.0, default `--arch v3`.
+  LiteSVM 0.18.1 loads that sBPF v3 output, so the Makefile keeps `SBF_ARCH ?= v3`.
 
 ## Dependencies (latest stable on crates.io, checked 2026-10-29)
 
@@ -396,9 +401,13 @@ whenever it is added or touched.
 | `pinocchio` | 0.12.0 (0.11.2 used) | `0.11`, decided exception below |
 | `bytemuck` | 1.25.2 | `1.25` |
 | `proptest` (dev) | 1.12.0 | `1.12` |
-| `litesvm` (dev) | 0.18.1 | `0.18` |
-| `mollusk-svm` (dev, optional) | 0.16.4 | `0.16` |
-| `solana-address` | 2.9.0 | `2.9` |
+| `litesvm` (dev, `bench/`) | 0.18.1 | `0.18` |
+| `solana-address` (dev, `bench/`) | 2.9.0 (2.7.0 used) | `2.7`, approved exception below |
+| `solana-instruction` (dev, `bench/`) | 4.0.0 (3.5.1 used) | `3.5`, approved exception below |
+| `solana-keypair` (dev, `bench/`) | 4.0.0 (3.1.2 used) | `3.1`, approved exception below |
+| `solana-signer` (dev, `bench/`) | 4.0.0 (3.0.1 used) | `3.0`, approved exception below |
+| `solana-transaction` (dev, `bench/`) | 6.0.0 (4.3.0 used) | `4.3`, approved exception below |
+| `mollusk-svm` (dev, optional) | 0.16.4 | not used |
 | `optionstratlib` (dev, oracle) | 0.23.0 | `0.23` |
 | `libm` (dev, reference) | 0.2.16 | `0.2` |
 
@@ -407,6 +416,16 @@ optfix needs only `pinocchio` itself (in `bench-program/`); by decision (Joaquin
 the documented exception to the latest-stable rule (see the other plans for the
 `pinocchio-token` conflict that forces it). OptionStratLib 0.23.0 is
 published on crates.io, so the oracle is a crates.io dev-dependency, not a git or path one.
+
+`bench/` exception (approved by Joaquin, 2026-10-29): LiteSVM 0.18.1, the latest, pins older
+generations of the Solana client crates (`solana-address ~2.7`, `solana-instruction ~3.5`,
+`solana-keypair ^3.1`, `solana-signer ^3.0`, `solana-transaction ^4.1`), and Mollusk 0.16.4 is
+on the same generation, so `bench/` uses those versions. They are dev-dependencies of a
+`publish = false` crate; `optfix` and `bench-program` are unaffected. In addition, `Cargo.lock`
+is seeded from LiteSVM's own v0.18.1 lock: LiteSVM's `^4.3` requirements now select the Agave
+4.4.0 crates published 2026-10-28, which change APIs LiteSVM 0.18.1 calls and pin each other with
+`=`, so the build fails unless the whole family stays at 4.3.2. Revisit when LiteSVM releases
+against Agave 4.4.
 
 ## 6. Open questions
 
@@ -439,3 +458,40 @@ Milestone 1 (2026-10-29):
   tested).
 - Internal invariants that the math excludes (algorithm D's correction bound, the Newton cap)
   return `PricingError::Overflow` rather than adding an `InvariantViolated` variant.
+
+Milestone 2 (2026-10-29):
+
+- **`U256` kernel: 4 × `u64` limbs.** Two complete kernels were compared, not two layouts of
+  one algorithm. The milestone 1 kernel (2 × `u128` limbs) runs algorithm D for every divisor;
+  the milestone 2 kernel (4 × `u64` limbs) adds a short-division path for one-digit divisors,
+  which the `10^18` scale always takes. The gains below belong to the whole kernel and cannot be
+  attributed to the limb layout alone; a 2 × `u128` kernel with the same short-division path was
+  not measured. Measured at commit `cc48b4b` (`make bench` there reproduces it), 1,000 in-domain
+  inputs, median CU with the `Noop` baseline of 164 CU included:
+
+  | Operation | 2 × `u128` kernel (M1) | 4 × `u64` kernel (M2) | Change |
+  | --- | ---: | ---: | ---: |
+  | `mul_down`, divisor opaque | 1,895 | 1,702 | −10% |
+  | `mul_down`, divisor constant | 1,889 | 1,696 | −10% |
+  | `div_down` | 1,761 | 1,701 | −3% |
+  | `sqrt_down` | 8,309 | 8,044 | −3% |
+
+  The 4 × `u64` kernel is cheaper at the median for every operation and is kept. Its `sqrt_down`
+  worst case is higher (14,040 against 11,809 CU), from the two-digit division in large Newton
+  steps; milestone 5 can revisit if `sqrt` dominates the pricing cost. The milestone 1 kernel is
+  deleted.
+- **Checked arithmetic costs about 6% on `mul_down`.** The two-`u128`-limb kernel with
+  `wrapping_*` limb operations measured 1,774 CU against 1,895 checked (−121 CU). The rules'
+  `checked_*` requirement stays; the cost is small next to the division.
+- **Release profile: `codegen-units = 1`, `lto = "fat"`.** With the default 16 codegen units the
+  same production `mul_down` measured 1,710 CU or 1,384 CU depending on how the code was
+  partitioned (inlining across codegen units). One codegen unit with fat LTO, as Solana programs
+  are usually built, gives stable numbers: `MulDown` 1,383, `DivDown` 1,700, `SqrtDown` 8,043 CU
+  (`docs/benchmarks.md`). A program built with another profile will measure differently.
+- A constant divisor (`mul_down` divides by `10^18`) changed nothing measurable (−6 CU): the
+  short division path already makes it one 64-bit digit.
+- `bench-program` is `cdylib` only (a `lib` crate type rules out LTO in `cargo build-sbf`); the
+  bench restates the instruction tags and return-data layout instead of linking the program, so
+  the on-chain check does not reuse the program's encoder.
+- `DivDown` and `SqrtDown` rows were added to the benchmark beyond the planned `MulDown`, because
+  the layout decision applies to every `U256` operation.

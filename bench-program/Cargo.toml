@@ -1,0 +1,21 @@
+[package]
+name = "optfix-bench-program"
+description = "Stateless Pinocchio program that runs optfix functions to measure their CU cost; never deployed"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+name = "optfix_bench_program"
+
+[dependencies]
+bytemuck = { workspace = true }
+optfix = { workspace = true }
+pinocchio = { workspace = true }
+
+[lints]
+workspace = true
