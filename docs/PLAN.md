@@ -202,7 +202,9 @@ instruction per public function, used only for CU measurement:
 | 3 | `SqrtDown` | `Fixed` | none |
 | 4 | `Exp` | `Fixed` | none |
 | 5 | `Ln` | `Fixed` | none |
-| ... | one per public function (`NormCdf`, `NormPdf` next) | its arguments, little-endian | none |
+| 6 | `NormCdf` | `Fixed` | none |
+| 7 | `NormPdf` | `Fixed` | none |
+| ... | one per public function (`Price`, `PriceAndGreeks` next) | its arguments, little-endian | none |
 
 Each handler decodes its arguments with `bytemuck`, calls optfix, and writes the result with
 `set_return_data`, so the LiteSVM test also checks the on-chain result equals the host result
@@ -294,19 +296,28 @@ bits and the final rounding.
 
 ### 4.4 Normal CDF
 
-`N(x) = erfc(−x / √2) / 2`. `erfc` uses a rational approximation in the style of W. J. Cody
-(1969), split into ranges (`|x| < 0.5`, `0.5 to 4`, `> 4`) so the relative error stays small in
-the tails, where an absolute-error approximation such as Abramowitz-Stegun 7.1.26
-(`|ε| < 1.5 × 10^-7` absolute) is useless for deep out-of-the-money options. The cutoff
-follows the fixed-point ulp, not `f64`: `N(x)` is below half an ulp of Q64.64 near
-`x ≈ −9.1`, so for `x < −X_CUT` return `ZERO` and for `x > X_CUT`, `ONE`, with `X_CUT` about
-9.1 for the Q64.64 chosen in milestone 3. This also bounds the tail range. Relative error is
-only meaningful where `N(x)` spans many ulps (at `x = −8`, `N ≈ 6 × 10^-16` is about 600 ulps
-at `10^-18`), so relative bounds are stated on `[−8, −5]` only, absolute bounds everywhere. The tail range uses
-`exp(−x²/2)` from 4.2, so `N` inherits its cost.
+Planned: `N(x) = erfc(−x / √2) / 2` with a rational approximation in the style of W. J. Cody
+(1969), split into ranges, so the relative error stays small in the tails, where an
+absolute-error approximation such as Abramowitz-Stegun 7.1.26 (`|ε| < 1.5 × 10^-7` absolute)
+is useless for deep out-of-the-money options.
 
-Rejected: Abramowitz-Stegun (bad tails), Hart 5666 (fine, but Cody is better documented with
-published error bounds), Marsaglia (series, iteration count varies with `x`).
+As built (milestone 4), without any division: for `a = |x|`, `N(−a) = e^(−a²/2) P(a)`, where
+`P(a) = N(−a) e^(a²/2)` is a scaled Mills ratio, an entire function, approximated by a
+degree-12 polynomial on each of 37 segments of width `1/4` covering `[0, 9.25)`, interpolated
+at Chebyshev nodes (relative error about `2^-69` per segment). On every segment the
+coefficients alternate in sign, so the table stores magnitudes and the Horner steps stay
+positive; the constant term and the last step keep 128 bits. `e^(−a²/2)` is the `exp` kernel's
+64-bit mantissa and exponent before rounding, so `N` keeps its relative precision in the tail
+and rounds once. `N(a) = 1 − N(−a)` exactly. At `|x| >= 9.25` (`NORM_CDF_CUTOFF`), `N(−9.25)
+≈ 1.1 × 10^-20` is below half an ulp, so `N` saturates to exactly `0` or `1`. `n(x)` is
+`e^(−x²/2) / √(2π)` on the same mantissa. Bounds: absolute 2 ulps for both (measured 1.32 and
+1.08), and on `[−8, −5]` a relative `2^-56` beyond the final rounding (measured: no excess at
+all), which is what relative precision can mean at a resolution of `2^-64`: at `x = −8`,
+`N ≈ 6 × 10^-16` is about 11,000 ulps, so half an ulp alone is a relative `4.4 × 10^-5`.
+
+Rejected: Cody's rationals (one 128-bit division per call, about 135 CU even on 32-bit digits,
+and the same relative precision), Abramowitz-Stegun (bad tails), Hart 5666 (also rational),
+Marsaglia's series (iteration count varies with `x`; kept as the test reference).
 
 ### 4.5 Black-Scholes
 
@@ -369,7 +380,13 @@ careful `f64` behavior that would need its own fixed-point error analysis.
   against an `mpmath` table committed under `tools/`, and optfix bounds are never claimed
   tighter than the oracle's measured error. `big_n` is `f64` grade, not `Decimal` grade: it
   converts to `f64` and calls `statrs::Normal::cdf` (`kernels.rs:385`), so the oracle is about
-  `10^-16` relative and worse in the tails. `exp` and `ln` are checked against a 256-bit
+  `10^-16` relative and worse in the tails. Measured in milestone 4 (`docs/precision.md`):
+  `big_n` is off by up to `2.5 × 10^-11` absolute (`statrs`'s `cdf`, confirmed against
+  Python's `math.erfc` at `x = 0.7074`) and `5.3 × 10^-11` relative on `[−8, −5]`, and `n`
+  returns zero beyond `|x|` of about 4.84 (an `exp` cutoff at −11.7), an absolute error up to
+  `3.3 × 10^-6` there. Milestone 5 therefore compares prices and greeks within those oracle
+  errors scaled by the inputs, not within optfix's own bounds, and checks `n`-based greeks
+  beyond `|d1| = 4.8` against the 256-bit reference instead. `exp` and `ln` are checked against a 256-bit
   `num-bigint` reference, itself checked against Python's correctly rounded `decimal` at fixed
   points (`tools/reference.txt`); f64 `libm` is too coarse to see errors near `2^-64`.
   `erfc` follows the same scheme in milestone 4. Python's standard `decimal` replaces `mpmath`
@@ -431,7 +448,7 @@ Each milestone is one feature branch (`feat/m<N>-<name>`) and one PR.
    `docs/precision.md` contain CU and max error for `exp` and `ln` in both representations, a
    short decision record is added to this plan, the losing representation is deleted, and
    milestone 1's tests pass on the winner.
-4. **`N(x)` and `n(x)`.** *Done when* both meet published bounds (absolute everywhere, relative
+4. **`N(x)` and `n(x)`.** (Done.) *Done when* both meet published bounds (absolute everywhere, relative
    on exactly `[−8, −5]`, plus saturation tests beyond the cutoff) verified by proptest, and their CU rows are in the benchmarks doc.
 5. **Black-Scholes price and greeks.** `price`, `price_and_greeks`, `intrinsic`, degenerate
    cases. *Done when* proptest against OptionStratLib passes over the whole supported
@@ -487,8 +504,9 @@ whenever it is added or touched.
 | `solana-signer` (dev, `bench/`) | 4.0.0 (3.0.1 used) | `3.0`, approved exception below |
 | `solana-transaction` (dev, `bench/`) | 6.0.0 (4.3.0 used) | `4.3`, approved exception below |
 | `mollusk-svm` (dev, optional) | 0.16.4 | not used |
-| `optionstratlib` (dev, oracle) | 0.23.0 | `0.23` |
-| `num-bigint` (dev, `exp`/`ln` reference) | 0.5.1 | `0.5` |
+| `optionstratlib` (dev, oracle; `default-features = false`, `pricing`) | 0.23.0 | `0.23` |
+| `num-bigint` (dev, `exp`/`ln`/normal reference) | 0.5.1 | `0.5` |
+| `rust_decimal` (dev, oracle inputs) | 1.43.0 | `1.43` |
 | `libm` (dev, reference) | 0.2.16 | `0.2` |
 
 optfix needs only `pinocchio` itself (in `bench-program/`); by decision (Joaquin,
@@ -643,3 +661,29 @@ Milestone 3 (2026-10-29):
 - **The same U256 findings apply to `div_*` and `sqrt`**, which still use `u128` division in
   algorithm D; a 32-bit-digit division (as in the measured atanh variant, about 135 CU per
   128/64 step) is a later optimization (Follow-ups), not part of this decision.
+
+Milestone 4 (2026-10-29):
+
+- **`N(x)` and `n(x)` without division** (4.4): `N(−a) = e^(−a²/2) P(a)`, `P` piecewise
+  polynomial (37 segments × degree 12, 4.1 KB of coefficients). Net median CU over `x` uniform
+  in `[−9.25, 9.25]`: `NormCdf` 1,312, `NormPdf` 575 (`docs/benchmarks.md`). Maximum error
+  over 1,000,000 samples per domain: `N` 1.32 ulps, `n` 1.08 ulps (`docs/precision.md`).
+- **64-bit `exp` mantissa, not 128-bit.** A 128-bit mantissa (table at `2^-128`, one product
+  more) brings `N` and `n` to 1 ulp and `exp` itself from 1.97 to 0.52 ulps, but costs
+  measured `NormCdf` 1,581 against 1,487, `NormPdf` 818 against 705 and `Exp` 459 against 315
+  CU (same build, before the inlining below). Every one of those errors is near `10^-19`,
+  against a price budget of `10^-9 × max(S, K)`, so the cheaper core is kept and the bounds
+  are 2 ulps. Two precision fixes that cost almost nothing are kept: `x² / 2` is rounded, not
+  truncated (it had added up to half an ulp), and the polynomial's constant term and last step
+  keep 128 bits.
+- **`exp` is unchanged**: the reduction is shared through `exp_parts` and `#[inline(always)]`
+  on the reduction and the core keeps `Exp` at 315 CU, bit-identical to milestone 3.
+- **Oracle limits recorded** (4.7): OptionStratLib's `big_n` is good to `2.5 × 10^-11`, its `n`
+  flushes to zero beyond `|x| ≈ 4.84`. The oracle is a dev-dependency with
+  `default-features = false, features = ["pricing"]`; `Cargo.lock` only gains crates (the
+  Agave 4.3.2 pin is unchanged).
+- **Test layout**: the 256-bit reference moved to `optfix/tests/common/`, checked against
+  Python `decimal` (now with `N` and `n` rows, computed there by the erf series and the erfc
+  continued fraction, a different method from the reference's positive series) in
+  `tests/reference.rs`; `tests/precision.rs` writes `docs/precision.md`.
+

@@ -31,12 +31,51 @@ const EXP_ARG_LIMIT: i128 = 47 << FRAC_BITS;
 /// `Overflow` if `e^x` exceeds [`Fixed::MAX`] (`x` above about 43.668).
 #[must_use = "the result carries a possible error"]
 pub fn exp(x: Fixed) -> Result<Fixed, PricingError> {
-    let x = x.raw();
+    let Some((n, r70)) = exp_reduce(x.raw())? else {
+        return Ok(Fixed::ZERO);
+    };
+    let (v, k) = exp_core(n, r70)?;
+    // Result raw = v / 2^63 × 2^k × 2^64 = v × 2^(k + 1).
+    let s = k.checked_add(1).ok_or(PricingError::Overflow)?;
+    let raw = if s >= 0 {
+        let s = u32::try_from(s).map_err(|_| PricingError::Overflow)?;
+        // v < 2^64, so a shift by at most 64 loses no bits; the conversion checks the top.
+        u128::from(v)
+            .checked_shl(s)
+            .filter(|_| s <= 64)
+            .and_then(|r| i128::try_from(r).ok())
+            .ok_or(PricingError::Overflow)?
+    } else {
+        let s = u32::try_from(s.unsigned_abs()).map_err(|_| PricingError::Overflow)?;
+        i128::from(round_shr_u64(v, s))
+    };
+    Ok(Fixed::from_raw(raw))
+}
+
+/// `e^x` for a raw Q64.64 argument as `(v, k)` with `e^x ≈ v / 2^63 × 2^k`, `v` in
+/// `[0.99, 2) × 2^63`, before any rounding to Q64.64, so callers that multiply further keep
+/// the relative precision of tiny results. `None` when `x <= −47` (below half an ulp of every
+/// result these callers produce).
+///
+/// `Overflow` when `x >= 47`.
+pub(crate) fn exp_parts(x: i128) -> Result<Option<(u64, i64)>, PricingError> {
+    match exp_reduce(x)? {
+        Some((n, r70)) => exp_core(n, r70).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// The reduction `x = n ln2/64 + r` of a raw Q64.64 argument, `r` in Q.70: `None` when
+/// `x <= −47` (every result is below half an ulp).
+///
+/// `Overflow` when `x >= 47`.
+#[inline(always)]
+fn exp_reduce(x: i128) -> Result<Option<(i64, i64)>, PricingError> {
     if x >= EXP_ARG_LIMIT {
         return Err(PricingError::Overflow);
     }
     if x <= -EXP_ARG_LIMIT {
-        return Ok(Fixed::ZERO);
+        return Ok(None);
     }
     // n = round(x × 64 / ln 2), estimated in 64-bit arithmetic: |x| < 2^70, so x / 2^39 <
     // 2^31 and the product with the Q.25 constant is below 2^63.
@@ -62,22 +101,7 @@ pub fn exp(x: Fixed) -> Result<Fixed, PricingError> {
         .zip(round_shr_i64(lo, 44).ok())
         .and_then(|(a, b)| a.checked_sub(b))
         .ok_or(PricingError::Overflow)?;
-    let (v, k) = exp_core(n, r70)?;
-    // Result raw = v / 2^63 × 2^k × 2^64 = v × 2^(k + 1).
-    let s = k.checked_add(1).ok_or(PricingError::Overflow)?;
-    let raw = if s >= 0 {
-        let s = u32::try_from(s).map_err(|_| PricingError::Overflow)?;
-        // v < 2^64, so a shift by at most 64 loses no bits; the conversion checks the top.
-        u128::from(v)
-            .checked_shl(s)
-            .filter(|_| s <= 64)
-            .and_then(|r| i128::try_from(r).ok())
-            .ok_or(PricingError::Overflow)?
-    } else {
-        let s = u32::try_from(s.unsigned_abs()).map_err(|_| PricingError::Overflow)?;
-        i128::from(round_shr_u64(v, s))
-    };
-    Ok(Fixed::from_raw(raw))
+    Ok(Some((n, r70)))
 }
 
 /// `ln x`, rounded to nearest within [`LN_MAX_ERROR_ULPS`].

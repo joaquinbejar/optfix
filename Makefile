@@ -53,7 +53,7 @@ PRECISION_SAMPLES ?= 200000
 .PHONY: precision
 precision:
 	OPTFIX_PRECISION_SAMPLES=$(PRECISION_SAMPLES) OPTFIX_PRECISION_OUT=$(CURDIR)/docs/precision.md \
-	cargo test -p optfix --release --test exp_ln_props test_precision_report -- --nocapture
+	cargo test -p optfix --release --test precision -- --nocapture
 
 # Run every test, including the million-case property tests and the LiteSVM bench
 # (which needs `make program` first). OPTFIX_PROPTEST_CASES=<n> lowers the case count.
