@@ -162,8 +162,8 @@ A library cannot know which side of a trade is "the protocol". So compound funct
 (`price`, greeks, `implied_vol`) return the internal result rounded to nearest and publish a
 bound `ERR_PRICE` etc. Callers that need a conservative value use
 `Price::upper(err)` / `Price::lower(err)` helpers, which add or subtract the documented bound
-with explicit rounding. metalbook, for instance, uses the upper bound for a writer's margin
-requirement and the lower bound for what a long is credited. Primitive operations (`mul`,
+with explicit rounding. (metalbook's collateral never depends on a price, so these helpers
+serve marks and quoting there.) Primitive operations (`mul`,
 `div`, `sqrt`, `from_seconds`, `to_scaled`) are directed exactly, as above.
 
 ## 3. Account layout and instructions
@@ -183,6 +183,24 @@ Each handler decodes its arguments with `bytemuck`, calls optfix, and writes the
 `set_return_data`, so the LiteSVM test also checks the on-chain result equals the host result
 bit for bit. There are no account-validation rules because there are no accounts; the program
 is never deployed to a public cluster.
+
+### Supported domain and error envelope
+
+Constructors reject anything outside the **supported domain**, and the supported domain is
+exactly what the tests cover (codex review: an envelope measured on a smaller grid is not a
+bound for a wider accepted domain). Proposal, to confirm with question 1:
+
+| Input | Supported range |
+| --- | --- |
+| `Spot`, `Strike` | `[10^-6, 10^9]` each, `S/K` in `[0.05, 20]` |
+| `Volatility` | `[0.005, 5]` |
+| `Rate` | `[-0.1, 0.5]` |
+| `Years` | `[0, 30]`; below 1 second the degenerate branch applies |
+
+Error envelopes are input-dependent formulas, not one constant: for price,
+`|err| <= ERR_REL × max(S, K) + ERR_ABS`, including approximation, fixed-point propagation,
+degenerate branches and input conversion. Tests sample every range, tiny `T`, the cutoff
+transitions, the range extremes, and `S` and `K` scaled together.
 
 ## 4. Key design decisions
 
@@ -330,12 +348,12 @@ Each milestone is one feature branch (`feat/m<N>-<name>`) and one PR.
    short decision record is added to this plan, the losing representation is deleted, and
    milestone 1's tests pass on the winner.
 4. **`N(x)` and `n(x)`.** *Done when* both meet published bounds (absolute everywhere, relative
-   for `x <= −5`) verified by proptest, and their CU rows are in the benchmarks doc.
+   on exactly `[−8, −5]`, plus saturation tests beyond the cutoff) verified by proptest, and their CU rows are in the benchmarks doc.
 5. **Black-Scholes price and greeks.** `price`, `price_and_greeks`, `intrinsic`, degenerate
    cases. *Done when* proptest against OptionStratLib passes over the grid `S/K in [0.2, 5]`,
    `σ in [0.01, 3]`, `T in [1 day, 5 years]`, `r in [-0.05, 0.2]`, both kinds, with the
-   documented bounds, and `price_and_greeks` costs less than `price` plus four separate greek
-   calls (measured).
+   documented bounds, and `price_and_greeks` costs less than a benchmark-only baseline that
+   computes `price` and each greek separately (not public API).
 6. **Implied volatility.** *Done when* round-trip `implied_vol(price(σ)) ≈ σ` holds within the
    documented bound wherever vega exceeds a documented threshold, `ArbitrageBound` and
    `NoConvergence` are each covered by tests, the `NoConvergence` rate over the milestone 5 grid is
