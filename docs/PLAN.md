@@ -128,6 +128,10 @@ pub enum PricingError {
 }
 ```
 
+`i128` is 16-aligned on x86_64 hosts since Rust 1.77 but account data is only guaranteed
+8-aligned, so milestone 1 checks `align_of::<Fixed>()` on SBF and on the host and, if they
+differ, provides a `FixedBytes([u8; 16])` storage form that downstream accounts use.
+
 `Fixed` exposes `raw()` / `from_raw()` for zero-copy storage (every `i128` is a valid
 `Fixed`). The newtypes do not: reading one from storage goes through `try_from_fixed`, which
 re-runs the range check.
