@@ -282,6 +282,26 @@ fn table(m: &Measurement) -> String {
         let net = med.saturating_sub(noop_med);
         writeln!(s, "| `{}` | {lo} | {med} | {hi} | {net} |", row.name).unwrap();
     }
+    let agave = std::env::var("OPTFIX_AGAVE").unwrap_or_else(|_| "unknown".into());
+    writeln!(s).unwrap();
+    writeln!(s, "## Reproducing").unwrap();
+    writeln!(s).unwrap();
+    writeln!(
+        s,
+        "CU numbers depend on the toolchain and the build profile. This table was produced with:"
+    )
+    .unwrap();
+    writeln!(s).unwrap();
+    writeln!(s, "- Agave CLI: `{agave}`").unwrap();
+    writeln!(s, "- SBF build: {toolchain}").unwrap();
+    writeln!(s, "- LiteSVM 0.18.1, Agave crates 4.3.2 (`Cargo.lock`)").unwrap();
+    writeln!(
+        s,
+        "- Release profile: `overflow-checks = true`, `lto = \"fat\"`, `codegen-units = 1`"
+    )
+    .unwrap();
+    writeln!(s).unwrap();
+    writeln!(s, "Run `make bench` to regenerate this file.").unwrap();
     s
 }
 

@@ -21,6 +21,7 @@ program:
 .PHONY: bench
 bench: program
 	OPTFIX_SBF_TOOLCHAIN="$$(cargo build-sbf --version 2>/dev/null | paste -sd ',' - | sed 's/,/, /g'), sBPF $(SBF_ARCH)" \
+	OPTFIX_AGAVE="$$(solana --version 2>/dev/null)" \
 	OPTFIX_BENCH_OUT=$(CURDIR)/docs/benchmarks.md \
 	cargo test -p optfix-bench --release --test cu -- --nocapture
 
