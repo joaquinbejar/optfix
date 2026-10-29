@@ -770,6 +770,10 @@ Milestone 5 (2026-10-29):
   and codex's independent checker (`check_mpmath.py`) agrees. New properties pair small `T` (one
   raw unit to about 2^45) with near-the-money strikes and check continuity across the
   `|S − K| × 256 = K` switch; all pass at 1,000,000 cases in release.
+- **Codex's 4,224-point boundary set** (#11 review), regenerated at `fa43a53` and run through
+  its 100-digit mpmath checker: 0 violations and 0 errors, the worst ratio theta at 0.161
+  (`tools/bsm_fixture/boundary-fixed-check.log`; the compressed outputs are bus attachment 215
+  on message #36947, too large to commit).
 - **Bench-only items** live behind the non-default `bench-internals` feature of `optfix`
   (`baseline::separately`), enabled only by `bench-program` and `bench`.
 
