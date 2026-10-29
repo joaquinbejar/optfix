@@ -89,11 +89,11 @@ pub struct Rate(Fixed);        // continuously compounded annual rate, in [-1.0,
 pub struct Years(Fixed);       // time to expiry, in [0, MAX_YEARS]; MAX_YEARS = 30.
 
 impl Years {
-    /// `seconds / 31_536_000` (365-day year), rounded down: a shorter time to expiry
-    /// gives a smaller time value, so on-chain marks never overstate time value from the
-    /// conversion itself. Negative seconds -> DomainError (expired options are priced by
-    /// `intrinsic`, not by Black-Scholes).
-    pub fn from_seconds(seconds: i64) -> Result<Self, PricingError>;
+    /// `seconds / 31_536_000` (365-day year) with the caller's rounding: the library does
+    /// not know which side is conservative (rounding down understates time value, which is
+    /// not conservative for a writer's margin). Negative seconds -> DomainError (expired
+    /// options are priced by `intrinsic`, not by Black-Scholes).
+    pub fn from_seconds(seconds: i64, r: Rounding) -> Result<Self, PricingError>;
 }
 
 pub enum OptionKind { Call, Put }   // #[repr(u8)], 0 = Call, 1 = Put
@@ -110,7 +110,7 @@ pub struct Greeks {
     pub delta: Fixed,   // dV/dS, in [-1, 1]
     pub gamma: Fixed,   // d2V/dS2, >= 0, per unit of spot
     pub vega:  Fixed,   // dV/dsigma per 1.00 of vol (divide by 100 for "per vol point")
-    pub theta: Fixed,   // dV/dt per year, usually <= 0 (divide by 365 for "per day")
+    pub theta: Fixed,   // dV/dt in calendar time per year (= -dV/dT), usually <= 0
 }
 
 pub struct Priced { pub price: Price, pub greeks: Greeks }
@@ -127,6 +127,10 @@ pub enum PricingError {
     ArbitrageBound,
 }
 ```
+
+`Fixed` exposes `raw()` / `from_raw()` for zero-copy storage (every `i128` is a valid
+`Fixed`). The newtypes do not: reading one from storage goes through `try_from_fixed`, which
+re-runs the range check.
 
 `PricingError` is `#[repr(u8)]` so a program can map it into its own error codes.
 
@@ -195,8 +199,10 @@ in both, behind a private `Repr` trait, and the representation that wins on
 `CU × max error` for the two functions (weights in the open questions) becomes `Fixed`. The
 loser is deleted, not kept behind a feature: one representation, one set of error bounds.
 
-256-bit intermediates are implemented in-crate as a `U256 { hi: u128, lo: u128 }` with only the
-operations needed (`mul_wide`, `div_rem` by a `u128`, shifts). No `ruint` or
+256-bit intermediates are implemented in-crate with only the operations needed (`mul_wide`,
+`div_rem` by a `u128`, shifts). `u128 × u128` is not native on SBF (it lowers to
+compiler-builtins `__multi3`), so limb width matters: milestone 2 benchmarks `MulDown` with
+2 × `u128` limbs and with 4 × `u64` limbs and keeps the cheaper one. No `ruint` or
 `primitive-types`: they pull in more than we need and their CU cost is unknown.
 
 ### 4.2 `exp`
@@ -218,8 +224,12 @@ converge, costs one division). Milestone 3 measures both on the winning represen
 `N(x) = erfc(−x / √2) / 2`. `erfc` uses a rational approximation in the style of W. J. Cody
 (1969), split into ranges (`|x| < 0.5`, `0.5 to 4`, `> 4`) so the relative error stays small in
 the tails, where an absolute-error approximation such as Abramowitz-Stegun 7.1.26
-(`|ε| < 1.5 × 10^-7` absolute) is useless for deep out-of-the-money options. For `x < −38`
-(below `10^-18` / the chosen ulp) return `ZERO`; for `x > 38`, `ONE`. The tail range uses
+(`|ε| < 1.5 × 10^-7` absolute) is useless for deep out-of-the-money options. The cutoff
+follows the fixed-point ulp, not `f64`: `N(x) < 10^-18` already at `x ≈ −8.8` (`≈ −9.1` for
+Q64.64), so for `x < −X_CUT` return `ZERO` and for `x > X_CUT`, `ONE`, with `X_CUT` about 9
+fixed by milestone 3's representation. This also bounds the tail range. Relative error is
+only meaningful where `N(x)` spans many ulps (at `x = −8`, `N ≈ 6 × 10^-16` is about 600 ulps
+at `10^-18`), so relative bounds are stated on `[−8, −5]` only, absolute bounds everywhere. The tail range uses
 `exp(−x²/2)` from 4.2, so `N` inherits its cost.
 
 Rejected: Abramowitz-Stegun (bad tails), Hart 5666 (fine, but Cody is better documented with
@@ -229,8 +239,12 @@ published error bounds), Marsaglia (series, iteration count varies with `x`).
 
 `d1 = (ln(S/K) + (r + σ²/2)T) / (σ√T)`, `d2 = d1 − σ√T`. Degenerate cases handled before the
 formula: `T == 0` returns intrinsic value with delta 0 or ±1, gamma and vega 0; `σ√T` below a
-threshold likewise returns discounted intrinsic. Put via its own formula, not put-call parity,
-to avoid cancellation for deep ITM calls.
+threshold likewise returns forward intrinsic: `max(S − K e^{−rT}, 0)` for a call,
+`max(K e^{−rT} − S, 0)` for a put, with delta 0 or ±1. The out-of-the-money side is priced
+directly and the in-the-money side via put-call parity (`C = P + S − K e^{−rT}`), a sum of
+positive terms. Fixed-point errors are absolute, so the ITM formula's cancellation would not
+amplify them; parity is used because it reuses the OTM evaluation, which has small values and
+the tail-accurate `N`.
 
 ### 4.6 Implied volatility
 
@@ -240,8 +254,10 @@ to avoid cancellation for deep ITM calls.
    approximation away from it. Milestone 6 compares both on a grid of moneyness and picks the
    switch point by measured iterations.
 3. Up to 3 Halley iterations (Newton with the volga correction, which `price_and_greeks`
-   almost gives for free). Stop when `|price(σ) − target| <= tol`; otherwise `NoConvergence`.
-   A fixed cap keeps the CU bound fixed.
+   almost gives for free), iterating in normalized price space (price over forward, or its
+   log for deep OTM) rather than raw price, which converges far better for deep OTM and short
+   `T`. Stop at tolerance; otherwise `NoConvergence`. A fixed cap keeps the CU bound fixed;
+   milestone 6 measures the `NoConvergence` rate over the milestone 5 grid.
 
 Possible later upgrade: Jäckel, "Let's be rational" (2015), which reaches machine precision in
 two iterations everywhere. Not in v0.1: it relies on several rational approximations and
@@ -255,14 +271,19 @@ careful `f64` behavior that would need its own fixed-point error analysis.
   `libm` for `exp`, `ln`, `erfc`. Each test asserts the documented bound; the bound is a
   `pub const` next to the function, so docs, tests and README tables share one number.
 - Exact-arithmetic tests for `mul_*`, `div_*`, `sqrt_*` against a 256-bit reference.
-- OptionStratLib computes in `rust_decimal::Decimal` (28 significant digits) with `Positive`
-  inputs: `black_scholes(&Options)`, greeks `delta`/`gamma`/`vega`/`theta` in
+- OptionStratLib's API takes `Positive` inputs and returns `rust_decimal::Decimal`: `black_scholes(&Options)`, greeks `delta`/`gamma`/`vega`/`theta` in
   `optionstratlib-pricing/src/greeks/equations.rs`, `implied_volatility(Positive, &mut Options,
   max_iterations)`, `big_n` (CDF) and `n` (PDF). Its own approximation error, not its number
   type, limits what it can validate, so milestone 4 first measures OptionStratLib's `big_n`
   against an `mpmath` table committed under `tools/`, and optfix bounds are never claimed
-  tighter than the oracle's measured error. `exp`, `ln`, `erfc` are checked against `libm` f64
+  tighter than the oracle's measured error. `big_n` is `f64` grade, not `Decimal` grade: it
+  converts to `f64` and calls `statrs::Normal::cdf` (`kernels.rs:385`), so the oracle is about
+  `10^-16` relative and worse in the tails. `exp`, `ln`, `erfc` are checked against `libm` f64
   and the same `mpmath` tables.
+- Unit mismatches with the oracle: OptionStratLib's `theta` is per day (divided by 365,
+  `equations.rs:1373`) and `vega` is per 1% (divided by 100, `equations.rs:1525`). Tests
+  rescale the oracle to optfix units (theta per year, vega per 1.00) explicitly, never by
+  widening tolerances.
 
 ### 4.8 Workspace layout
 
@@ -291,9 +312,11 @@ Each milestone is one feature branch (`feat/m<N>-<name>`) and one PR.
    *Done when* `make pre-push` passes, proptests show `mul_down <= exact <= mul_up` with a gap
    of at most one ulp for `mul`, `div`, `sqrt`, and no operation panics over 1,000,000 random
    cases including extremes.
-2. **CU bench harness with a trivial op.** `bench-program` with `Noop` and `MulDown`, `bench`
-   crate running it in LiteSVM, `docs/benchmarks.md` generated from the test output, `make
-   bench`. *Done when* `make bench` prints a table with the two rows, the on-chain result of
+2. **CU bench harness with a trivial op.** `bench-program` with `Noop` and `MulDown` (both
+   limb layouts), `bench` crate running it in LiteSVM, `docs/benchmarks.md` generated from the
+   test output, `make bench`. First step: confirm LiteSVM 0.18 loads the sBPF v3 output of
+   `cargo build-sbf` 4.4, else pin `--arch` in the Makefile. *Done when* `make bench` prints a
+   table with the rows, the on-chain result of
    `MulDown` equals the host result for 1,000 random inputs, and the CU numbers are stable
    across runs.
 3. **`ln` and `exp` in both representations, then the decision.** Both representations behind
@@ -310,8 +333,8 @@ Each milestone is one feature branch (`feat/m<N>-<name>`) and one PR.
    calls (measured).
 6. **Implied volatility.** *Done when* round-trip `implied_vol(price(σ)) ≈ σ` holds within the
    documented bound wherever vega exceeds a documented threshold, `ArbitrageBound` and
-   `NoConvergence` are each covered by tests, and the worst-case CU (all iterations) is in the
-   table.
+   `NoConvergence` are each covered by tests, the `NoConvergence` rate over the milestone 5 grid is
+   reported, and the worst-case CU (all iterations) is in the table.
 7. **README with error and CU tables, v0.1 on crates.io.** *Done when* README tables are
    generated from the same constants and bench output, `cargo publish --dry-run` passes, a
    CHANGELOG entry and signed tag exist, and (after your go-ahead) `optfix 0.1.0` is published.
@@ -346,5 +369,4 @@ Each milestone is one feature branch (`feat/m<N>-<name>`) and one PR.
    oracle stable while you change OptionStratLib; note the 0.22 release hold.
 7. Pinocchio 0.12 came out today. Start `bench-program` on 0.12 (new repo, no migration
    later) or on 0.11 to match matchbook? Proposal: 0.12.
-8. `Fixed` exposes `raw()` / `from_raw()` for zero-copy storage in accounts. Acceptable, given
-   that it lets callers bypass the scale?
+8. Resolved in review: `Fixed::raw`/`from_raw` yes; newtypes only via `try_from_fixed`.

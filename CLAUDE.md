@@ -4,9 +4,14 @@ Fixed-point option pricing library: `no_std`, allocation-free, no Solana depende
 Workspace: `optfix/` (published crate), `bench-program/` (Pinocchio, one instruction per function,
 never deployed), `bench/` (LiteSVM CU table), `tools/` (offline coefficient generation).
 Every public function has a `pub const` error bound enforced by proptest against OptionStratLib
-(`~/Repos/Local/OptionStratLib`, dev-dependency only, Decimal based) or `libm`/mpmath tables.
+(`~/Repos/Local/OptionStratLib`, dev-dependency only; its `big_n` is f64 grade; theta per day and vega per 1% must be rescaled) or `libm`/mpmath tables.
 `clippy::float_arithmetic` is denied in `optfix/`; f64 appears only in tests.
+
 ## Conventions shared with matchbook
+
+In optfix the account rules below (zero-copy accounts, forged-account negative tests) are N/A:
+there are no accounts. Rounding in optfix is a `Rounding` argument or round-to-nearest with a
+published bound; "toward the protocol" is decided by the calling program.
 
 - Style reference: `~/Repos/Local/matchbook` (read only). Copy its workspace layout, `rust-toolchain.toml`
   (stable), `[workspace.lints]`, release profile (`overflow-checks = true`), Makefile targets and docs layout.
