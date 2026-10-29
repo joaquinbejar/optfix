@@ -21,6 +21,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use litesvm::LiteSVM;
+use optfix::repr::{Binary as Q64, Decimal, Repr};
 use optfix::{Fixed, PricingError};
 use solana_address::Address;
 use solana_instruction::Instruction;
@@ -37,6 +38,10 @@ enum Ix {
     MulDown = 1,
     DivDown = 2,
     SqrtDown = 3,
+    ExpBinary = 4,
+    LnBinary = 5,
+    ExpDecimal = 6,
+    LnDecimal = 7,
 }
 
 /// Status byte plus one 16-byte little-endian value.
@@ -85,6 +90,23 @@ impl Rng {
         Fixed::from_raw(if self.next() & 1 == 0 { raw } else { -raw })
     }
 
+    /// Uniform in `[−42, 43]` with `one` as the raw value of 1: the `exp` arguments of
+    /// pricing (discount and forward factors up to `e^±18`, `e^{−d²/2}`).
+    fn exp_arg(&mut self, one: i128) -> Fixed {
+        let span = 85 * one;
+        let u = ((u128::from(self.next()) << 64) | u128::from(self.next())) % span as u128;
+        Fixed::from_raw(u as i128 - 42 * one)
+    }
+
+    /// Log-uniform in `[10^-6, 10^9]` with `one` as the raw value of 1: prices, strikes and
+    /// their ratios.
+    fn ln_arg(&mut self, one: i128) -> Fixed {
+        // 10^(-6 + 15 u) with u uniform in [0, 1), at 2^-53 resolution.
+        let u = (self.next() >> 11) as f64 / (1u64 << 53) as f64;
+        let v = 10f64.powf(-6.0 + 15.0 * u);
+        Fixed::from_raw((v * one as f64) as i128)
+    }
+
     /// Any raw value, log-uniform magnitude, both signs: exercises overflow and edge paths.
     fn any(&mut self) -> Fixed {
         let x = (u128::from(self.next()) << 64) | u128::from(self.next());
@@ -102,28 +124,73 @@ enum Op {
     Binary(Binary),
 }
 
+/// Inputs of a row.
+#[derive(Clone, Copy)]
+enum Domain {
+    /// Pairs from [`Rng::in_domain`]; unary rows take the absolute value of the first.
+    Prices,
+    /// `exp` arguments: uniform in `[−42, 43]`, in units of `one`.
+    ExpArg { one: i128 },
+    /// `ln` arguments: log-uniform in `[10^-6, 10^9]`, in units of `one`.
+    LnArg { one: i128 },
+}
+
 /// One measured instruction and the host function its result must equal.
 struct Row {
     ix: Ix,
     name: &'static str,
     op: Op,
+    domain: Domain,
 }
 
-const ROWS: [Row; 3] = [
+/// `R::exp` or `R::ln` on the raw value of a `Fixed`, as the bench program computes it.
+fn raw_fn<R: Repr, const EXP: bool>(x: Fixed) -> Result<Fixed, PricingError> {
+    let f = if EXP { R::exp } else { R::ln };
+    f(x.raw()).map(Fixed::from_raw)
+}
+
+const ROWS: [Row; 7] = [
     Row {
         ix: Ix::MulDown,
         name: "MulDown",
         op: Op::Binary(Fixed::mul_down),
+        domain: Domain::Prices,
     },
     Row {
         ix: Ix::DivDown,
         name: "DivDown",
         op: Op::Binary(Fixed::div_down),
+        domain: Domain::Prices,
     },
     Row {
         ix: Ix::SqrtDown,
         name: "SqrtDown",
         op: Op::Unary(Fixed::sqrt_down),
+        domain: Domain::Prices,
+    },
+    Row {
+        ix: Ix::ExpBinary,
+        name: "ExpBinary",
+        op: Op::Unary(raw_fn::<Q64, true>),
+        domain: Domain::ExpArg { one: Q64::ONE },
+    },
+    Row {
+        ix: Ix::LnBinary,
+        name: "LnBinary",
+        op: Op::Unary(raw_fn::<Q64, false>),
+        domain: Domain::LnArg { one: Q64::ONE },
+    },
+    Row {
+        ix: Ix::ExpDecimal,
+        name: "ExpDecimal",
+        op: Op::Unary(raw_fn::<Decimal, true>),
+        domain: Domain::ExpArg { one: Decimal::ONE },
+    },
+    Row {
+        ix: Ix::LnDecimal,
+        name: "LnDecimal",
+        op: Op::Unary(raw_fn::<Decimal, false>),
+        domain: Domain::LnArg { one: Decimal::ONE },
     },
 ];
 
@@ -228,13 +295,20 @@ fn measure() -> Measurement {
     let rows = ROWS
         .iter()
         .map(|row| {
-            inputs
-                .iter()
-                .map(|&(a, b)| {
+            let mut rng = Rng(SEED);
+            (0..RANDOM_INPUTS)
+                .map(|i| {
+                    let (a, b) = match row.domain {
+                        // The shared pairs: `MulDown`, `DivDown` and `SqrtDown` keep the inputs
+                        // of milestone 2.
+                        Domain::Prices => inputs[i],
+                        Domain::ExpArg { one } => (rng.exp_arg(one), Fixed::ZERO),
+                        Domain::LnArg { one } => (rng.ln_arg(one), Fixed::ZERO),
+                    };
                     // sqrt is measured on |a|: a negative input is a cheap DomainError.
-                    let a = match row.op {
-                        Op::Unary(_) => Fixed::from_raw(a.raw().abs()),
-                        Op::Binary(_) => a,
+                    let a = match (row.op, row.domain) {
+                        (Op::Unary(_), Domain::Prices) => Fixed::from_raw(a.raw().abs()),
+                        _ => a,
                     };
                     vm.check(row, a, b)
                 })
