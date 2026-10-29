@@ -12,6 +12,9 @@
 #![cfg_attr(not(test), no_std)]
 
 mod bsm;
+#[cfg(feature = "bench-internals")]
+#[doc(hidden)]
+pub use bsm::baseline;
 mod error;
 mod explog;
 mod fixed;
@@ -22,9 +25,9 @@ mod u256;
 pub mod wide;
 
 pub use bsm::{
-    intrinsic, price, price_and_greeks, EuropeanOption, Greeks, MarketInputs, OptionKind, Priced,
-    DELTA_ERR, GAMMA_ERR_REL, GREEK_ERR_ABS, PRICE_ERR_ABS, PRICE_ERR_REL, THETA_ERR_REL,
-    VEGA_ERR_REL,
+    intrinsic, price, price_and_greeks, price_error_bound, EuropeanOption, Greeks, MarketInputs,
+    OptionKind, Priced, DELTA_ERR, GAMMA_ERR_REL, GREEK_ERR_ABS, PRICE_ERR_ABS, PRICE_ERR_REL,
+    THETA_ERR_REL, VEGA_ERR_REL,
 };
 pub use error::PricingError;
 pub use explog::{exp, ln, EXP_MAX_ERROR_ULPS, LN_MAX_ERROR_ULPS};

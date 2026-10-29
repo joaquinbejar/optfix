@@ -76,29 +76,75 @@ pub struct Priced {
 }
 
 /// Price envelope, relative part: `|error| <= PRICE_ERR_REL × max(S, K) + PRICE_ERR_ABS`.
-/// `2^-48`, about `3.6 × 10^-15` (measured: `3.3 × 10^-16`, `docs/precision.md`).
+/// `2^-48`, about `3.6 × 10^-15` (measured `2.4 × 10^-18` over 1,000,000 points, `docs/precision.md`).
 pub const PRICE_ERR_REL: Fixed = Fixed::from_raw(1 << 16);
 
 /// Price envelope, absolute part: 64 ulps, about `3.5 × 10^-18`.
 pub const PRICE_ERR_ABS: Fixed = Fixed::from_raw(64);
 
-/// Delta envelope, absolute: `2^-49`, about `1.8 × 10^-15` (measured `1.1 × 10^-16`).
+/// Delta envelope, absolute: `2^-49`, about `1.8 × 10^-15` (measured `6.4 × 10^-17`).
 pub const DELTA_ERR: Fixed = Fixed::from_raw(1 << 15);
 
 /// Gamma envelope: `|error| <= GAMMA_ERR_REL × Dq / (S σ√T) + GREEK_ERR_ABS` (the scale is
-/// gamma's maximum times `√(2π)`). `2^-40`, about `9.1 × 10^-13` (measured `8.7 × 10^-14`).
+/// gamma's maximum times `√(2π)`). `2^-40`, about `9.1 × 10^-13` (measured `1.5 × 10^-13`).
 pub const GAMMA_ERR_REL: Fixed = Fixed::from_raw(1 << 24);
 
 /// Vega envelope: `|error| <= VEGA_ERR_REL × S Dq √T + GREEK_ERR_ABS`. `2^-43`, about
-/// `1.1 × 10^-13` (measured `7.5 × 10^-15`).
+/// `1.1 × 10^-13` (measured `2.1 × 10^-14`).
 pub const VEGA_ERR_REL: Fixed = Fixed::from_raw(1 << 21);
 
 /// Theta envelope: `|error| <= THETA_ERR_REL × (S Dq σ / √T + |r| K Dr + |q| S Dq) +
-/// GREEK_ERR_ABS`. `2^-42`, about `2.3 × 10^-13` (measured `1.5 × 10^-14`).
+/// GREEK_ERR_ABS`. `2^-42`, about `2.3 × 10^-13` (measured `2.3 × 10^-14`).
 pub const THETA_ERR_REL: Fixed = Fixed::from_raw(1 << 22);
 
 /// Absolute part of the gamma, vega and theta envelopes: 64 ulps.
 pub const GREEK_ERR_ABS: Fixed = Fixed::from_raw(64);
+
+/// The price envelope at these inputs, rounded up: `PRICE_ERR_REL × max(S, K) + PRICE_ERR_ABS`.
+/// Widen a price with it through [`Price::upper`] and [`Price::lower`] when a conservative side
+/// is needed (`docs/PLAN.md`, rounding contract).
+///
+/// # Errors
+///
+/// `Overflow` only carries the checked arithmetic (`max(S, K) <= 10^9`).
+#[must_use = "the result carries a possible error"]
+pub fn price_error_bound(opt: &EuropeanOption, m: &MarketInputs) -> Result<Fixed, PricingError> {
+    let scale = m.spot.get().max(opt.strike.get());
+    PRICE_ERR_REL.mul_up(scale)?.checked_add(PRICE_ERR_ABS)
+}
+
+impl Price {
+    /// `self + err`: an upper bound of the true price when `err` is its envelope.
+    ///
+    /// # Errors
+    ///
+    /// `Overflow` if the sum does not fit; `DomainError` if `err < 0`.
+    #[must_use = "the result carries a possible error"]
+    pub fn upper(self, err: Fixed) -> Result<Self, PricingError> {
+        if err < Fixed::ZERO {
+            return Err(PricingError::DomainError);
+        }
+        Self::try_new(self.get().checked_add(err)?)
+    }
+
+    /// `max(self − err, 0)`: a lower bound of the true price when `err` is its envelope.
+    ///
+    /// # Errors
+    ///
+    /// `DomainError` if `err < 0`.
+    #[must_use = "the result carries a possible error"]
+    pub fn lower(self, err: Fixed) -> Result<Self, PricingError> {
+        if err < Fixed::ZERO {
+            return Err(PricingError::DomainError);
+        }
+        let v = self.get().checked_sub(err)?;
+        Ok(if v < Fixed::ZERO {
+            Self::MIN
+        } else {
+            Self::try_new(v)?
+        })
+    }
+}
 
 /// `S/K` must lie in `[0.05, 20]`: `S × 20 >= K` and `K × 20 >= S`.
 const MONEYNESS_LIMIT: i128 = 20;
@@ -125,8 +171,8 @@ pub fn intrinsic(opt: &EuropeanOption, spot: Spot) -> Price {
 ///
 /// # Errors
 ///
-/// `DomainError` if `S/K` is outside `[0.05, 20]`; `Overflow` only if an intermediate exceeds
-/// [`Fixed::MAX`], which the supported domain excludes for the price.
+/// `DomainError` if `S/K` is outside `[0.05, 20]`. `Overflow` only carries the checked
+/// arithmetic; every intermediate fits over the supported domain.
 #[must_use = "the result carries a possible error"]
 pub fn price(opt: &EuropeanOption, m: &MarketInputs) -> Result<Price, PricingError> {
     evaluate(opt, m, false).map(|p| p.price)
@@ -137,10 +183,10 @@ pub fn price(opt: &EuropeanOption, m: &MarketInputs) -> Result<Price, PricingErr
 ///
 /// # Errors
 ///
-/// `DomainError` if `S/K` is outside `[0.05, 20]`; `Overflow` if a greek exceeds
-/// [`Fixed::MAX`]. That happens only for theta, `S Dq n(d1) σ / (2√T)`, with a large spot and
-/// volatility a tiny fraction of a second before expiry, where the true value is beyond the
-/// representation.
+/// `DomainError` if `S/K` is outside `[0.05, 20]`. `Overflow` only carries the checked
+/// arithmetic: over the supported domain every value fits (the largest are theta, about
+/// `4.3 × 10^18` at `S = 10^9`, `σ = 5`, `T = 2^-64` years, and gamma, about `3.4 × 10^17` at
+/// `S = 10^-6`, `σ = 0.005`, `T = 2^-64` years, against `Fixed::MAX ≈ 9.2 × 10^18`).
 #[must_use = "the result carries a possible error"]
 pub fn price_and_greeks(opt: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingError> {
     evaluate(opt, m, true)
@@ -334,6 +380,122 @@ fn non_negative(x: Fixed) -> Fixed {
     }
 }
 
+/// The benchmark-only baseline of `docs/PLAN.md` milestone 5: the price and each greek computed
+/// separately, each from only the intermediates it needs, as a caller without
+/// `price_and_greeks` would. Not public API (feature `bench-internals`).
+#[cfg(feature = "bench-internals")]
+#[doc(hidden)]
+pub mod baseline {
+    use super::{
+        check_moneyness, half, price, EuropeanOption, Greeks, MarketInputs, OptionKind, Priced,
+    };
+    use crate::explog::{exp, ln};
+    use crate::norm::{norm_cdf, norm_pdf};
+    use crate::{Fixed, PricingError};
+
+    /// `price`, then each greek on its own.
+    ///
+    /// # Errors
+    ///
+    /// As `price_and_greeks`.
+    pub fn separately(opt: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingError> {
+        Ok(Priced {
+            price: price(opt, m)?,
+            greeks: Greeks {
+                delta: delta(opt, m)?,
+                gamma: gamma(opt, m)?,
+                vega: vega(opt, m)?,
+                theta: theta(opt, m)?,
+            },
+        })
+    }
+
+    /// The intermediates every greek shares: `(Dq, ln S, ln σ, ln T / 2, ln σ√T, d1, σ√T)`,
+    /// or `None` at `T = 0`.
+    #[allow(clippy::type_complexity)]
+    fn d1(
+        opt: &EuropeanOption,
+        m: &MarketInputs,
+    ) -> Result<Option<(Fixed, Fixed, Fixed, Fixed, Fixed, Fixed, Fixed)>, PricingError> {
+        let (s, k, t) = (m.spot.get(), opt.strike.get(), opt.expiry.get());
+        check_moneyness(s, k)?;
+        let rt = m.rate.get().mul_down(t)?;
+        let qt = m.carry.get().mul_down(t)?;
+        let dq = exp(qt.checked_neg()?)?;
+        if t == Fixed::ZERO {
+            return Ok(None);
+        }
+        let half_ln_t = half(ln(t)?);
+        let ln_sigma = ln(m.vol.get())?;
+        let ls = ln_sigma.checked_add(half_ln_t)?;
+        let sst = exp(ls)?;
+        let ln_s = ln(s)?;
+        let num = ln_s
+            .checked_sub(ln(k)?)?
+            .checked_add(rt)?
+            .checked_sub(qt)?
+            .checked_add(half(sst.mul_down(sst)?))?;
+        let d1 = num.mul_down(exp(ls.checked_neg()?)?)?;
+        Ok(Some((dq, ln_s, ln_sigma, half_ln_t, ls, d1, sst)))
+    }
+
+    fn delta(opt: &EuropeanOption, m: &MarketInputs) -> Result<Fixed, PricingError> {
+        let Some((dq, _, _, _, _, d1, _)) = d1(opt, m)? else {
+            return super::price_and_greeks(opt, m).map(|p| p.greeks.delta);
+        };
+        match opt.kind {
+            OptionKind::Call => dq.mul_down(norm_cdf(d1)?),
+            OptionKind::Put => dq.mul_down(norm_cdf(d1.checked_neg()?)?)?.checked_neg(),
+        }
+    }
+
+    fn gamma(opt: &EuropeanOption, m: &MarketInputs) -> Result<Fixed, PricingError> {
+        let Some((dq, ln_s, _, _, ls, d1, _)) = d1(opt, m)? else {
+            return Ok(Fixed::ZERO);
+        };
+        dq.mul_down(norm_pdf(d1)?)?
+            .mul_down(exp(ln_s.checked_add(ls)?.checked_neg()?)?)
+    }
+
+    fn vega(opt: &EuropeanOption, m: &MarketInputs) -> Result<Fixed, PricingError> {
+        let Some((dq, _, _, half_ln_t, _, d1, _)) = d1(opt, m)? else {
+            return Ok(Fixed::ZERO);
+        };
+        m.spot
+            .get()
+            .mul_down(dq)?
+            .mul_down(norm_pdf(d1)?)?
+            .mul_down(exp(half_ln_t)?)
+    }
+
+    fn theta(opt: &EuropeanOption, m: &MarketInputs) -> Result<Fixed, PricingError> {
+        let Some((dq, _, ln_sigma, half_ln_t, _, d1, sst)) = d1(opt, m)? else {
+            return super::price_and_greeks(opt, m).map(|p| p.greeks.theta);
+        };
+        let (r, q, t) = (m.rate.get(), m.carry.get(), opt.expiry.get());
+        let s_dq = m.spot.get().mul_down(dq)?;
+        let k_dr = opt
+            .strike
+            .get()
+            .mul_down(exp(r.mul_down(t)?.checked_neg()?)?)?;
+        let d2 = d1.checked_sub(sst)?;
+        let decay = half(
+            s_dq.mul_down(norm_pdf(d1)?)?
+                .mul_down(exp(ln_sigma.checked_sub(half_ln_t)?)?)?,
+        );
+        match opt.kind {
+            OptionKind::Call => decay
+                .checked_neg()?
+                .checked_sub(r.mul_down(k_dr.mul_down(norm_cdf(d2)?)?)?)?
+                .checked_add(q.mul_down(s_dq.mul_down(norm_cdf(d1)?)?)?),
+            OptionKind::Put => decay
+                .checked_neg()?
+                .checked_add(r.mul_down(k_dr.mul_down(norm_cdf(d2.checked_neg()?)?)?)?)?
+                .checked_sub(q.mul_down(s_dq.mul_down(norm_cdf(d1.checked_neg()?)?)?)?),
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::disallowed_macros)]
 mod tests {
@@ -386,6 +548,45 @@ mod tests {
             close(p, 5_573_526_022_256_971, 1_000_000_000_000_000),
             "{p:?}"
         );
+    }
+
+    /// The largest theta and gamma of the domain fit (`price_and_greeks` docs).
+    #[test]
+    fn test_extreme_greeks_fit() {
+        let tiny = Years::try_new(Fixed::from_raw(1)).unwrap();
+        let zero = Rate::try_new(Fixed::ZERO).unwrap();
+        for (s, sigma) in [(Spot::MAX, Volatility::MAX), (Spot::MIN, Volatility::MIN)] {
+            for kind in [OptionKind::Call, OptionKind::Put] {
+                let k = Strike::try_new(s.get()).unwrap();
+                let opt = EuropeanOption {
+                    kind,
+                    strike: k,
+                    expiry: tiny,
+                };
+                let m = MarketInputs {
+                    spot: s,
+                    vol: sigma,
+                    rate: zero,
+                    carry: zero,
+                };
+                let g = price_and_greeks(&opt, &m).unwrap().greeks;
+                assert!(g.gamma > Fixed::ZERO && g.theta < Fixed::ZERO, "{g:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_price_bounds_widen_by_the_envelope() {
+        let (opt, m) = inputs(100, 100, Fixed::ONE, OptionKind::Call);
+        let p = price(&opt, &m).unwrap();
+        let err = price_error_bound(&opt, &m).unwrap();
+        assert!(
+            err > PRICE_ERR_ABS
+                && err < Fixed::from_ratio(1, 1_000_000_000_000, Rounding::Up).unwrap()
+        );
+        assert!(p.lower(err).unwrap().get() < p.get() && p.get() < p.upper(err).unwrap().get());
+        assert_eq!(Price::MIN.lower(err), Ok(Price::MIN));
+        assert_eq!(p.upper(Fixed::from_raw(-1)), Err(PricingError::DomainError));
     }
 
     #[test]

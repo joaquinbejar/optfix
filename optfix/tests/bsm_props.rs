@@ -47,8 +47,8 @@ fn within(got: Fixed, want: &BigInt, rel: Fixed, scale: &BigInt, abs: Fixed) -> 
     err <= allowed
 }
 
-/// Checks one point of the domain; `Ok(false)` when `price_and_greeks` legitimately overflows
-/// (a theta beyond the representation).
+/// Checks one point of the domain. `Overflow` is not reachable over the supported domain, so
+/// it fails unless the reference itself is beyond `Fixed::MAX`; `Ok(false)` then.
 fn check_point(p: (i128, i128, i128, i128, i128, i128, bool)) -> Result<bool, TestCaseError> {
     let (opt, m) = bsm_inputs(p);
     let (s, k, t, sigma, rate, q, call) = p;
