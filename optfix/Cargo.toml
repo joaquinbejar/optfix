@@ -1,0 +1,20 @@
+[package]
+name = "optfix"
+description = "Fixed-point option pricing: no_std, allocation free, every rounding explicit"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../README.md"
+keywords = ["options", "fixed-point", "black-scholes", "solana", "no-std"]
+categories = ["finance", "mathematics", "no-std"]
+
+[dependencies]
+bytemuck = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true
