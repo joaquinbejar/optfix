@@ -11,7 +11,10 @@
 #![no_std]
 
 use bytemuck::Pod;
-use optfix::{Fixed, FixedBytes, PricingError, Rounding};
+use optfix::{
+    EuropeanOption, Fixed, FixedBytes, Greeks, MarketInputs, OptionKind, Priced, PricingError,
+    Rate, Rounding, Spot, Strike, Volatility, Years,
+};
 use pinocchio::cpi::set_return_data;
 use pinocchio::error::ProgramError;
 use pinocchio::{AccountView, Address, ProgramResult};
@@ -54,6 +57,14 @@ pub enum Instruction {
     /// rounding (1 byte, `0` down, `1` up), all little endian. Tag 8 leaves 6 and 7 to the
     /// normal CDF and PDF of milestone 4.
     MulShr = 8,
+    /// `optfix::price`: an option-kind byte (`0` call, `1` put) and six `FixedBytes`: spot,
+    /// strike, expiry, volatility, rate, carry.
+    Price = 9,
+    /// `optfix::price_and_greeks`, same arguments; returns the price and four greeks.
+    PriceAndGreeks = 10,
+    /// The benchmark-only baseline (`optfix::baseline::separately`): price and each greek
+    /// computed separately; same arguments and return data as `PriceAndGreeks`.
+    Baseline = 11,
 }
 
 impl Instruction {
@@ -74,6 +85,9 @@ impl Instruction {
             6 => Ok(Self::NormCdf),
             7 => Ok(Self::NormPdf),
             8 => Ok(Self::MulShr),
+            9 => Ok(Self::Price),
+            10 => Ok(Self::PriceAndGreeks),
+            11 => Ok(Self::Baseline),
             _ => Err(BenchError::UnknownInstruction),
         }
     }
@@ -94,6 +108,36 @@ impl From<BenchError> for ProgramError {
     fn from(e: BenchError) -> Self {
         ProgramError::Custom(e as u32)
     }
+}
+
+/// Length of the return data of `PriceAndGreeks` and `Baseline`: status byte and five values.
+pub const PRICED_LEN: usize = 81;
+
+/// Encodes a priced result: status byte, then price, delta, gamma, vega, theta.
+#[must_use]
+pub fn encode_priced(result: Result<Priced, PricingError>) -> [u8; PRICED_LEN] {
+    let mut out = [0u8; PRICED_LEN];
+    let (status, values) = match result {
+        Ok(p) => (
+            0u8,
+            [
+                p.price.get(),
+                p.greeks.delta,
+                p.greeks.gamma,
+                p.greeks.vega,
+                p.greeks.theta,
+            ],
+        ),
+        Err(e) => (error_status(e), [Fixed::ZERO; 5]),
+    };
+    let (head, mut tail) = out.split_at_mut(1);
+    head.copy_from_slice(&[status]);
+    for v in values {
+        let (chunk, rest) = tail.split_at_mut(16);
+        chunk.copy_from_slice(&v.to_bytes().0);
+        tail = rest;
+    }
+    out
 }
 
 /// Encodes a result as return data: status byte, then the value.
@@ -133,7 +177,17 @@ pub fn process_instruction(
     data: &[u8],
 ) -> ProgramResult {
     let (&tag, args) = data.split_first().ok_or(BenchError::UnknownInstruction)?;
-    let result = match Instruction::from_tag(tag)? {
+    let ix = Instruction::from_tag(tag)?;
+    if let Instruction::PriceAndGreeks | Instruction::Baseline = ix {
+        let f = if ix == Instruction::Baseline {
+            optfix::baseline::separately
+        } else {
+            optfix::price_and_greeks
+        };
+        set_return_data(&encode_priced(bsm(args, f)?));
+        return Ok(());
+    }
+    let result = match ix {
         Instruction::Noop => noop(args)?,
         Instruction::MulDown => binary(args, Fixed::mul_down)?,
         Instruction::DivDown => binary(args, Fixed::div_down)?,
@@ -143,6 +197,10 @@ pub fn process_instruction(
         Instruction::NormCdf => unary(args, optfix::norm_cdf)?,
         Instruction::NormPdf => unary(args, optfix::norm_pdf)?,
         Instruction::MulShr => mul_shr(args)?,
+        Instruction::Price => bsm(args, price_only)?.map(|p| p.price.get()),
+        Instruction::PriceAndGreeks | Instruction::Baseline => {
+            return Err(BenchError::InvalidArguments.into())
+        }
     };
     set_return_data(&encode_result(result));
     Ok(())
@@ -199,4 +257,50 @@ fn mul_shr(args: &[u8]) -> Result<Result<Fixed, PricingError>, BenchError> {
     // The u128 result travels in the 16 bytes of a `FixedBytes`, bit for bit.
     Ok(optfix::wide::mul_shr(a, b, shift, r)
         .map(|v| Fixed::from_raw(i128::from_le_bytes(v.to_le_bytes()))))
+}
+
+/// `optfix::price` in the shape of `price_and_greeks` (greeks zero).
+fn price_only(opt: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingError> {
+    let zero = Fixed::ZERO;
+    Ok(Priced {
+        price: optfix::price(opt, m)?,
+        greeks: Greeks {
+            delta: zero,
+            gamma: zero,
+            vega: zero,
+            theta: zero,
+        },
+    })
+}
+
+/// Decodes `[kind, S, K, T, σ, r, q]` and runs `f`; an argument outside its newtype's range is
+/// reported as a `DomainError` result, like any other optfix error.
+#[inline(never)]
+fn bsm(
+    args: &[u8],
+    f: fn(&EuropeanOption, &MarketInputs) -> Result<Priced, PricingError>,
+) -> Result<Result<Priced, PricingError>, BenchError> {
+    let (&kind, rest) = args.split_first().ok_or(BenchError::InvalidArguments)?;
+    let kind = match kind {
+        0 => OptionKind::Call,
+        1 => OptionKind::Put,
+        _ => return Err(BenchError::InvalidArguments),
+    };
+    let [s, k, t, sigma, r, q]: [FixedBytes; 6] = decode(rest)?;
+    let inputs = || -> Result<(EuropeanOption, MarketInputs), PricingError> {
+        Ok((
+            EuropeanOption {
+                kind,
+                strike: Strike::try_new(k.get())?,
+                expiry: Years::try_new(t.get())?,
+            },
+            MarketInputs {
+                spot: Spot::try_new(s.get())?,
+                vol: Volatility::try_new(sigma.get())?,
+                rate: Rate::try_new(r.get())?,
+                carry: Rate::try_new(q.get())?,
+            },
+        ))
+    };
+    Ok(inputs().and_then(|(opt, m)| f(&opt, &m)))
 }

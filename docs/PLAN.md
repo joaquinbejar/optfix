@@ -209,7 +209,11 @@ instruction per public function, used only for CU measurement:
 | 5 | `Ln` | `Fixed` | none |
 | 6 | `NormCdf` | `Fixed` | none |
 | 7 | `NormPdf` | `Fixed` | none |
-| ... | one per public function (`Price`, `PriceAndGreeks` next) | its arguments, little-endian | none |
+| 8 | `MulShr` | 2 × `u128`, `u32` shift, rounding byte | none |
+| 9 | `Price` | kind byte, 6 × `Fixed` (S, K, T, σ, r, q) | none |
+| 10 | `PriceAndGreeks` | as `Price`; returns 5 values | none |
+| 11 | `Baseline` | as `PriceAndGreeks`: the price and each greek computed separately (bench-only) | none |
+| ... | `ImpliedVol` next | its arguments, little-endian | none |
 
 Each handler decodes its arguments with `bytemuck`, calls optfix, and writes the result with
 `set_return_data`, so the LiteSVM test also checks the on-chain result equals the host result
@@ -239,7 +243,9 @@ fit with room to spare: `S` and `K` up to `10^9`, the forward `S e^{(r−q)T}` u
 checks the greeks' intermediates (gamma's `1 / (S σ √T)`) against it explicitly.
 
 Error envelopes are input-dependent formulas, not one constant: for price,
-`|err| <= ERR_REL × max(S, K) + ERR_ABS`, with both constants fixed explicitly in milestone 5
+`|err| <= ERR_REL × max(S, K) + ERR_ABS`, fixed in milestone 5 at `PRICE_ERR_REL = 2^-48`
+(`3.6 × 10^-15`, measured `2.4 × 10^-18`) and `PRICE_ERR_ABS` = 64 ulps, well inside the
+decided `10^-9`; both constants were to be fixed explicitly in milestone 5
 (`ERR_ABS` matters: at extreme moneyness, low `σ` and long `T` prices are about `10^-30 × S`),
 including approximation, fixed-point propagation,
 degenerate branches and input conversion. Tests sample every range, tiny `T`, the cutoff
@@ -349,6 +355,29 @@ via put-call parity (`C = P + S Dq − K Dr`), a sum of positive terms. Fixed-po
 absolute, so the ITM formula's cancellation would not amplify them; parity is used because it
 reuses the OTM evaluation, which has small values and the tail-accurate `N`.
 
+As built (milestone 5): nothing divides or takes a square root. `√T`, `σ√T`, `1/(σ√T)`,
+`1/(S σ√T)` (gamma) and `σ/√T` (theta) are `exp` of sums of `ln σ`, `ln T / 2`, `ln S` and
+`ln K`. `d1 = ln(S/K)/(σ√T) + (r − q)√T/σ + σ√T/2`, each term rounded once at its own scale:
+forming the numerator at absolute resolution and then multiplying by `1/(σ√T)` (up to about
+`8.6 × 10^11`) amplified its rounding near the money and near expiry (#11 review: delta off by
+up to `2 × 10^7` envelopes, down to about 300 s at `σ = 0.005`). Away from the money
+(`|S − K| × 256 >= K`) the first term is `(ln S − ln K) × exp(−ln σ√T)`, whose relative error
+is below `2^-54`; near it, `(S − K) × W × ln(1 + u)/u` with the exact `S − K`,
+`W = 1/(K σ√T)`, `u = (S − K)/K` and `ln(1 + u)/u` on the `ln` kernel's polynomial, so nothing
+cancels and nothing tiny is divided by something tiny. Factors that can be small in Q64.64
+(`W` at a large `K`, `√T` near expiry, `1/(S σ√T)` at a large `S`) go through `mul_exp`,
+which scales `e^x` by a power of two into `[2^20, 2^21)`, multiplies and shifts back, so their
+relative precision survives; `S/K` in `[0.05, 20]` is checked exactly as `20 S >= K` and
+`20 K >= S`. `N(d1)` and `n(d1)` share one `exp`. The only degenerate case is `T = 0`: the
+smallest positive `T` is `2^-64` years, so `σ√T >= 0.005 × 2^-32 ≈ 1.2 × 10^-12`, where every
+value fits (the largest are theta, about `4.3 × 10^18`, and gamma, about `3.4 × 10^17`), and
+the formula is evaluated as is. A `σ√T` threshold would only have added an approximation error
+(up to `S Dq σ√T / √(2π)`). The envelopes are `PRICE_ERR_REL × max(S, K) + PRICE_ERR_ABS` for
+the price (`2^-48`, 64 ulps), `DELTA_ERR` absolute (`2^-49`), and `REL × scale + 64 ulps` for
+gamma, vega and theta with the scales `Dq / (S σ√T)`, `S Dq √T` and `S Dq σ/√T + |r| K Dr +
+|q| S Dq`; `price_error_bound`, `Price::upper` and `Price::lower` widen a price by its
+envelope.
+
 ### 4.6 Implied volatility
 
 Inputs are `IvInputs { spot, rate, carry }`; `Dr`, `Dq` and `F` as in 4.5.
@@ -397,6 +426,11 @@ careful `f64` behavior that would need its own fixed-point error analysis.
   `erfc` follows the same scheme in milestone 4. Python's standard `decimal` replaces `mpmath`
   for the reference tables (decided 2026-10-29): it computes `exp` and `ln` correctly rounded
   and needs no install.
+- Milestone 5: `price_and_greeks` is checked against a 256-bit BSM reference (the exact
+  formulas in `optfix/tests/common/`) over the whole domain, by default on 100,000 cases per
+  property (the reference makes them dearer than the primitives' million; 1,000,000 cases pass
+  in a release build in 22 s), and against OptionStratLib within the oracle tolerances of
+  `tests/common/oracle.rs`.
 - Carry `q`: OptionStratLib's Garman-Kohlhagen is the oracle with its foreign rate set to `q`.
   Price, greeks and implied vol each have tests on three planned sets: `q > 0` (up to
   `q = 0.5, T = 30`, where `Dq = e^{−15}`), `q < 0` (down to `q = −0.1, T = 30`, where
@@ -455,7 +489,7 @@ Each milestone is one feature branch (`feat/m<N>-<name>`) and one PR.
    milestone 1's tests pass on the winner.
 4. **`N(x)` and `n(x)`.** (Done.) *Done when* both meet published bounds (absolute everywhere, relative
    on exactly `[−8, −5]`, plus saturation tests beyond the cutoff) verified by proptest, and their CU rows are in the benchmarks doc.
-5. **Black-Scholes price and greeks.** `price`, `price_and_greeks`, `intrinsic`, degenerate
+5. **Black-Scholes price and greeks.** (Done.) `price`, `price_and_greeks`, `intrinsic`, degenerate
    cases. *Done when* proptest against OptionStratLib passes over the whole supported
    domain table (every range, extremes, tiny `T`, `S` and `K` scaled together, `q > 0`, `q < 0`
    and the `q = 0` regression of 4.7), both kinds,
@@ -556,8 +590,10 @@ against Agave 4.4.
    `carry`; delta is bounded by `±e^{−qT}`, up to about 20.1 at `q = −0.1, T = 30`, not
    `[−1, 1]`; theta's sign is not fixed; tests cover `q > 0`, `q < 0` and a `q = 0`
    regression (4.7). The price envelope of question 1 is stated in `max(S, K)`, while carry
-   prices scale with `S e^{−qT}` (up to about `20 S`); milestone 5 measures whether the decided
-   envelope holds over the carry range before fixing `ERR_REL`.
+   prices scale with `S e^{−qT}` (up to about `20 S`); milestone 5 measured it over the carry
+   range: beyond 64 ulps the error is at most `2.4 × 10^-18 × max(S, K)`, while measured
+   against `max(S Dq, K Dr)` it reaches `2.9 × 10^-14` (where `S Dq` falls to `e^{−15} S`), so
+   `max(S, K)` stays the scale (decided 2026-10-29, `docs/precision.md`).
 5. Year basis: 365 days (proposed) or 365.25?
 6. Decided (latest-stable rule): OptionStratLib 0.23 from crates.io as the oracle.
 7. Decided: Pinocchio 0.11, like the other three repos (exception recorded above).
@@ -691,4 +727,53 @@ Milestone 4 (2026-10-29):
   Python `decimal` (now with `N` and `n` rows, computed there by the erf series and the erfc
   continued fraction, a different method from the reference's positive series) in
   `tests/reference.rs`; `tests/precision.rs` writes `docs/precision.md`.
+
+Milestone 5 (2026-10-29):
+
+- **Pricer without `sqrt` or division** (4.5). Net median CU over the whole domain
+  (`docs/benchmarks.md`): `Price` 9,247, `PriceAndGreeks` 14,242, and the bench-only baseline
+  that computes the price and each greek separately 39,287, so `price_and_greeks` costs 36% of
+  it (the milestone's criterion); near the money `Price` 11,092 and `PriceAndGreeks` 16,097.
+  The `d1` restructure of the #11 review costs about 1,600 CU on `PriceAndGreeks` (12,629
+  before) and buys the greek envelopes near expiry.
+- **Profile of `price_and_greeks`** (calls executed on the path, times the component rows):
+  4 `ln` (about 1,830 CU), 8 `exp` (2,520), `N(d1)` with `n(d1)` and `N(d2)` (about 2,800), 18
+  `mul_down` (4,970), the rest decoding, checks, shifts and additions. Near the money
+  (`|S − K| < K/256`) the moneyness term takes 9 `exp`, 20 `mul_down` and `ln(1 + u)/u`.
+  `price` alone executes 4 `ln`, 5 `exp` (6 near the money) and 8 `mul_down` (10).
+  Multiplication is the largest share (35%), the next optimization target.
+- **The `sqrt` caveat** (milestone 3 review): pricing never calls `sqrt_down`. The five `exp`
+  that replace `√T`, `σ√T` and the reciprocals cost about 1,600 CU; `sqrt_down` and three
+  `div_down` would cost about 15,700. The binary `sqrt` being 36% dearer than the decimal one
+  has no effect on `price_and_greeks`.
+- **`U256::mul_wide` on the kernel's carry-form product**, bit-identical: `MulDown` measured
+  250 CU against 284 on the milestone 4 build, and 276 after the rebase over `wide::mul_shr`
+  (the same code; inlining around `U256` changed).
+- **Degenerate branch only at `T = 0`** (4.5): with `T >= 2^-64` every value fits, so no
+  `σ√T` threshold and no approximation error.
+- **Envelopes** (`docs/precision.md`, 1,000,000-point survey; the properties pass at 1,000,000
+  cases): price `2.4 × 10^-18 × max(S, K)` beyond 64 ulps against `PRICE_ERR_REL = 2^-48`;
+  delta `5.8 × 10^-18` against `2^-49`; gamma `1.5 × 10^-13`, vega `2.1 × 10^-14`, theta
+  `2.3 × 10^-14` of their scales against `2^-40`, `2^-43` and `2^-42`. Question 4: `max(S, K)`.
+- **Oracle** (OptionStratLib 0.23, Garman-Kohlhagen with foreign rate `q`): on `q > 0`,
+  `q < 0` and `q = 0` (the last also against plain `black_scholes`), every difference is at
+  most 25% of the oracle tolerance (price `10^-9 × max(S, K)`, delta `10^-9`, other greeks
+  `10^-9 × scale + 10^-18`, the last only where `|d1| <= 4.8`, 4.7).
+- **`q = 0` regression**: 64 committed results (`optfix/tests/data/bsm_q0.txt`) checked bit for
+  bit (regenerated with the `d1` restructure).
+- **#11 review fixture**: codex's sweep (`tools/bsm_fixture/gen_sweep.py`: `d1` from −9 to 9
+  at 26 expiries from `10^-12` s to a year, five volatilities, four spot scales, three
+  rate/carry sets, plus 3,000 broad points; 19,106 rows) with mpmath expected values at 100
+  digits (`expected.py`) is committed as `optfix/tests/data/bsm_fixture.csv`. `tests/bsm_fixture.rs`
+  checks the 256-bit reference against mpmath (within one raw unit) and `price_and_greeks`
+  against its envelopes on every row: zero violations, the worst at 15% of an envelope (theta),
+  and codex's independent checker (`check_mpmath.py`) agrees. New properties pair small `T` (one
+  raw unit to about 2^45) with near-the-money strikes and check continuity across the
+  `|S − K| × 256 = K` switch; all pass at 1,000,000 cases in release.
+- **Codex's 4,224-point boundary set** (#11 review), regenerated at `fa43a53` and run through
+  its 100-digit mpmath checker: 0 violations and 0 errors, the worst ratio theta at 0.161
+  (`tools/bsm_fixture/boundary-fixed-check.log`; the compressed outputs are bus attachment 215
+  on message #36947, too large to commit).
+- **Bench-only items** live behind the non-default `bench-internals` feature of `optfix`
+  (`baseline::separately`), enabled only by `bench-program` and `bench`.
 

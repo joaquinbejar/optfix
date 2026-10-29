@@ -214,24 +214,10 @@ pub(crate) fn normalize(raw: u128) -> Result<(i64, u64), PricingError> {
     Ok((i64::from(p), lo64(m)))
 }
 
-/// `ln(m / 2^63 × 2^e) × 2^120` for `m` in `[2^63, 2^64)`.
-pub(crate) fn ln_core(e: i64, m: u64) -> Result<i128, PricingError> {
-    // Nearest bucket centre c_j = 1 + j/128, j in 0..=128.
-    let frac = m.checked_sub(1 << 63).ok_or(PricingError::DomainError)?;
-    let j = usize::try_from(round_shr_u64(frac, 63u32.saturating_sub(LN_TABLE_BITS)))
-        .map_err(|_| PricingError::Overflow)?;
-    let rinv = *LN_RINV.get(j).ok_or(PricingError::Overflow)?;
-    let lnt = *LN_TABLE.get(j).ok_or(PricingError::Overflow)?;
-    // z = m × RINV_j − 1: Q1.63 × Q1.63 = Q2.126, |z| <= about 2^-8.
-    let prod = mul_wide(m, rinv)?;
-    let z = i128::try_from(prod)
-        .ok()
-        .and_then(|p| p.checked_sub(1i128 << 126))
-        .ok_or(PricingError::Overflow)?;
-    let z70 = i64::try_from(round_shr_i128(z, 56)?).map_err(|_| PricingError::Overflow)?;
-    let neg = z70 < 0;
-    let az = z70.unsigned_abs();
-    // q2 = c2 − z (c3 − z (c4 − ...)), each q in Q0.64 and positive.
+/// `q2(z) = c2 − z (c3 − z (c4 − ...))` in Q0.64 for `|z| <= 2^-8` given as sign and `|z|` in
+/// Q.70: `ln(1 + z) = z − z^2 q2(z)`. Every partial value is positive.
+#[inline(always)]
+fn ln1p_q2(neg: bool, az: u64) -> Result<u64, PricingError> {
     let (last, rest) = LN_COEF.split_last().ok_or(PricingError::Overflow)?;
     let mut q = *last;
     for (i, &c) in rest.iter().enumerate().rev() {
@@ -250,6 +236,53 @@ pub(crate) fn ln_core(e: i64, m: u64) -> Result<i128, PricingError> {
         }
         .ok_or(PricingError::Overflow)?;
     }
+    Ok(q)
+}
+
+/// `ln(1 + u) / u` as a raw Q64.64 value for a raw Q64.64 `u` with `|u| <= 2^-8 (1 + 2^-10)` (`1` at
+/// `u = 0`): `1 − u q2(u)`, on the `ln` kernel's own polynomial. Its absolute error is a few
+/// units of `2^-64`, which is what Black-Scholes needs to form `ln(S/K) / (σ√T)` near the money
+/// without dividing a tiny value by a tiny value.
+pub(crate) fn ln1p_over(u: i128) -> Result<i128, PricingError> {
+    // The polynomial is fitted on |z| <= 2^-8 (1 + 2^-10) (`tools/gen_tables.py`), which leaves
+    // room for a caller's rounding of u at |u| = 2^-8; u × 2^6 then fits an i64 (Q.70).
+    if u.unsigned_abs() > (1 << 56) + (1 << 46) {
+        return Err(PricingError::DomainError);
+    }
+    let z70 = i64::try_from(u.checked_mul(64).ok_or(PricingError::Overflow)?)
+        .map_err(|_| PricingError::Overflow)?;
+    let neg = z70 < 0;
+    let az = z70.unsigned_abs();
+    let q = ln1p_q2(neg, az)?;
+    // u q2 in Q.70, then Q.64.
+    let uq = i128::from(round_shr_u64(mul_hi(az, q)?, 6));
+    let one = 1i128 << 64;
+    if neg {
+        one.checked_add(uq)
+    } else {
+        one.checked_sub(uq)
+    }
+    .ok_or(PricingError::Overflow)
+}
+
+/// `ln(m / 2^63 × 2^e) × 2^120` for `m` in `[2^63, 2^64)`.
+pub(crate) fn ln_core(e: i64, m: u64) -> Result<i128, PricingError> {
+    // Nearest bucket centre c_j = 1 + j/128, j in 0..=128.
+    let frac = m.checked_sub(1 << 63).ok_or(PricingError::DomainError)?;
+    let j = usize::try_from(round_shr_u64(frac, 63u32.saturating_sub(LN_TABLE_BITS)))
+        .map_err(|_| PricingError::Overflow)?;
+    let rinv = *LN_RINV.get(j).ok_or(PricingError::Overflow)?;
+    let lnt = *LN_TABLE.get(j).ok_or(PricingError::Overflow)?;
+    // z = m × RINV_j − 1: Q1.63 × Q1.63 = Q2.126, |z| <= about 2^-8.
+    let prod = mul_wide(m, rinv)?;
+    let z = i128::try_from(prod)
+        .ok()
+        .and_then(|p| p.checked_sub(1i128 << 126))
+        .ok_or(PricingError::Overflow)?;
+    let z70 = i64::try_from(round_shr_i128(z, 56)?).map_err(|_| PricingError::Overflow)?;
+    let neg = z70 < 0;
+    let az = z70.unsigned_abs();
+    let q = ln1p_q2(neg, az)?;
     // ln(1 + z) = z − z^2 q2, in Q.70.
     let zq = mul_hi(az, q)?;
     let z2q =

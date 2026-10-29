@@ -19,13 +19,17 @@ mod common;
 
 use std::fmt::Write as _;
 
+use common::oracle::oracle_stats;
 use common::{
-    exp_err, exp_ref, ln_ref, norm_cdf_ref, norm_pdf_ref, one, ratio, to_ref, ulps, Rng, ONE, P,
+    bsm_inputs, bsm_ref, bsm_sample, div, exp_err, exp_ref, ln_ref, mul, norm_cdf_ref,
+    norm_pdf_ref, one, ratio, to_ref, ulps, Rng, ONE, P,
 };
 use num_bigint::BigInt;
 use optfix::{
-    exp, ln, norm_cdf, norm_pdf, Fixed, EXP_MAX_ERROR_ULPS, LN_MAX_ERROR_ULPS,
-    NORM_CDF_MAX_ERROR_ULPS, NORM_CDF_TAIL_REL_ERROR, NORM_PDF_MAX_ERROR_ULPS,
+    exp, ln, norm_cdf, norm_pdf, price_and_greeks, Fixed, PricingError, DELTA_ERR,
+    EXP_MAX_ERROR_ULPS, GAMMA_ERR_REL, GREEK_ERR_ABS, LN_MAX_ERROR_ULPS, NORM_CDF_MAX_ERROR_ULPS,
+    NORM_CDF_TAIL_REL_ERROR, NORM_PDF_MAX_ERROR_ULPS, PRICE_ERR_ABS, PRICE_ERR_REL, THETA_ERR_REL,
+    VEGA_ERR_REL,
 };
 use rust_decimal::Decimal;
 
@@ -232,6 +236,59 @@ fn oracle(n: usize) -> [(f64, f64, Option<f64>); 2] {
     [(cdf_abs, cdf_at, Some(cdf_rel)), (pdf_abs, pdf_at, None)]
 }
 
+/// Black-Scholes errors over `n` points of the supported domain: for each output the largest
+/// `(|error| − abs) / scale` with the envelope's own absolute part and scale, and the largest
+/// `|error| / scale` measured against `S Dq` instead of `max(S, K)` for the price (question 4);
+/// plus the number of `Overflow`s (a theta beyond the representation).
+fn bsm_errors(n: usize) -> ([f64; 6], usize) {
+    let mut g = Rng(0x0F7F_1C5E_B5B5_0002);
+    let mut worst = [0f64; 6];
+    let mut overflow = 0;
+    let f = |x: &BigInt| ratio(x).abs();
+    for _ in 0..n {
+        let p = bsm_sample(&mut g);
+        let (opt, m) = bsm_inputs(p);
+        let (s, k, t, sigma, r, q, call) = p;
+        let v = match price_and_greeks(&opt, &m) {
+            Ok(v) => v,
+            Err(PricingError::Overflow) => {
+                overflow += 1;
+                continue;
+            }
+            Err(e) => panic!("{e:?}"),
+        };
+        let rf = bsm_ref(
+            call,
+            &to_ref(s),
+            &to_ref(k),
+            &to_ref(t),
+            &to_ref(sigma),
+            &to_ref(r),
+            &to_ref(q),
+        );
+        let err = |got: Fixed, want: &BigInt| f(&(to_ref(got.raw()) - want));
+        let beyond = |e: f64, abs: Fixed| (e - ratio(&to_ref(abs.raw()))).max(0.0);
+        let ep = err(v.price.get(), &rf.price);
+        worst[0] = worst[0].max(beyond(ep, PRICE_ERR_ABS) / f(&to_ref(s.max(k))));
+        worst[1] = worst[1].max(beyond(ep, PRICE_ERR_ABS) / f(&rf.s_dq).max(f(&rf.k_dr)));
+        worst[2] = worst[2].max(err(v.greeks.delta, &rf.delta));
+        if t != 0 {
+            let gamma_scale = div(&rf.dq, &mul(&to_ref(s), &rf.sst));
+            let vega_scale = mul(&rf.s_dq, &rf.sqrt_t);
+            let theta_scale = div(&mul(&rf.s_dq, &to_ref(sigma)), &rf.sqrt_t)
+                + mul(&to_ref(r.abs()), &rf.k_dr)
+                + mul(&to_ref(q.abs()), &rf.s_dq);
+            worst[3] = worst[3]
+                .max(beyond(err(v.greeks.gamma, &rf.gamma), GREEK_ERR_ABS) / f(&gamma_scale));
+            worst[4] =
+                worst[4].max(beyond(err(v.greeks.vega, &rf.vega), GREEK_ERR_ABS) / f(&vega_scale));
+            worst[5] = worst[5]
+                .max(beyond(err(v.greeks.theta, &rf.theta), GREEK_ERR_ABS) / f(&theta_scale));
+        }
+    }
+    (worst, overflow)
+}
+
 /// Milestone 3 record, measured at commit `6adf034` with 1,000,000 samples per domain
 /// (`make precision` there reproduces it); the decimal candidates no longer exist.
 const COMPARISON: &str = "
@@ -310,6 +367,68 @@ fn test_precision_report() {
         cr.unwrap_or(0.0)
     )
     .unwrap();
+    let (w, overflow) = bsm_errors(n);
+    let b = |x: Fixed| ratio(&to_ref(x.raw()));
+    write!(
+        s,
+        "\n## Black-Scholes-Merton\n\n\
+         `price_and_greeks` against the 256-bit reference (`common::bsm_ref`, the exact formulas, \
+         including the true value at tiny `T`) on {n} points of the whole supported domain \
+         (`common::bsm_sample`: every range, `T` from `0` and a few ulps to 30 years, `q > 0`, \
+         `q < 0` and `q = 0`). Each envelope is `REL × scale + ABS`; the table gives the \
+         largest `(|error| − ABS) / scale` against `REL`.\n\n\
+         | Output | Scale | Max | Envelope `REL` | `ABS` |\n\
+         | --- | --- | ---: | ---: | ---: |\n\
+         | price | `max(S, K)` | {:.3e} | {:.3e} | 64 ulps |\n\
+         | delta | 1 | {:.3e} | {:.3e} (absolute) | |\n\
+         | gamma | `Dq / (S σ√T)` | {:.3e} | {:.3e} | 64 ulps |\n\
+         | vega | `S Dq √T` | {:.3e} | {:.3e} | 64 ulps |\n\
+         | theta | `S Dq σ / √T + abs(r) K Dr + abs(q) S Dq` | {:.3e} | {:.3e} | 64 ulps |\n\n\
+         Question 4 (carry scale): the price error beyond 64 ulps divided by `max(S Dq, K Dr)` \
+         instead of `max(S, K)` reaches {:.3e}, because `S Dq` falls to `e^{{−15}} S`; \
+         `max(S, K)` is the scale that holds over the carry range. `Overflow`: {overflow} of {n} \
+         (none is reachable over the supported domain).\n",
+        w[0],
+        b(PRICE_ERR_REL),
+        w[2],
+        b(DELTA_ERR),
+        w[3],
+        b(GAMMA_ERR_REL),
+        w[4],
+        b(VEGA_ERR_REL),
+        w[5],
+        b(THETA_ERR_REL),
+        w[1]
+    )
+    .unwrap();
+    write!(
+        s,
+        "\n### Against OptionStratLib 0.23\n\n\
+         Garman-Kohlhagen with the foreign rate `q` (`common::oracle`), on {} exact decimal \
+         points per carry set with `T` from one day; gamma, vega and theta only where \
+         `abs(d1) <= 4.8` (beyond, the oracle's `n` is zero). The columns are the largest \
+         difference over the oracle tolerance (`<= 1` passes): price `10^-9 × max(S, K)`, delta \
+         `10^-9`, the other greeks `10^-9 × scale + 10^-18`.\n\n\
+         | Carry | price | delta | gamma | vega | theta | `q = 0` price vs `black_scholes` |\n\
+         | --- | ---: | ---: | ---: | ---: | ---: | ---: |\n",
+        n.min(20_000)
+    )
+    .unwrap();
+    for (carry, label) in [(1, "`q > 0`"), (-1, "`q < 0`"), (0, "`q = 0`")] {
+        let st = oracle_stats(n.min(20_000), carry);
+        let r = st.ratio;
+        let last = if carry == 0 {
+            format!("{:.3e}", r[5])
+        } else {
+            String::new()
+        };
+        writeln!(
+            s,
+            "| {label} | {:.3e} | {:.3e} | {:.3e} | {:.3e} | {:.3e} | {last} |",
+            r[0], r[1], r[2], r[3], r[4]
+        )
+        .unwrap();
+    }
     s.push_str(COMPARISON);
     s.push_str("\nRun `make precision` to regenerate this file.\n");
     println!("{s}");

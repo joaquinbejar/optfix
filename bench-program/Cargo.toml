@@ -14,7 +14,7 @@ name = "optfix_bench_program"
 
 [dependencies]
 bytemuck = { workspace = true }
-optfix = { workspace = true }
+optfix = { workspace = true, features = ["bench-internals"] }
 pinocchio = { workspace = true }
 
 [lints]

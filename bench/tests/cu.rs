@@ -21,7 +21,10 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use litesvm::LiteSVM;
-use optfix::{Fixed, PricingError, Rounding};
+use optfix::{
+    price_and_greeks, EuropeanOption, Fixed, Greeks, MarketInputs, OptionKind, Priced,
+    PricingError, Rate, Rounding, Spot, Strike, Volatility, Years,
+};
 use solana_address::Address;
 use solana_instruction::Instruction;
 use solana_keypair::Keypair;
@@ -42,6 +45,9 @@ enum Ix {
     NormCdf = 6,
     NormPdf = 7,
     MulShr = 8,
+    Price = 9,
+    PriceAndGreeks = 10,
+    Baseline = 11,
 }
 
 /// Status byte plus one 16-byte little-endian value.
@@ -266,6 +272,19 @@ impl Vm {
 
     /// Runs one instruction; returns (CU consumed, return data padded to `RESULT_LEN`).
     fn run(&mut self, data: &[u8]) -> (u64, [u8; RESULT_LEN]) {
+        let (cu, data) = self.run_raw(data);
+        let mut out = [0u8; RESULT_LEN];
+        assert!(
+            data.len() <= RESULT_LEN,
+            "return data too long: {}",
+            data.len()
+        );
+        out[..data.len()].copy_from_slice(&data);
+        (cu, out)
+    }
+
+    /// Runs one instruction; returns (CU consumed, return data).
+    fn run_raw(&mut self, data: &[u8]) -> (u64, Vec<u8>) {
         let ix = Instruction::new_with_bytes(PROGRAM_ID, data, vec![]);
         let tx = Transaction::new_signed_with_payer(
             &[ix],
@@ -279,11 +298,7 @@ impl Vm {
             .unwrap_or_else(|e| panic!("transaction failed: {:?}\n{:#?}", e.err, e.meta.logs));
         // A fresh blockhash keeps otherwise identical transactions distinct.
         self.svm.expire_blockhash();
-        let mut out = [0u8; RESULT_LEN];
-        let n = meta.return_data.data.len();
-        assert!(n <= RESULT_LEN, "return data too long: {n}");
-        out[..n].copy_from_slice(&meta.return_data.data);
-        (meta.compute_units_consumed, out)
+        (meta.compute_units_consumed, meta.return_data.data)
     }
 
     /// Runs `row` on `(a, b)` and checks the on-chain result against the host result.
@@ -303,6 +318,127 @@ impl Vm {
 struct Measurement {
     noop: Vec<u64>,
     rows: Vec<Vec<u64>>,
+    bsm: Vec<Vec<u64>>,
+}
+
+/// The Black-Scholes rows: instruction, name, host function.
+type BsmFn = fn(&EuropeanOption, &MarketInputs) -> Result<Priced, PricingError>;
+
+fn price_only(o: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingError> {
+    Ok(Priced {
+        price: optfix::price(o, m)?,
+        greeks: Greeks {
+            delta: Fixed::ZERO,
+            gamma: Fixed::ZERO,
+            vega: Fixed::ZERO,
+            theta: Fixed::ZERO,
+        },
+    })
+}
+
+/// The Black-Scholes rows: instruction, name, host function, and whether the strikes are near
+/// the money (`|S − K| < K / 256`, the other form of `ln(S/K) / (σ√T)`).
+const BSM_ROWS: [(Ix, &str, BsmFn, bool); 5] = [
+    (Ix::Price, "Price", price_only, false),
+    (
+        Ix::PriceAndGreeks,
+        "PriceAndGreeks",
+        price_and_greeks,
+        false,
+    ),
+    (
+        Ix::Baseline,
+        "Baseline (price, then each greek)",
+        optfix::baseline::separately,
+        false,
+    ),
+    (Ix::Price, "Price, near the money", price_only, true),
+    (
+        Ix::PriceAndGreeks,
+        "PriceAndGreeks, near the money",
+        price_and_greeks,
+        true,
+    ),
+];
+
+/// One Black-Scholes input over the supported domain: `S` log-uniform in `[10^-6, 10^9]`,
+/// `S/K` log-uniform in `[0.05, 20]`, `T` uniform in `(0, 30]`, `σ` log-uniform in `[0.005, 5]`,
+/// `r` and `q` uniform in `[−0.1, 0.5]`, call or put.
+fn bsm_input(rng: &mut Rng, near: bool) -> (EuropeanOption, MarketInputs) {
+    let mut u = || (rng.next() >> 11) as f64 / (1u64 << 53) as f64;
+    let s = 10f64.powf(-6.0 + 15.0 * u());
+    let m = if near {
+        // |S − K| < K / 256: S/K within about ±0.39%.
+        1.0 + (u() - 0.5) * 0.0078
+    } else {
+        10f64.powf((0.05f64).log10() + (400f64).log10() * u())
+    };
+    let k = (s * m).clamp(1.01e-6, 0.99e9);
+    let k = k.clamp(s / 19.9, s * 19.9);
+    let t = 30.0 * u().max(1e-9);
+    let sigma = 10f64.powf((0.005f64).log10() + 3.0 * u()).min(5.0);
+    let (r, q) = (-0.1 + 0.6 * u(), -0.1 + 0.6 * u());
+    let fx = |v: f64| Fixed::from_raw((v * ONE) as i128);
+    let call = u() < 0.5;
+    (
+        EuropeanOption {
+            kind: if call {
+                OptionKind::Call
+            } else {
+                OptionKind::Put
+            },
+            strike: Strike::try_new(fx(k)).unwrap(),
+            expiry: Years::try_new(fx(t)).unwrap(),
+        },
+        MarketInputs {
+            spot: Spot::try_new(fx(s)).unwrap(),
+            vol: Volatility::try_new(fx(sigma)).unwrap(),
+            rate: Rate::try_new(fx(r)).unwrap(),
+            carry: Rate::try_new(fx(q)).unwrap(),
+        },
+    )
+}
+
+/// Instruction data of a Black-Scholes row: tag, kind byte, six 16-byte values.
+fn bsm_data(ix: Ix, o: &EuropeanOption, m: &MarketInputs) -> Vec<u8> {
+    let mut d = vec![ix as u8, o.kind as u8];
+    for v in [
+        m.spot.get(),
+        o.strike.get(),
+        o.expiry.get(),
+        m.vol.get(),
+        m.rate.get(),
+        m.carry.get(),
+    ] {
+        d.extend_from_slice(&v.to_bytes().0);
+    }
+    d
+}
+
+/// Expected return data: `Price` as one value, the others as status plus five values.
+fn bsm_expected(ix: Ix, r: Result<Priced, PricingError>) -> Vec<u8> {
+    if let Ix::Price = ix {
+        return encode_result(r.map(|p| p.price.get())).to_vec();
+    }
+    let mut out = vec![0u8; 81];
+    match r {
+        Ok(p) => {
+            for (i, v) in [
+                p.price.get(),
+                p.greeks.delta,
+                p.greeks.gamma,
+                p.greeks.vega,
+                p.greeks.theta,
+            ]
+            .iter()
+            .enumerate()
+            {
+                out[1 + 16 * i..17 + 16 * i].copy_from_slice(&v.raw().to_le_bytes());
+            }
+        }
+        Err(e) => out[0] = 1 + e as u8,
+    }
+    out
 }
 
 fn measure() -> Measurement {
@@ -350,7 +486,31 @@ fn measure() -> Measurement {
                 .collect()
         })
         .collect();
-    Measurement { noop, rows }
+    let mut rng = Rng(SEED ^ 0xB5);
+    let far: Vec<_> = (0..RANDOM_INPUTS)
+        .map(|_| bsm_input(&mut rng, false))
+        .collect();
+    let near: Vec<_> = (0..RANDOM_INPUTS)
+        .map(|_| bsm_input(&mut rng, true))
+        .collect();
+    let bsm = BSM_ROWS
+        .iter()
+        .map(|&(ix, name, f, is_near)| {
+            if is_near { &near } else { &far }
+                .iter()
+                .map(|(o, m)| {
+                    let (cu, out) = vm.run_raw(&bsm_data(ix, o, m));
+                    assert_eq!(
+                        out,
+                        bsm_expected(ix, f(o, m)),
+                        "{name} on-chain differs from host at {o:?} {m:?}"
+                    );
+                    cu
+                })
+                .collect()
+        })
+        .collect();
+    Measurement { noop, rows, bsm }
 }
 
 fn stats(v: &[u64]) -> (u64, u64, u64) {
@@ -397,8 +557,11 @@ fn table(m: &Measurement) -> String {
          the absolute value); `exp` arguments uniform in `[−42, 43]`; `ln` arguments \
          log-uniform in `[10^-6, 10^9]`; `norm_cdf` and `norm_pdf` arguments uniform in \
          `[−9.25, 9.25]`; `MulShr` (`wide::mul_shr`, shift 64, rounding down) two `u128` \
-         with log-uniform magnitudes over the whole range. Every on-chain result \
-         equals the host result bit for bit, and two runs in fresh VMs give identical \
+         with log-uniform magnitudes over the whole range; the Black-Scholes rows `S` \
+         log-uniform in `[10^-6, 10^9]`, `S/K` log-uniform in `[0.05, 20]`, `T` uniform in \
+         `(0, 30]`, `σ` log-uniform in `[0.005, 5]`, `r` and `q` uniform in `[−0.1, 0.5]`, \
+         calls and puts (the \"near the money\" rows take `S/K` within `±0.39%` instead: the \
+         other form of `d1`'s moneyness term). Every on-chain result equals the host result bit for bit, and two runs in fresh VMs give identical \
          numbers. Release profile: `lto = \"fat\"`, `codegen-units = 1`; a program built with \
          another profile will measure differently."
     )
@@ -408,7 +571,8 @@ fn table(m: &Measurement) -> String {
         s,
         "\"Net\" is the median minus the `Noop` median ({noop_med} CU), which covers the \
          entrypoint, decoding one `FixedBytes` argument and return data. `MulDown` and \
-         `DivDown` decode two arguments and `MulShr` two plus a shift and a rounding, so \
+         `DivDown` decode two arguments, `MulShr` two plus a shift and a rounding, and the \
+         Black-Scholes rows a kind byte and six, so \
          their net figures still include the extra decoding; the other rows decode one, like \
          `Noop`."
     )
@@ -421,6 +585,11 @@ fn table(m: &Measurement) -> String {
         let (lo, med, hi) = stats(cu);
         let net = med.saturating_sub(noop_med);
         writeln!(s, "| `{}` | {lo} | {med} | {hi} | {net} |", row.name).unwrap();
+    }
+    for ((_, name, _, _), cu) in BSM_ROWS.iter().zip(&m.bsm) {
+        let (lo, med, hi) = stats(cu);
+        let net = med.saturating_sub(noop_med);
+        writeln!(s, "| `{name}` | {lo} | {med} | {hi} | {net} |").unwrap();
     }
     let agave = std::env::var("OPTFIX_AGAVE").unwrap_or_else(|_| "unknown".into());
     writeln!(s).unwrap();
@@ -453,6 +622,10 @@ fn test_cu_table_is_deterministic_and_matches_host() {
     let second = measure();
     assert_eq!(first.noop, second.noop, "Noop CU differs between runs");
     assert_eq!(first.rows, second.rows, "CU differs between runs");
+    assert_eq!(
+        first.bsm, second.bsm,
+        "Black-Scholes CU differs between runs"
+    );
     let t = table(&first);
     println!("{t}");
     if let Ok(path) = std::env::var("OPTFIX_BENCH_OUT") {
