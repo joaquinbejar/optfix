@@ -132,6 +132,9 @@ pub enum PricingError {
 `i128` is 16-aligned on x86_64 hosts since Rust 1.77 but account data is only guaranteed
 8-aligned, so milestone 1 checks `align_of::<Fixed>()` on SBF and on the host and, if they
 differ, provides a `FixedBytes([u8; 16])` storage form that downstream accounts use.
+Measured in milestone 1: `align_of::<i128>()` is 8 on `sbpf-solana-solana` and
+`sbpfv3-solana-solana` (platform-tools v1.57, rustc 1.95.0) and 16 on `aarch64-apple-darwin`
+(rustc 1.99.1), so `FixedBytes` exists (alignment 1, little-endian).
 
 `Fixed` exposes `raw()` / `from_raw()` for zero-copy storage (every `i128` is a valid
 `Fixed`). The newtypes do not: reading one from storage goes through `try_from_fixed`, which
@@ -416,4 +419,23 @@ published on crates.io, so the oracle is a crates.io dev-dependency, not a git o
 5. Year basis: 365 days (proposed) or 365.25?
 6. Decided (latest-stable rule): OptionStratLib 0.23 from crates.io as the oracle.
 7. Decided: Pinocchio 0.11, like the other three repos (exception recorded above).
-8. Proposal (from review, pending your approval): `Fixed::raw`/`from_raw` yes; newtypes only via `try_from_fixed`.
+8. Decided (2026-10-29): `Fixed::raw`/`from_raw` yes; newtypes only via their validating
+   constructor, named `try_new` as `rules/global_rules.md` requires (the plan's `try_from_fixed`).
+
+## 7. Decision log
+
+Milestone 1 (2026-10-29):
+
+- `FixedBytes([u8; 16])` added: SBF and host alignments of `i128` differ (section 2).
+- Quantity constructors are `try_new(Fixed) -> Result<Self, PricingError>` (the plan's
+  `try_from_fixed`), with `MIN` / `MAX` constants equal to the domain table; there is no `Default`
+  on the newtypes. `Price` accepts `[0, Fixed::MAX]`. The carry `q` uses `Rate` and its range.
+- 256-bit division is Knuth's algorithm D with 64-bit digits (divisor normalized, two quotient
+  digits, at most two corrections each); `sqrt` is integer Newton from a power of two above the
+  root. Every limb operation is `checked_*`, as the rules require; milestone 2 measures what that
+  costs on SBF.
+- One `#[allow(clippy::arithmetic_side_effects)]` in production code: `Fixed::from_int`, a `const
+  fn` returning `Self`, where `|n × 10^18| < 2^123` cannot overflow (proof in the comment, extremes
+  tested).
+- Internal invariants that the math excludes (algorithm D's correction bound, the Newton cap)
+  return `PricingError::Overflow` rather than adding an `InvariantViolated` variant.
