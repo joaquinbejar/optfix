@@ -1,6 +1,6 @@
 # optfix: plan
 
-Status: draft for review. Nothing here is implemented yet.
+Status: approved by Joaquin on 2026-10-29. Changes after approval are recorded as decisions.
 
 ## 1. Goal and non-goals
 
@@ -18,13 +18,13 @@ off-chain Rust:
 
 Scope of v0.1: `exp`, `ln`, `sqrt`, the standard normal CDF `N(x)` and PDF `n(x)`, Black-Scholes
 price and greeks (delta, gamma, vega, theta) for European calls and puts with a continuous
-risk-free rate, and implied volatility.
+risk-free rate and a continuous carry `q` (Black-Scholes-Merton; oracle: OptionStratLib's
+Garman-Kohlhagen), and implied volatility.
 
 ### Non-goals (v0.1)
 
 - American options, barriers, binary payoffs, stochastic or local volatility.
-- Dividends or a continuous carry `q` (left as an open question: metals have a lease rate, see
-  section 6).
+- Discrete dividends (a continuous carry `q` is in scope, see below).
 - Volatility surfaces or smile interpolation (consumers pass one `Volatility` per series).
 - A Solana program that anyone deploys: `bench-program/` exists only to measure CU.
 - Arbitrary precision or `f64` interop in the public API (`f64` appears only in tests and an
@@ -104,7 +104,8 @@ pub struct EuropeanOption {
     pub expiry: Years,     // time remaining, not an absolute timestamp
 }
 
-pub struct MarketInputs { pub spot: Spot, pub vol: Volatility, pub rate: Rate }
+pub struct MarketInputs { pub spot: Spot, pub vol: Volatility, pub rate: Rate, pub carry: Rate }
+// carry: continuous yield q (Black-Scholes-Merton); the lease rate for XAU/XAG, 0 for none.
 
 pub struct Greeks {
     pub delta: Fixed,   // dV/dS, in [-1, 1]
@@ -191,7 +192,7 @@ The table is the single source of the ranges: `Spot` and `Strike` constructors c
 `price`, `price_and_greeks` and `implied_vol`, which return `DomainError` (tested). Constructors
 reject anything outside the **supported domain**, and the supported domain is
 exactly what the tests cover (codex review: an envelope measured on a smaller grid is not a
-bound for a wider accepted domain). Proposal, to confirm with question 1:
+bound for a wider accepted domain). Accepted 2026-10-29:
 
 | Input | Supported range |
 | --- | --- |
@@ -389,7 +390,7 @@ whenever it is added or touched.
 
 | Crate | Latest stable | Requirement |
 | --- | --- | --- |
-| `pinocchio` | 0.12.0 | `0.12` |
+| `pinocchio` | 0.12.0 (0.11.2 used) | `0.11`, decided exception below |
 | `bytemuck` | 1.25.2 | `1.25` |
 | `proptest` (dev) | 1.12.0 | `1.12` |
 | `litesvm` (dev) | 0.18.1 | `0.18` |
@@ -398,22 +399,21 @@ whenever it is added or touched.
 | `optionstratlib` (dev, oracle) | 0.23.0 | `0.23` |
 | `libm` (dev, reference) | 0.2.16 | `0.2` |
 
-optfix needs only `pinocchio` itself (in `bench-program/`), so it is unaffected by the
-`pinocchio-token` conflict recorded in the other three plans. OptionStratLib 0.23.0 is
+optfix needs only `pinocchio` itself (in `bench-program/`); by decision (Joaquin,
+2026-10-29) it uses the same Pinocchio 0.11 generation as the other three repos and matchbook,
+the documented exception to the latest-stable rule (see the other plans for the
+`pinocchio-token` conflict that forces it). OptionStratLib 0.23.0 is
 published on crates.io, so the oracle is a crates.io dev-dependency, not a git or path one.
 
 ## 6. Open questions
 
-1. Precision target: what is "good enough" for metalbook margin and marks? Proposal: price
-   absolute error below `10^-9 × S`, delta below `10^-9`. This drives polynomial degrees and
-   so CU.
+1. Decided (2026-10-29): price error `<= 10^-9 × max(S, K) + ERR_ABS`, delta below `10^-9`;
+   supported domain table accepted as proposed.
 2. CU budget: is there a target for `price_and_greeks` (for example 15,000 CU) that should
    fail the bench if exceeded?
 3. Decision weights for milestone 3: CU only once errors meet the target, or a combined score?
-4. Carry rate `q`: gold and silver have a lease rate and futures-implied carry. Add
-   Black-Scholes-Merton `q` in v0.1 (cheap now, breaking later) or leave it to v0.2?
-   OptionStratLib already has Garman-Kohlhagen greeks, which would serve as the oracle.
+4. Decided (2026-10-29): continuous carry `q` in v0.1.
 5. Year basis: 365 days (proposed) or 365.25?
 6. Decided (latest-stable rule): OptionStratLib 0.23 from crates.io as the oracle.
-7. Decided (latest-stable rule): Pinocchio 0.12.
+7. Decided: Pinocchio 0.11, like the other three repos (exception recorded above).
 8. Proposal (from review, pending your approval): `Fixed::raw`/`from_raw` yes; newtypes only via `try_from_fixed`.
