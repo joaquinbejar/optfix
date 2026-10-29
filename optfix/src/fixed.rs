@@ -27,8 +27,11 @@ pub enum Rounding {
 /// Signed fixed-point number with value `raw / 2^64` (binary Q64.64).
 ///
 /// Resolution (one ulp) is `2^-64`, about `5.4 × 10^-20`; the range is about `±9.2 × 10^18`.
-/// Decimal values such as `0.1` are not exact: convert them with [`Fixed::from_ratio`] and an
-/// explicit rounding, and back to token units with [`Fixed::to_scaled`]. `Fixed` does not
+/// Decimal values such as `0.1` are not exact, so the token-amount boundary takes a direction
+/// both ways: [`Fixed::from_scaled`] converts an amount in a token's smallest unit in, and
+/// [`Fixed::to_scaled`] converts back; choose each rounding toward the protocol at the call
+/// site. For `decimals <= 19` one ulp is below one token unit (`10^19 × 2^-64 < 1`), so a round
+/// trip that rounds down one way and up the other returns the amount exactly. `Fixed` does not
 /// implement `Add`, `Mul` and the other operators: an operator can neither take a rounding
 /// direction nor return an error. Every operation is checked and returns
 /// [`PricingError::Overflow`] instead of wrapping.
@@ -81,6 +84,22 @@ impl Fixed {
     pub fn from_ratio(num: i128, den: i128, r: Rounding) -> Result<Self, PricingError> {
         // num / den = (num × 2^64 / den) / 2^64.
         scaled_quotient(num, den, r)
+    }
+
+    /// `amount / 10^decimals`, rounded in direction `r`: converts an amount in a token's
+    /// smallest unit (for example `decimals = 6` for USDC). Inexact unless the amount is a
+    /// multiple of `5^decimals`, which is why the direction is explicit.
+    ///
+    /// # Errors
+    ///
+    /// `DomainError` if `decimals > 38` (`10^decimals` does not fit an `i128`); `Overflow` if
+    /// the result does not fit.
+    #[must_use = "the result carries a possible error"]
+    pub fn from_scaled(amount: i128, decimals: u8, r: Rounding) -> Result<Self, PricingError> {
+        if decimals > 38 {
+            return Err(PricingError::DomainError);
+        }
+        scaled_quotient(amount, pow10(decimals)?, r)
     }
 
     /// `self × 10^decimals` as an integer, rounded in direction `r`: converts to an amount in
@@ -488,6 +507,35 @@ mod tests {
         assert_eq!(
             fx(1).to_scaled(40, Rounding::Up).unwrap(),
             542_101_086_242_752_217_004
+        );
+    }
+
+    #[test]
+    fn test_from_scaled_rounds_toward_infinities() {
+        // 1.25 USDC is exact; 0.1 is not: floor and ceiling of 2^64 / 10.
+        assert_eq!(
+            Fixed::from_scaled(1_250_000, 6, Rounding::Down).unwrap(),
+            fx(SCALE + SCALE / 4)
+        );
+        assert_eq!(
+            Fixed::from_scaled(1, 1, Rounding::Down).unwrap(),
+            fx(1_844_674_407_370_955_161)
+        );
+        assert_eq!(
+            Fixed::from_scaled(1, 1, Rounding::Up).unwrap(),
+            fx(1_844_674_407_370_955_162)
+        );
+        assert_eq!(
+            Fixed::from_scaled(-1, 1, Rounding::Down).unwrap(),
+            fx(-1_844_674_407_370_955_162)
+        );
+        assert_eq!(
+            Fixed::from_scaled(1, 39, Rounding::Down),
+            Err(PricingError::DomainError)
+        );
+        assert_eq!(
+            Fixed::from_scaled(i128::MAX, 0, Rounding::Down),
+            Err(PricingError::Overflow)
         );
     }
 

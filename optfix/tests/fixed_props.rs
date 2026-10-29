@@ -367,6 +367,44 @@ proptest! {
     }
 
     #[test]
+    fn prop_from_scaled_brackets_exact_value(amount in raw_value(), decimals in 0u8..=40) {
+        let down = raw(Fixed::from_scaled(amount, decimals, Rounding::Down));
+        let up = raw(Fixed::from_scaled(amount, decimals, Rounding::Up));
+        if decimals > 38 {
+            prop_assert_eq!(down, Err(PricingError::DomainError));
+            prop_assert_eq!(up, Err(PricingError::DomainError));
+        } else {
+            // amount / 10^d = (amount × 2^64 / 10^d) / 2^64.
+            let n = Big::int(amount).mul(&Big::int(SCALE));
+            let d = Big::pow10(u32::from(decimals));
+            check_rounded(&n, &d, Rounding::Down, down)?;
+            check_rounded(&n, &d, Rounding::Up, up)?;
+            check_gap(&n, &d, down, up)?;
+        }
+    }
+
+    #[test]
+    fn prop_token_round_trip_is_exact_with_opposite_roundings(
+        amount in prop_oneof![
+            3 => 0i128..=u64::MAX as i128,
+            1 => any::<i64>().prop_map(i128::from),
+        ],
+        decimals in 0u8..=19,
+    ) {
+        // One ulp is below one token unit for decimals <= 19, so down-then-up and
+        // up-then-down both return the amount.
+        for (into, back) in [(Rounding::Down, Rounding::Up), (Rounding::Up, Rounding::Down)] {
+            let x = Fixed::from_scaled(amount, decimals, into);
+            // Amounts too large for the representation overflow on the way in.
+            if let Ok(x) = x {
+                prop_assert_eq!(x.to_scaled(decimals, back), Ok(amount));
+            } else {
+                prop_assert_eq!(x, Err(PricingError::Overflow));
+            }
+        }
+    }
+
+    #[test]
     fn prop_add_sub_neg_are_exact_or_overflow(a in raw_value(), b in raw_value()) {
         let (x, y) = (Fixed::from_raw(a), Fixed::from_raw(b));
         prop_assert_eq!(raw(x.checked_add(y)), a.checked_add(b).ok_or(PricingError::Overflow));

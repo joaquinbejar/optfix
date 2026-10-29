@@ -53,6 +53,7 @@ impl Fixed {
     pub const ZERO: Self; pub const ONE: Self; pub const MAX: Self; pub const MIN: Self;
     pub const fn from_int(n: i64) -> Self;                                  // exact
     pub fn from_ratio(num: i128, den: i128, r: Rounding) -> Result<Self, PricingError>;
+    pub fn from_scaled(amount: i128, decimals: u8, r: Rounding) -> Result<Self, PricingError>;
     pub fn to_scaled(self, decimals: u8, r: Rounding) -> Result<i128, PricingError>; // e.g. USDC 6
     pub fn checked_add(self, o: Self) -> Result<Self, PricingError>;        // exact or Overflow
     pub fn checked_sub(self, o: Self) -> Result<Self, PricingError>;
@@ -65,6 +66,13 @@ impl Fixed {
     pub fn sqrt_up(self) -> Result<Self, PricingError>;
 }
 ```
+
+Token-amount boundary (Q64.64, milestone 3): `10^-d` is not a dyadic fraction, so amounts are
+not exact in `Fixed`. `from_scaled(amount, d, r)` converts in and `to_scaled(d, r)` converts
+out, each with an explicit direction that the caller chooses toward the protocol. For
+`d <= 19` one ulp is below one token unit (`10^19 × 2^-64 ≈ 0.54`), so rounding down one way
+and up the other returns the amount exactly (property-tested); `from_scaled` accepts
+`d <= 38` and `to_scaled` `d <= 76`.
 
 `Fixed` deliberately does not implement `Add`, `Mul`, etc.: an operator cannot carry a rounding
 direction or return an error, and a panic on overflow is not acceptable on-chain.
@@ -217,6 +225,11 @@ bound for a wider accepted domain). Accepted 2026-10-29:
 | `Volatility` | `[0.005, 5]` |
 | `Rate` | `[-0.1, 0.5]`, for both `rate` (`r`) and `carry` (`q`); so `e^{−qT}` is in `[e^{−15}, e^{3}]` and the forward factor `e^{(r−q)T}` in `[e^{−18}, e^{18}]` |
 | `Years` | `[0, 30]`; the degenerate branch of 4.5 applies when `σ√T` is below its threshold (which covers `T = 0` and very small `T`) |
+
+Range: `Fixed::MAX` is about `9.2 × 10^18` (Q64.64). The largest values the table produces
+fit with room to spare: `S` and `K` up to `10^9`, the forward `S e^{(r−q)T}` up to
+`10^9 × e^{18} ≈ 6.6 × 10^16`, prices and `S Dq` up to `10^9 × e^3 ≈ 2 × 10^10`; milestone 5
+checks the greeks' intermediates (gamma's `1 / (S σ √T)`) against it explicitly.
 
 Error envelopes are input-dependent formulas, not one constant: for price,
 `|err| <= ERR_REL × max(S, K) + ERR_ABS`, with both constants fixed explicitly in milestone 5
@@ -491,6 +504,14 @@ is seeded from LiteSVM's own v0.18.1 lock: LiteSVM's `^4.3` requirements now sel
 `=`, so the build fails unless the whole family stays at 4.3.2. Revisit when LiteSVM releases
 against Agave 4.4.
 
+## Follow-ups (not in a milestone yet)
+
+- **Cheaper U256 division.** `div_*`, `from_ratio`, `from_scaled` and `sqrt` still divide
+  with `u128` operations, which lower to `__udivti3` (about 580 CU per call on SBF). A
+  32-bit-digit 128/64 step measured about 135 CU in milestone 3, so a division kernel on
+  native `u64` digits should cut `DivDown` (1,597 CU) and `SqrtDown` (10,703 CU) severalfold.
+  `MulDown` no longer divides since the switch to Q64.64 (284 CU).
+
 ## 6. Open questions
 
 1. Decided (2026-10-29): price error `<= 10^-9 × max(S, K) + ERR_ABS`, delta below `10^-9`;
@@ -618,4 +639,4 @@ Milestone 3 (2026-10-29):
   `num-bigint` series reference in the property tests, so CI needs no Python.
 - **The same U256 findings apply to `div_*` and `sqrt`**, which still use `u128` division in
   algorithm D; a 32-bit-digit division (as in the measured atanh variant, about 135 CU per
-  128/64 step) is a later optimization, not part of this decision.
+  128/64 step) is a later optimization (Follow-ups), not part of this decision.
