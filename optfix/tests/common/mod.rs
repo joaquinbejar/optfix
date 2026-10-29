@@ -6,6 +6,7 @@
 
 #![allow(dead_code)]
 
+pub mod iv;
 pub mod oracle;
 
 use std::sync::OnceLock;

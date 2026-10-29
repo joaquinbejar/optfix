@@ -22,8 +22,8 @@ use std::path::PathBuf;
 
 use litesvm::LiteSVM;
 use optfix::{
-    price_and_greeks, EuropeanOption, Fixed, Greeks, MarketInputs, OptionKind, Priced,
-    PricingError, Rate, Rounding, Spot, Strike, Volatility, Years,
+    implied_vol, price_and_greeks, EuropeanOption, Fixed, Greeks, IvInputs, MarketInputs,
+    OptionKind, Price, Priced, PricingError, Rate, Rounding, Spot, Strike, Volatility, Years,
 };
 use solana_address::Address;
 use solana_instruction::Instruction;
@@ -48,6 +48,8 @@ enum Ix {
     Price = 9,
     PriceAndGreeks = 10,
     Baseline = 11,
+    ImpliedVol = 12,
+    ImpliedVolAllIterations = 13,
 }
 
 /// Status byte plus one 16-byte little-endian value.
@@ -319,6 +321,7 @@ struct Measurement {
     noop: Vec<u64>,
     rows: Vec<Vec<u64>>,
     bsm: Vec<Vec<u64>>,
+    iv: Vec<Vec<u64>>,
 }
 
 /// The Black-Scholes rows: instruction, name, host function.
@@ -441,6 +444,67 @@ fn bsm_expected(ix: Ix, r: Result<Priced, PricingError>) -> Vec<u8> {
     out
 }
 
+/// An implied-volatility solver: `implied_vol` or the bench-only variant without early exit.
+type IvFn = fn(&EuropeanOption, &IvInputs, Price) -> Result<Volatility, PricingError>;
+
+/// The implied-volatility rows: instruction, name, host function, near the money.
+const IV_ROWS: [(Ix, &str, IvFn, bool); 4] = [
+    (Ix::ImpliedVol, "ImpliedVol", implied_vol, false),
+    (
+        Ix::ImpliedVolAllIterations,
+        "ImpliedVol, all iterations",
+        optfix::iv_bench::all_iterations,
+        false,
+    ),
+    (
+        Ix::ImpliedVol,
+        "ImpliedVol, near the money",
+        implied_vol,
+        true,
+    ),
+    (
+        Ix::ImpliedVolAllIterations,
+        "ImpliedVol, all iterations, near the money",
+        optfix::iv_bench::all_iterations,
+        true,
+    ),
+];
+
+/// `RANDOM_INPUTS` targets `price(σ)` of Black-Scholes inputs (`bsm_input`) whose implied
+/// volatility `implied_vol` answers.
+fn iv_inputs(rng: &mut Rng, near: bool) -> Vec<(EuropeanOption, IvInputs, Price)> {
+    let mut out = Vec::new();
+    while out.len() < RANDOM_INPUTS {
+        let (o, m) = bsm_input(rng, near);
+        let target = optfix::price(&o, &m).unwrap();
+        let im = IvInputs {
+            spot: m.spot,
+            rate: m.rate,
+            carry: m.carry,
+        };
+        if implied_vol(&o, &im, target).is_ok() {
+            out.push((o, im, target));
+        }
+    }
+    out
+}
+
+/// Instruction data of an implied-volatility row: tag, kind byte, `S, K, T, target, r, q`.
+fn iv_data(ix: Ix, o: &EuropeanOption, m: &IvInputs, target: Price) -> Vec<u8> {
+    let mut d = vec![ix as u8, o.kind as u8];
+    for v in [
+        m.spot.get(),
+        o.strike.get(),
+        o.expiry.get(),
+        target.get(),
+        m.rate.get(),
+        m.carry.get(),
+    ] {
+        d.extend_from_slice(&v.to_bytes().0);
+    }
+    d
+}
+
 fn measure() -> Measurement {
     let mut vm = Vm::new();
     let mut rng = Rng(SEED);
@@ -510,7 +574,32 @@ fn measure() -> Measurement {
                 .collect()
         })
         .collect();
-    Measurement { noop, rows, bsm }
+    let mut rng = Rng(SEED ^ 0x1F);
+    let iv_far = iv_inputs(&mut rng, false);
+    let iv_near = iv_inputs(&mut rng, true);
+    let iv = IV_ROWS
+        .iter()
+        .map(|&(ix, name, f, is_near)| {
+            if is_near { &iv_near } else { &iv_far }
+                .iter()
+                .map(|(o, m, target)| {
+                    let (cu, out) = vm.run_raw(&iv_data(ix, o, m, *target));
+                    assert_eq!(
+                        out.as_slice(),
+                        encode_result(f(o, m, *target).map(Volatility::get)).as_slice(),
+                        "{name} on-chain differs from host at {o:?} {m:?} {target:?}"
+                    );
+                    cu
+                })
+                .collect()
+        })
+        .collect();
+    Measurement {
+        noop,
+        rows,
+        bsm,
+        iv,
+    }
 }
 
 fn stats(v: &[u64]) -> (u64, u64, u64) {
@@ -561,7 +650,10 @@ fn table(m: &Measurement) -> String {
          log-uniform in `[10^-6, 10^9]`, `S/K` log-uniform in `[0.05, 20]`, `T` uniform in \
          `(0, 30]`, `σ` log-uniform in `[0.005, 5]`, `r` and `q` uniform in `[−0.1, 0.5]`, \
          calls and puts (the \"near the money\" rows take `S/K` within `±0.39%` instead: the \
-         other form of `d1`'s moneyness term). Every on-chain result equals the host result bit for bit, and two runs in fresh VMs give identical \
+         other form of `d1`'s moneyness term); the implied-volatility rows the targets \
+         `price(σ)` of such inputs, drawn until {RANDOM_INPUTS} are answered (`implied_vol` \
+         returns a value), and \"all iterations\" takes all `IV_MAX_ITERATIONS` steps (the \
+         bench-only `iv_bench::all_iterations`), its worst case. Every on-chain result equals the host result bit for bit, and two runs in fresh VMs give identical \
          numbers. Release profile: `lto = \"fat\"`, `codegen-units = 1`; a program built with \
          another profile will measure differently."
     )
@@ -587,6 +679,11 @@ fn table(m: &Measurement) -> String {
         writeln!(s, "| `{}` | {lo} | {med} | {hi} | {net} |", row.name).unwrap();
     }
     for ((_, name, _, _), cu) in BSM_ROWS.iter().zip(&m.bsm) {
+        let (lo, med, hi) = stats(cu);
+        let net = med.saturating_sub(noop_med);
+        writeln!(s, "| `{name}` | {lo} | {med} | {hi} | {net} |").unwrap();
+    }
+    for ((_, name, _, _), cu) in IV_ROWS.iter().zip(&m.iv) {
         let (lo, med, hi) = stats(cu);
         let net = med.saturating_sub(noop_med);
         writeln!(s, "| `{name}` | {lo} | {med} | {hi} | {net} |").unwrap();
@@ -626,6 +723,10 @@ fn test_cu_table_is_deterministic_and_matches_host() {
         first.bsm, second.bsm,
         "Black-Scholes CU differs between runs"
     );
+    assert_eq!(
+        first.iv, second.iv,
+        "implied-volatility CU differs between runs"
+    );
     let t = table(&first);
     println!("{t}");
     if let Ok(path) = std::env::var("OPTFIX_BENCH_OUT") {
@@ -654,5 +755,51 @@ fn test_every_variant_matches_host_on_edge_inputs() {
         for row in &ROWS {
             vm.check(row, a, b);
         }
+    }
+}
+
+/// The implied-volatility instructions match the host on their error paths too: a target at a
+/// bound (`ArbitrageBound`), `T = 0` (`DomainError`), an ill-conditioned target, a strike
+/// outside the moneyness range, and an argument outside its newtype's range.
+#[test]
+fn test_implied_vol_matches_host_on_edge_inputs() {
+    let mut vm = Vm::new();
+    let fx = |v: f64| Fixed::from_raw((v * ONE) as i128);
+    let opt = |kind, k: f64, t: f64| EuropeanOption {
+        kind,
+        strike: Strike::try_new(fx(k)).unwrap(),
+        expiry: Years::try_new(fx(t)).unwrap(),
+    };
+    let m = IvInputs {
+        spot: Spot::try_new(fx(100.0)).unwrap(),
+        rate: Rate::try_new(fx(0.05)).unwrap(),
+        carry: Rate::try_new(fx(0.02)).unwrap(),
+    };
+    let price = |v: f64| Price::try_new(fx(v)).unwrap();
+    let cases = [
+        (opt(OptionKind::Call, 100.0, 1.0), price(0.0)),
+        (opt(OptionKind::Call, 100.0, 1.0), price(98.0)),
+        (opt(OptionKind::Put, 100.0, 0.0), price(1.0)),
+        (opt(OptionKind::Call, 200.0, 0.25), price(1e-12)),
+        (opt(OptionKind::Call, 3000.0, 1.0), price(1.0)),
+        (opt(OptionKind::Put, 90.0, 0.5), price(2.0)),
+    ];
+    for (ix, _, f, _) in IV_ROWS {
+        for (o, target) in &cases {
+            let (_, out) = vm.run_raw(&iv_data(ix, o, &m, *target));
+            assert_eq!(
+                out.as_slice(),
+                encode_result(f(o, &m, *target).map(Volatility::get)).as_slice(),
+                "{ix:?} at {o:?} {target:?}"
+            );
+        }
+        // A target outside the `Price` range (negative) is a DomainError result.
+        let mut d = iv_data(ix, &cases[0].0, &m, cases[0].1);
+        d[2 + 3 * 16..2 + 4 * 16].copy_from_slice(&Fixed::from_raw(-1).to_bytes().0);
+        let (_, out) = vm.run_raw(&d);
+        assert_eq!(
+            out.as_slice(),
+            encode_result(Err(PricingError::DomainError)).as_slice()
+        );
     }
 }

@@ -53,7 +53,7 @@ PRECISION_SAMPLES ?= 200000
 .PHONY: precision
 precision:
 	OPTFIX_PRECISION_SAMPLES=$(PRECISION_SAMPLES) OPTFIX_PRECISION_OUT=$(CURDIR)/docs/precision.md \
-	cargo test -p optfix --release --test precision -- --nocapture
+	cargo test -p optfix --release --features bench-internals --test precision -- --nocapture
 
 # Run every test, including the million-case property tests and the LiteSVM bench
 # (which needs `make program` first). OPTFIX_PROPTEST_CASES=<n> lowers the case count.
@@ -82,6 +82,35 @@ lint:
 lint-control:
 	@sh lint-control/check.sh
 
+# The generated tables are reproducible: regenerating them (python3, standard library only) and
+# formatting with rustfmt must give the committed files byte for byte.
+KERNEL_TABLES ?= optfix/src/kernel/tables.rs
+IV_TABLES ?= optfix/src/iv_tables.rs
+.PHONY: tables-check
+tables-check:
+	@mkdir -p target
+	@python3 tools/gen_tables.py > target/tables.rs && rustfmt +stable --edition 2021 target/tables.rs
+	@cmp target/tables.rs $(KERNEL_TABLES) || \
+		{ echo "tables-check: $(KERNEL_TABLES) is not what tools/gen_tables.py writes"; exit 1; }
+	@python3 tools/gen_iv_tables.py > target/iv_tables.rs && rustfmt +stable --edition 2021 target/iv_tables.rs
+	@cmp target/iv_tables.rs $(IV_TABLES) || \
+		{ echo "tables-check: $(IV_TABLES) is not what tools/gen_iv_tables.py writes"; exit 1; }
+	@echo "tables-check: both generated table files regenerate byte for byte"
+
+# Failing control for `tables-check`: run against a copy of iv_tables.rs with one entry
+# changed by one unit, it must fail.
+.PHONY: tables-control
+tables-control:
+	@mkdir -p target
+	@python3 -c 'import re, sys; t = open(sys.argv[1]).read(); \
+		print(re.sub(r"(\n    \[-?)(\d+)", lambda m: m.group(1) + str(int(m.group(2)) + 1), t, count=1), end="")' \
+		$(IV_TABLES) > target/iv_tables.control.rs
+	@if cmp -s target/iv_tables.control.rs $(IV_TABLES); then \
+		echo "tables-control: the control copy is unchanged"; exit 1; fi
+	@if $(MAKE) --no-print-directory tables-check IV_TABLES=target/iv_tables.control.rs > /dev/null 2>&1; then \
+		echo "tables-control: tables-check accepted a changed iv_tables.rs"; exit 1; fi
+	@echo "tables-control: tables-check rejects a changed generated file"
+
 # Rustdoc with every warning denied
 .PHONY: doc
 doc:
@@ -89,7 +118,7 @@ doc:
 
 # Pre-push checks: must pass with zero warnings
 .PHONY: pre-push
-pre-push: fmt-check lint lint-control program-control program test doc
+pre-push: fmt-check lint lint-control tables-control tables-check program-control program test doc
 
 .PHONY: clean
 clean:

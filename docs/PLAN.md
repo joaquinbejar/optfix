@@ -145,6 +145,9 @@ pub enum PricingError {
     NoConvergence,
     /// Target price outside the no-arbitrage bounds, so no implied volatility exists.
     ArbitrageBound,
+    /// Implied volatility: vega at the root below `IV_VEGA_MIN_FACTOR` times the price
+    /// envelope, so the target does not determine `σ` (added in milestone 6).
+    IllConditioned,
 }
 ```
 
@@ -213,7 +216,8 @@ instruction per public function, used only for CU measurement:
 | 9 | `Price` | kind byte, 6 × `Fixed` (S, K, T, σ, r, q) | none |
 | 10 | `PriceAndGreeks` | as `Price`; returns 5 values | none |
 | 11 | `Baseline` | as `PriceAndGreeks`: the price and each greek computed separately (bench-only) | none |
-| ... | `ImpliedVol` next | its arguments, little-endian | none |
+| 12 | `ImpliedVol` | kind byte, 6 × `Fixed` (S, K, T, target, r, q); returns `σ` | none |
+| 13 | `ImpliedVolAllIterations` | as `ImpliedVol`, every step taken (bench-only worst case) | none |
 
 Each handler decodes its arguments with `bytemuck`, calls optfix, and writes the result with
 `set_return_data`, so the LiteSVM test also checks the on-chain result equals the host result
@@ -395,6 +399,32 @@ Inputs are `IvInputs { spot, rate, carry }`; `Dr`, `Dq` and `F` as in 4.5.
    for deep OTM and short `T`. Stop at tolerance; otherwise `NoConvergence`. A fixed cap keeps the CU bound fixed;
    milestone 6 measures the `NoConvergence` rate over the milestone 5 grid.
 
+As built (milestone 6), replacing steps 2 and 3 after the prototype (decision log):
+
+- **Normalized form.** The out-of-the-money option by forward moneyness (the side `price`
+  computes directly; an in-the-money target is moved there by subtracting the parity term,
+  which `price` adds exactly) with `a = |ln(S Dq / K Dr)|`, `s = σ√T`, `y = p / bound`
+  (`bound = S Dq` for a call, `K Dr` for a put) and `L = −ln y`.
+- **Initial guess.** A bilinear interpolation of `ln s` in one of two generated tables
+  (`tools/gen_iv_tables.py`, standard library only; `make tables-check` regenerates them byte
+  for byte): near the money `ln s + L` over `(u = ln a + L, Z = ln L)`, `u <= 10`; deep out of
+  the money `ln s − w` over `(w = ln a − (ln 2 + Z)/2, Z)`, where `w` is the leading asymptotic
+  `ln s`. 1,838 `i32` entries; the guess is within 6% of the root over the normalized domain
+  and within 3.9% on the milestone 5 grid. Brenner-Subrahmanyam is the `a → 0` limit of the
+  first table; Li (2005) covers only `|x| <= 0.5` and `s <= 1`, while the domain reaches
+  `a = 21` and `s = 27`.
+- **Iteration.** Up to 3 Chebyshev (third-order) steps in `v = ln σ` on a log objective:
+  `ln p(v) − ln p` below the inflection point `s = √(2a)`, `ln(bound − p(v)) − ln(bound − p)`
+  above it (`bound − p = S Dq N(−d1) + K Dr N(d2)`, no cancellation). `g'' / g' = 1 + d1 d2 − g'`
+  and `ln |g'| = ln(s S Dq n(d1) / value)` in closed form, so `g / g' = g e^(−ln |g'|)`: no
+  division. Each evaluation uses `price`'s own operations (`d1_terms`), so the solve inverts
+  the function `price` computes. Stop when a step is at most `2^-16`.
+- **Conditioning.** Vega at the root (at the last evaluation when converged, the smallest over
+  the evaluations otherwise) must be at least `IV_VEGA_MIN_FACTOR = 2^28` times the price
+  envelope `E`, else `IllConditioned` (coordinator's requirement: no silent best effort). Where
+  it answers, `|implied_vol(price(σ)) − σ| <= 4 E / vega + 2^-40 σ`. `T = 0` and a root outside
+  the `Volatility` range are `DomainError`.
+
 Possible later upgrade: Jäckel, "Let's be rational" (2015), which reaches machine precision in
 two iterations everywhere. Not in v0.1: it relies on several rational approximations and
 careful `f64` behavior that would need its own fixed-point error analysis.
@@ -498,7 +528,7 @@ Each milestone is one feature branch (`feat/m<N>-<name>`) and one PR.
    Note from the milestone 3 review (codex): binary `sqrt` costs about 36% more than decimal
    on matched samples (10,703 against 7,878 CU), so profile the whole `price_and_greeks` path
    before claiming any total saving from Q64.64; the division follow-up applies to `sqrt`.
-6. **Implied volatility.** *Done when* round-trip `implied_vol(price(σ)) ≈ σ` holds within the
+6. **Implied volatility.** (Done.) *Done when* round-trip `implied_vol(price(σ)) ≈ σ` holds within the
    documented bound wherever vega exceeds a documented threshold, for `q > 0`, `q < 0` and
    `q = 0`, `ArbitrageBound` and
    `NoConvergence` are each covered by tests, the `NoConvergence` rate over the milestone 5 grid is
@@ -777,3 +807,31 @@ Milestone 5 (2026-10-29):
 - **Bench-only items** live behind the non-default `bench-internals` feature of `optfix`
   (`baseline::separately`), enabled only by `bench-program` and `bench`.
 
+Milestone 6 (2026-10-29):
+
+- **Design change from 4.6, from a prototype** (exact arithmetic on 4,000 grid points): from a
+  10% guess, 3 Halley steps leave about 60% of cases needing a fourth; from a 3% guess every
+  case converges in 3 evaluations. Li (2005) cannot give that over this domain, so the guess
+  is two generated tables (4.6, as built). The step is Chebyshev's rather than Halley's: the
+  same order, and no division. The coordinator approved the change with six requirements
+  (bus message #37026): reproducible tables checked by `make`, dense tests across the table
+  seam with a guess-error test, a typed `IllConditioned` below the threshold, the iteration
+  cap tested and its distribution reported, a price round trip plus an independent mpmath
+  reference at small `T` and near the money, and CU rows.
+- **Round trip** (`docs/precision.md`, 1,000,000 points per carry set): every answer within
+  1.1% of its envelope (`4 E / vega + 2^-40 σ`), worst relative `σ` error `6.1 × 10^-9` (near
+  the threshold); `price(implied_vol(p))` within 0.62% of `5 E + 2^-40 σ vega`. `NoConvergence`
+  0 on the grid (it remains only for a well-conditioned target that misses the cap, tested by
+  lowering the cap); `IllConditioned` 10% to 12% of the points; targets equal to a bound (no time
+  value) 53%, `T = 0` 10%.
+- **Steps** over the 3,000,000 grid points: 1,869 answers after 1 step, 766,980 after 2 and
+  8,472 after 3; the cap is never exceeded.
+- **mpmath reference** (`tests/data/iv_fixture.csv`, `tools/iv_fixture/gen_iv_fixture.py`):
+  20,754 exact targets on a codex-style boundary set (`d1` from −9 to 9 including ±1/4 and 0,
+  26 expiries from `10^-12` s to a year), each with the exact implied volatility of the rounded
+  target: 8,228 answered, worst 0.80% of the envelope; the rest rejected with a typed error.
+- **CU** (`docs/benchmarks.md`, net of `Noop`): `ImpliedVol` median 21,905, max 29,428
+  (25,590 and 34,780 near the money); with every step taken, the worst case, median 29,214 and
+  max 34,957 (34,765 and 35,658 near the money). A step costs about 7,300 CU (the difference of
+  the medians: 3 steps against mostly 2).
+- **Error variant** `PricingError::IllConditioned = 4` (bench status 5).

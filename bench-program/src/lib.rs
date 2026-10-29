@@ -12,8 +12,8 @@
 
 use bytemuck::Pod;
 use optfix::{
-    EuropeanOption, Fixed, FixedBytes, Greeks, MarketInputs, OptionKind, Priced, PricingError,
-    Rate, Rounding, Spot, Strike, Volatility, Years,
+    EuropeanOption, Fixed, FixedBytes, Greeks, IvInputs, MarketInputs, OptionKind, Price, Priced,
+    PricingError, Rate, Rounding, Spot, Strike, Volatility, Years,
 };
 use pinocchio::cpi::set_return_data;
 use pinocchio::error::ProgramError;
@@ -65,6 +65,12 @@ pub enum Instruction {
     /// The benchmark-only baseline (`optfix::baseline::separately`): price and each greek
     /// computed separately; same arguments and return data as `PriceAndGreeks`.
     Baseline = 11,
+    /// `optfix::implied_vol`: an option-kind byte and six `FixedBytes`: spot, strike, expiry,
+    /// target price, rate, carry; returns the volatility.
+    ImpliedVol = 12,
+    /// `implied_vol` taking all `IV_MAX_ITERATIONS` steps (`optfix::iv_bench::all_iterations`,
+    /// bench-only): its worst-case cost. Same arguments and return data as `ImpliedVol`.
+    ImpliedVolAllIterations = 13,
 }
 
 impl Instruction {
@@ -88,6 +94,8 @@ impl Instruction {
             9 => Ok(Self::Price),
             10 => Ok(Self::PriceAndGreeks),
             11 => Ok(Self::Baseline),
+            12 => Ok(Self::ImpliedVol),
+            13 => Ok(Self::ImpliedVolAllIterations),
             _ => Err(BenchError::UnknownInstruction),
         }
     }
@@ -162,6 +170,7 @@ pub const fn error_status(e: PricingError) -> u8 {
         PricingError::DomainError => 2,
         PricingError::NoConvergence => 3,
         PricingError::ArbitrageBound => 4,
+        PricingError::IllConditioned => 5,
     }
 }
 
@@ -198,6 +207,8 @@ pub fn process_instruction(
         Instruction::NormPdf => unary(args, optfix::norm_pdf)?,
         Instruction::MulShr => mul_shr(args)?,
         Instruction::Price => bsm(args, price_only)?.map(|p| p.price.get()),
+        Instruction::ImpliedVol => iv(args, optfix::implied_vol)?,
+        Instruction::ImpliedVolAllIterations => iv(args, optfix::iv_bench::all_iterations)?,
         Instruction::PriceAndGreeks | Instruction::Baseline => {
             return Err(BenchError::InvalidArguments.into())
         }
@@ -303,4 +314,34 @@ fn bsm(
         ))
     };
     Ok(inputs().and_then(|(opt, m)| f(&opt, &m)))
+}
+
+/// Decodes `[kind, S, K, T, target, r, q]` and runs `f` (an implied-volatility solver); an
+/// argument outside its newtype's range is reported as a `DomainError` result.
+#[inline(never)]
+fn iv(
+    args: &[u8],
+    f: fn(&EuropeanOption, &IvInputs, Price) -> Result<Volatility, PricingError>,
+) -> Result<Result<Fixed, PricingError>, BenchError> {
+    let (&kind, rest) = args.split_first().ok_or(BenchError::InvalidArguments)?;
+    let kind = match kind {
+        0 => OptionKind::Call,
+        1 => OptionKind::Put,
+        _ => return Err(BenchError::InvalidArguments),
+    };
+    let [s, k, t, target, r, q]: [FixedBytes; 6] = decode(rest)?;
+    let solve = || -> Result<Fixed, PricingError> {
+        let opt = EuropeanOption {
+            kind,
+            strike: Strike::try_new(k.get())?,
+            expiry: Years::try_new(t.get())?,
+        };
+        let m = IvInputs {
+            spot: Spot::try_new(s.get())?,
+            rate: Rate::try_new(r.get())?,
+            carry: Rate::try_new(q.get())?,
+        };
+        f(&opt, &m, Price::try_new(target.get())?).map(Volatility::get)
+    };
+    Ok(solve())
 }

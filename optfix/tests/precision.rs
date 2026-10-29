@@ -27,9 +27,9 @@ use common::{
 use num_bigint::BigInt;
 use optfix::{
     exp, ln, norm_cdf, norm_pdf, price_and_greeks, Fixed, PricingError, DELTA_ERR,
-    EXP_MAX_ERROR_ULPS, GAMMA_ERR_REL, GREEK_ERR_ABS, LN_MAX_ERROR_ULPS, NORM_CDF_MAX_ERROR_ULPS,
-    NORM_CDF_TAIL_REL_ERROR, NORM_PDF_MAX_ERROR_ULPS, PRICE_ERR_ABS, PRICE_ERR_REL, THETA_ERR_REL,
-    VEGA_ERR_REL,
+    EXP_MAX_ERROR_ULPS, GAMMA_ERR_REL, GREEK_ERR_ABS, IV_ERR_PRICE_FACTOR, IV_ERR_REL,
+    IV_VEGA_MIN_FACTOR, LN_MAX_ERROR_ULPS, NORM_CDF_MAX_ERROR_ULPS, NORM_CDF_TAIL_REL_ERROR,
+    NORM_PDF_MAX_ERROR_ULPS, PRICE_ERR_ABS, PRICE_ERR_REL, THETA_ERR_REL, VEGA_ERR_REL,
 };
 use rust_decimal::Decimal;
 
@@ -429,6 +429,7 @@ fn test_precision_report() {
         )
         .unwrap();
     }
+    s.push_str(&implied_vol_section(n));
     s.push_str(COMPARISON);
     s.push_str("\nRun `make precision` to regenerate this file.\n");
     println!("{s}");
@@ -436,4 +437,68 @@ fn test_precision_report() {
         std::fs::write(path, s).unwrap();
     }
     let _ = one();
+}
+
+/// The implied-volatility section: the grid round trip, the steps taken, the initial guess and
+/// the mpmath reference (`common::iv`, the same checks as `iv_round_trip.rs`, `iv_internals.rs`
+/// and `iv_fixture.rs`).
+fn implied_vol_section(n: usize) -> String {
+    let mut s = String::new();
+    let b = |x: Fixed| ratio(&to_ref(x.raw()));
+    write!(
+        s,
+        "\n## Implied volatility\n\n\
+         `implied_vol(price(σ))` on {n} points per carry set of the whole supported domain \
+         (`common::bsm_sample` with the carry of each set). With `E` the price envelope, \
+         `implied_vol` answers where vega at the root is at least `IV_VEGA_MIN_FACTOR` = \
+         {:.3e} times `E`, within `IV_ERR_PRICE_FACTOR` = {} times `E / vega` plus \
+         `IV_ERR_REL` = {:.3e} times `σ`; below the threshold it returns `IllConditioned`. \
+         \"No time value\" is a target equal to a bound (the out-of-the-money value rounds to \
+         zero), `ArbitrageBound`. The price column is `price(implied_vol(p))` against `p`, over \
+         `(IV_ERR_PRICE_FACTOR + 1) × E + IV_ERR_REL × σ × vega`. `NoConvergence` does not \
+         occur.\n\n",
+        b(IV_VEGA_MIN_FACTOR),
+        b(IV_ERR_PRICE_FACTOR),
+        b(IV_ERR_REL)
+    )
+    .unwrap();
+    s.push_str(&common::iv::round_trip_table(n, 0x1f60));
+    #[cfg(feature = "bench-internals")]
+    {
+        let hist = common::iv::iteration_histogram(n, 0x2f60);
+        write!(
+            s,
+            "\nSteps taken (at most `IV_MAX_ITERATIONS` = 3; a solve stops once a step is below \
+             `IV_TOLERANCE`, `2^-16` in `ln σ`), over the same {} points by outcome:\n\n\
+             | Outcome | 1 step | 2 steps | 3 steps |\n\
+             | --- | ---: | ---: | ---: |\n",
+            3 * n
+        )
+        .unwrap();
+        for (name, h) in ["answered", "`IllConditioned`"].iter().zip(hist) {
+            writeln!(s, "| {name} | {} | {} | {} |", h[1], h[2], h[3]).unwrap();
+        }
+        let (worst, count) = common::iv::guess_errors(n, 0x3f60, 0.0625);
+        write!(
+            s,
+            "\nInitial guess (`tools/gen_iv_tables.py`), largest `|ln σ0 − ln σ|` where \
+             `implied_vol` answers: {:.4} from the near-the-money table ({} points), {:.4} \
+             from the deep out-of-the-money table ({} points).\n",
+            worst[0], count[0], worst[1], count[1]
+        )
+        .unwrap();
+    }
+    let fx = common::iv::fixture_check();
+    write!(
+        s,
+        "\nAgainst the independent mpmath reference (`tests/data/iv_fixture.csv`, \
+         `tools/iv_fixture/gen_iv_fixture.py`: {} exact targets on a boundary set with `d1` \
+         from −9 to 9, near the money at ±1/4 and 0, `T` from `10^-12` s to a year): {} \
+         answered, the largest error {:.3e} of the envelope around the exact implied \
+         volatility of each rounded target; the other {} rejected (`IllConditioned`, or no \
+         root inside the bounds).\n",
+        fx.rows, fx.answered, fx.worst, fx.rejected
+    )
+    .unwrap();
+    s
 }
