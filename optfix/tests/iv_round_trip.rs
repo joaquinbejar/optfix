@@ -220,3 +220,44 @@ fn test_expiry_moneyness_and_range_edges() {
         Err(PricingError::DomainError)
     );
 }
+
+/// Codex's #12 repros: exact targets (mpmath) of roots just outside the range at `S = K = 100`,
+/// `T = 1`, `r = q = 0`, thousands of round-trip envelopes beyond the ends, so `DomainError`
+/// (an earlier fixed `2^-20` slack returned the range end).
+#[test]
+fn test_roots_just_outside_the_range_are_rejected() {
+    let m = market(Fixed::from_int(100), fx(1, 5), Fixed::ZERO, Fixed::ZERO);
+    let call = option(OptionKind::Call, Fixed::from_int(100), Fixed::ONE);
+    // σ = 5 (1 + 2^-22) and σ = 0.005 (1 − 2^-22)
+    for raw in [1_821_764_824_506_470_736_188, 3_679_588_363_187_182_425] {
+        let target = Price::try_new(Fixed::from_raw(raw)).unwrap();
+        assert_eq!(
+            implied_vol(&call, &iv_inputs(&m), target),
+            Err(PricingError::DomainError),
+            "target raw {raw}"
+        );
+    }
+}
+
+/// Codex's #12 conditioning repro: the exact root (0.4999999999999996767627) has a vega of
+/// 0.9999999077 times the threshold, so `IllConditioned`. Judging vega before the final step,
+/// without a margin, returned a value.
+#[test]
+fn test_vega_just_below_the_threshold_is_rejected() {
+    let opt = EuropeanOption {
+        kind: OptionKind::Call,
+        strike: Strike::try_new(Fixed::from_raw(2_320_353_043_969_496_658_391)).unwrap(),
+        expiry: Years::try_new(Fixed::from_raw(184_467_440_737_095_516)).unwrap(),
+    };
+    let zero = Rate::try_new(Fixed::ZERO).unwrap();
+    let im = optfix::IvInputs {
+        spot: Spot::try_new(Fixed::from_raw(1_844_674_407_370_955_161_600)).unwrap(),
+        rate: zero,
+        carry: zero,
+    };
+    let target = Price::try_new(Fixed::from_raw(46_424_095_138_800)).unwrap();
+    assert_eq!(
+        implied_vol(&opt, &im, target),
+        Err(PricingError::IllConditioned)
+    );
+}

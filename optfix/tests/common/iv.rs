@@ -35,20 +35,29 @@ pub fn carry_sample(g: &mut Rng, carry: i32) -> (i128, i128, i128, i128, i128, i
 /// The three carry sets: `(carry, label, seed offset)`.
 pub const CARRY_SETS: [(i32, &str, u64); 3] = [(1, "q > 0", 1), (-1, "q < 0", 2), (0, "q = 0", 3)];
 
-/// Vega against the conditioning threshold `IV_VEGA_MIN_FACTOR × E`: `Some(true)` above it by
-/// `2^-8`, `Some(false)` below it by `2^-8`, `None` in between (where `implied_vol`, which
-/// judges vega at its last evaluation, may go either way).
-pub fn conditioned(vega: Fixed, e: Fixed) -> Option<bool> {
-    let thr = f(IV_VEGA_MIN_FACTOR) * f(e);
-    let v = f(vega);
-    if v >= thr * (1.0 + 1.0 / 256.0) {
+/// Vega against the conditioning threshold `thr = IV_VEGA_MIN_FACTOR × E`: `Some(true)` at
+/// `thr (1 + 2^-8)` or above (`implied_vol` must answer; it widens `thr` by far less, `δ`),
+/// `Some(false)` below `thr (1 − lower)` (it must not), `None` in between. `lower` is 0 where
+/// `vega` is the exact vega at the exact root of the target (the mpmath fixtures), and covers
+/// the distance to that root where it is the vega at the `σ` that priced the target.
+pub fn conditioned(vega: Fixed, e: Fixed, lower: f64) -> Option<bool> {
+    // Exact in integers: thr = E × 2^28 (IV_VEGA_MIN_FACTOR is 2^28).
+    let thr_raw = e.raw() << 28;
+    assert_eq!(IV_VEGA_MIN_FACTOR.raw(), 1 << 92);
+    let v = vega.raw();
+    if v as f64 >= thr_raw as f64 * (1.0 + 1.0 / 256.0) {
         Some(true)
-    } else if v < thr * (1.0 - 1.0 / 256.0) {
+    } else if lower == 0.0 && v < thr_raw || (v as f64) < thr_raw as f64 * (1.0 - lower) {
         Some(false)
     } else {
         None
     }
 }
+
+/// The grid's lower band: the vega at `σ` against the vega at the root of `price(σ)`, which is
+/// within `E / vega` of `σ`; `d ln vega / d ln σ = d1 d2` is below 50 here, so the two differ by
+/// under `50 × 2^-28 / 0.005`, about `2^-14.7`, at the threshold.
+pub const GRID_LOWER: f64 = 1.0 / 4096.0;
 
 /// `IV_ERR_PRICE_FACTOR × E / vega + IV_ERR_REL × σ`.
 pub fn envelope(e: Fixed, vega: Fixed, sigma: Fixed) -> f64 {
@@ -88,7 +97,7 @@ pub fn round_trip(n: usize, carry: i32, seed: u64) -> RoundTrip {
         }
         let e = price_error_bound(&opt, &m).unwrap();
         let vega = priced.greeks.vega;
-        let cond = conditioned(vega, e);
+        let cond = conditioned(vega, e, GRID_LOWER);
         match got {
             Err(PricingError::ArbitrageBound) => {
                 // The out-of-the-money value rounded to zero: the target is a bound.
@@ -173,16 +182,22 @@ pub struct FixtureStats {
     pub rejected: usize,
     pub worst: f64,
     pub worst_at: String,
+    /// Rows with vega in `[thr, thr (1 + 2^-8))`, answered and rejected.
+    pub band_answered: usize,
+    pub band_rejected: usize,
 }
 
-/// `implied_vol` against `tests/data/iv_fixture.csv`, asserting the contract of
-/// `iv_fixture.rs` at each row.
-pub fn fixture_check() -> FixtureStats {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/iv_fixture.csv");
+/// `implied_vol` against an mpmath fixture in `tests/data/` (`iv_fixture.csv`,
+/// `iv_threshold.csv`, or codex's `iv_threshold_codex.csv`, whose eleventh column is the exact
+/// ratio of the root's vega to the threshold), asserting the contract of `iv_fixture.rs` at each row: no value where
+/// the exact vega at the exact root is below the threshold.
+pub fn fixture_check(name: &str) -> FixtureStats {
+    let path = format!("{}/tests/data/{name}", env!("CARGO_MANIFEST_DIR"));
     let text = std::fs::read_to_string(path).unwrap();
     let mut st = FixtureStats::default();
     for line in text.lines() {
-        let v: Vec<i128> = line.split(',').map(|x| x.parse().unwrap()).collect();
+        let fields: Vec<&str> = line.split(',').collect();
+        let v: Vec<i128> = fields[..10].iter().map(|x| x.parse().unwrap()).collect();
         st.rows += 1;
         let p = (v[0], v[1], v[2], v[3], v[4], v[5], v[6] == 0);
         let (opt, m) = bsm_inputs(p);
@@ -192,12 +207,25 @@ pub fn fixture_check() -> FixtureStats {
         let (sigma_star, vega_star) = (v[8], v[9]);
         let cond = if sigma_star < 0 {
             Some(false)
+        } else if let Some(ratio) = fields.get(10) {
+            // codex's set carries the exact-root vega over the threshold to 85 digits: below
+            // 1 exactly when it starts with "0.".
+            if ratio.starts_with("0.") {
+                Some(false)
+            } else if ratio.parse::<f64>().unwrap() >= 1.0 + 1.0 / 256.0 {
+                Some(true)
+            } else {
+                None
+            }
         } else {
-            conditioned(Fixed::from_raw(vega_star), e)
+            conditioned(Fixed::from_raw(vega_star), e, 0.0)
         };
         match (got, cond) {
             (Ok(iv), Some(true) | None) => {
                 st.answered += 1;
+                if cond.is_none() {
+                    st.band_answered += 1;
+                }
                 let star = Fixed::from_raw(sigma_star);
                 let clamped = star.clamp(Volatility::MIN.get(), Volatility::MAX.get());
                 let err = f(iv.get().checked_sub(star).unwrap()).abs();
@@ -225,7 +253,12 @@ pub fn fixture_check() -> FixtureStats {
                     | PricingError::DomainError,
                 ),
                 Some(false) | None,
-            ) => st.rejected += 1,
+            ) => {
+                st.rejected += 1;
+                if cond.is_none() {
+                    st.band_rejected += 1;
+                }
+            }
             (other, c) => panic!("{other:?} with conditioning {c:?} at {line}"),
         }
     }

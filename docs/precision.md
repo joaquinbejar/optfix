@@ -59,7 +59,7 @@ Garman-Kohlhagen with the foreign rate `q` (`common::oracle`), on 20000 exact de
 | Carry | Points | `T = 0` | No time value | Answered | Worst σ error / envelope | Worst price error / envelope | Worst relative σ error | `IllConditioned` | `NoConvergence` | `DomainError` |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `q > 0` | 1000000 | 100111 | 525903 | 253992 | 1.10e-2 | 6.15e-3 | 4.25e-9 | 119994 | 0 | 0 |
-| `q < 0` | 1000000 | 100231 | 542721 | 256991 | 1.04e-2 | 6.15e-3 | 6.14e-9 | 100057 | 0 | 0 |
+| `q < 0` | 1000000 | 100231 | 542721 | 256992 | 1.04e-2 | 6.15e-3 | 6.14e-9 | 100056 | 0 | 0 |
 | `q = 0` | 1000000 | 100185 | 531902 | 265296 | 1.04e-2 | 6.15e-3 | 5.50e-9 | 102617 | 0 | 0 |
 
 Steps taken (at most `IV_MAX_ITERATIONS` = 3; a solve stops once a step is below `IV_TOLERANCE`, `2^-16` in `ln σ`), over the same 3000000 points by outcome:
@@ -72,6 +72,10 @@ Steps taken (at most `IV_MAX_ITERATIONS` = 3; a solve stops once a step is below
 Initial guess (`tools/gen_iv_tables.py`), largest `|ln σ0 − ln σ|` where `implied_vol` answers: 0.0384 from the near-the-money table (706468 points), 0.0086 from the deep out-of-the-money table (69177 points).
 
 Against the independent mpmath reference (`tests/data/iv_fixture.csv`, `tools/iv_fixture/gen_iv_fixture.py`: 20754 exact targets on a boundary set with `d1` from −9 to 9, near the money at ±1/4 and 0, `T` from `10^-12` s to a year): 8228 answered, the largest error 8.004e-3 of the envelope around the exact implied volatility of each rounded target; the other 12526 rejected (`IllConditioned`, or no root inside the bounds).
+
+At the conditioning threshold (`tests/data/iv_threshold.csv`, `tools/iv_fixture/gen_iv_threshold.py`: 5004 targets whose exact root's vega is the threshold times `1 + ε`, `ε` from `−2^-6` to `2^-6` down to `±2^-26` and 0): no target below the threshold is answered, every one at `1 + 2^-8` or above is; 1484 answered (worst 6.287e-3 of the envelope), 3520 rejected, of which 1105 answered and 998 rejected in `[thr, thr (1 + 2^-8))`, where `implied_vol` widens the threshold by its own `δ`.
+
+Codex's adversarial threshold set (`tests/data/iv_threshold_codex.csv`, `tools/iv_fixture/codex/`, 100 mpmath digits, the exact ratio of the root's vega to the threshold per target): 10005 targets, none with a ratio below 1 answered; 4749 answered (worst 3.377e-6 of the envelope), 5256 rejected.
 
 ## Representation comparison (milestone 3)
 

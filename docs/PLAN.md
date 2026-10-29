@@ -419,11 +419,15 @@ As built (milestone 6), replacing steps 2 and 3 after the prototype (decision lo
   and `ln |g'| = ln(s S Dq n(d1) / value)` in closed form, so `g / g' = g e^(−ln |g'|)`: no
   division. Each evaluation uses `price`'s own operations (`d1_terms`), so the solve inverts
   the function `price` computes. Stop when a step is at most `2^-16`.
-- **Conditioning.** Vega at the root (at the last evaluation when converged, the smallest over
-  the evaluations otherwise) must be at least `IV_VEGA_MIN_FACTOR = 2^28` times the price
-  envelope `E`, else `IllConditioned` (coordinator's requirement: no silent best effort). Where
-  it answers, `|implied_vol(price(σ)) − σ| <= 4 E / vega + 2^-40 σ`. `T = 0` and a root outside
-  the `Volatility` range are `DomainError`.
+- **Conditioning.** Vega at the exact root must be at least `IV_VEGA_MIN_FACTOR = 2^28` times
+  the price envelope `E`, else `IllConditioned` (coordinator's requirement: no silent best
+  effort). It is judged at the returned root, against the threshold widened by
+  `δ = (|d1 d2| + 1) × slack / σ + 2^-20` (`d ln vega / d ln σ = d1 d2`, `slack` the round-trip
+  envelope), so no target whose exact-root vega is below the threshold is answered (#12
+  review); a solve that did not converge is judged at its smallest-vega evaluation. Where it
+  answers, `|implied_vol(price(σ)) − σ| <= 4 E / vega + 2^-40 σ`. `T = 0` is `DomainError`, and
+  so is a root outside the `Volatility` range by more than that envelope (within it, the range
+  end; a fixed `2^-20` allowance was too wide, #12 review).
 
 Possible later upgrade: Jäckel, "Let's be rational" (2015), which reaches machine precision in
 two iterations everywhere. Not in v0.1: it relies on several rational approximations and
@@ -830,8 +834,17 @@ Milestone 6 (2026-10-29):
   20,754 exact targets on a codex-style boundary set (`d1` from −9 to 9 including ±1/4 and 0,
   26 expiries from `10^-12` s to a year), each with the exact implied volatility of the rounded
   target: 8,228 answered, worst 0.80% of the envelope; the rest rejected with a typed error.
-- **CU** (`docs/benchmarks.md`, net of `Noop`): `ImpliedVol` median 21,905, max 29,428
-  (25,590 and 34,780 near the money); with every step taken, the worst case, median 29,214 and
-  max 34,957 (34,765 and 35,658 near the money). A step costs about 7,300 CU (the difference of
-  the medians: 3 steps against mostly 2).
+- **CU** (`docs/benchmarks.md`, net of `Noop`): `ImpliedVol` median 27,121, max 34,706
+  (32,675 and 41,954 near the money); with every step taken, the worst case, median 34,474 and
+  max 42,104 (41,882 and 42,828 near the money). A step costs about 7,350 CU (the difference of
+  the medians: 3 steps against mostly 2); judging conditioning at the returned root (#12
+  review) adds one evaluation, about 5,200 CU.
 - **Error variant** `PricingError::IllConditioned = 4` (bench status 5).
+- **#12 review (codex)**: the range-end allowance is the round-trip envelope, not a fixed
+  `2^-20` (two repros at `σ = 5 (1 + 2^-22)` and `0.005 (1 − 2^-22)` are regressions);
+  conditioning is judged at the returned root with the margin `δ` (repro: a root vega of
+  0.9999999077 times the threshold was answered). Threshold fixtures: ours
+  (`tests/data/iv_threshold.csv`, `tools/iv_fixture/gen_iv_threshold.py`, 5,004 targets with
+  exact-root vega at `thr (1 + ε)`, `|ε|` from `2^-26` to `2^-6`) and codex's
+  (`tests/data/iv_threshold_codex.csv`, `tools/iv_fixture/codex/`, 10,005 targets with the
+  exact ratio at 85 digits): none below the threshold is answered.

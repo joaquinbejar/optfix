@@ -53,9 +53,12 @@ pub const IV_MAX_ITERATIONS: u32 = 3;
 pub const IV_TOLERANCE: Fixed = Fixed::from_raw(1 << 48);
 
 /// The conditioning threshold: `implied_vol` answers only where `vega >= IV_VEGA_MIN_FACTOR ×
-/// E` at the root, with `vega = ∂price/∂σ` and `E` the price envelope of
+/// E` at the exact root, with `vega = ∂price/∂σ` and `E` the price envelope of
 /// [`crate::price_error_bound`]; below it the price's rounding moves the root by more than
-/// `2^-28` in `σ`, and the result is `IllConditioned`. `2^28`.
+/// `2^-28` in `σ`, and the result is `IllConditioned`. `2^28`. The computed vega at the returned
+/// root must clear the threshold by a relative margin `δ` (about `|d1 d2|` times the round-trip
+/// envelope over `σ`, plus `2^-20`), so a root just above the threshold may also be rejected,
+/// and none below it is answered.
 pub const IV_VEGA_MIN_FACTOR: Fixed = Fixed::from_raw(1 << 92);
 
 /// Round-trip envelope, price part: where `implied_vol` answers,
@@ -75,12 +78,14 @@ pub const IV_ERR_REL: Fixed = Fixed::from_raw(1 << 24);
 ///   `max(0, K Dr − S Dq) < target < K Dr` for a put: at the bounds the volatility is zero or
 ///   infinite.
 /// - `IllConditioned` if vega at the root is below [`IV_VEGA_MIN_FACTOR`] times the price
-///   envelope: the target does not determine `σ` to `2^-28` (deep in or out of the money, or
-///   close to expiry). Checked whether or not the steps converged.
+///   envelope (or within its margin above it): the target does not determine `σ` to `2^-28`
+///   (deep in or out of the money, or close to expiry). Checked at the returned root, and at
+///   the smallest-vega evaluation when the steps did not converge.
 /// - `NoConvergence` if no step falls below [`IV_TOLERANCE`] within [`IV_MAX_ITERATIONS`] at a
 ///   well-conditioned target (none over the milestone 5 grid, `docs/precision.md`).
 /// - `DomainError` if `S/K` is outside `[0.05, 20]`, if `T = 0` (the price no longer depends
-///   on `σ`), or if the implied volatility is outside the [`Volatility`] range.
+///   on `σ`), or if the implied volatility is outside the [`Volatility`] range by more than its
+///   round-trip envelope (within it, the result is that range end).
 /// - `Overflow` only carries the checked arithmetic.
 #[must_use = "the result carries a possible error"]
 pub fn implied_vol(
@@ -98,6 +103,9 @@ const MAX_STEP: Fixed = Fixed::ONE;
 /// [`Volatility`] range by more than one step on either side.
 const V_MIN: Fixed = Fixed::from_raw(-13 << 63);
 const V_MAX: Fixed = Fixed::from_raw(11 << 62);
+
+/// The relative allowance for the rounding of the vega that judges conditioning: `2^-20`.
+const VEGA_JUDGE_REL: Fixed = Fixed::from_raw(1 << 44);
 
 /// `ln √(2π)`, rounded to nearest.
 const LN_SQRT_2PI: Fixed = Fixed::from_raw(16_951_423_941_496_644_917);
@@ -137,6 +145,8 @@ struct Setup {
     /// The guess came from the deep out-of-the-money table (read by the bench-internals hook).
     #[cfg_attr(not(feature = "bench-internals"), allow(dead_code))]
     deep: bool,
+    /// The price envelope `E`.
+    envelope: Fixed,
     /// `IV_VEGA_MIN_FACTOR × E`.
     vega_min: Fixed,
 }
@@ -213,6 +223,7 @@ fn setup(opt: &EuropeanOption, m: &IvInputs, target: Price) -> Result<Setup, Pri
         target_ln,
         v0: ln_s0.checked_sub(half_ln_t)?.clamp(V_MIN, V_MAX),
         deep,
+        envelope,
         vega_min: IV_VEGA_MIN_FACTOR.mul_up(envelope)?,
     })
 }
@@ -239,41 +250,17 @@ fn iterate(
 ) -> Result<Volatility, PricingError> {
     let mut v = st.v0;
     let mut converged = false;
-    // ln vega at the last evaluation, and its minimum over the evaluations (None: below any
-    // representable value).
-    let mut ln_vega = None;
+    // The smallest ln vega over the evaluations (None: below any representable value).
     let mut ln_vega_min: Option<Fixed> = None;
     while *steps < cap {
         *steps = steps.checked_add(1).ok_or(PricingError::Overflow)?;
-        let ls = v.checked_add(st.half_ln_t)?;
-        let sst = exp(ls)?;
-        let d1 = d1_terms(
-            st.s,
-            st.k,
-            st.r,
-            st.q,
-            st.ln_s,
-            st.ln_k,
-            v,
-            st.half_ln_t,
+        let Eval {
             ls,
-            sst,
-        )?;
-        let d2 = d1.checked_sub(sst)?;
-        // ln n(d1) = −d1² / 2 − ln √(2π); None when d1² would not fit (n(d1) is then zero).
-        let ln_pdf = if d1.raw().unsigned_abs() < D1_LIMIT {
-            Some(
-                half(d1.mul_down(d1)?)
-                    .checked_add(LN_SQRT_2PI)?
-                    .checked_neg()?,
-            )
-        } else {
-            None
-        };
-        ln_vega = match ln_pdf {
-            Some(lp) => Some(st.ln_s_dq.checked_add(lp)?.checked_add(st.half_ln_t)?),
-            None => None,
-        };
+            d1,
+            d2,
+            ln_pdf,
+            ln_vega,
+        } = evaluate(st, v)?;
         ln_vega_min = match (*steps, ln_vega, ln_vega_min) {
             (1, now, _) => now,
             (_, Some(now), Some(low)) => Some(now.min(low)),
@@ -326,21 +313,123 @@ fn iterate(
             break;
         }
     }
-    // Conditioning, vega = S Dq n(d1) √T: at the last evaluation when converged (it is then
-    // within one tolerance step of the root); otherwise at the evaluation where it was smallest,
-    // so a solve that wandered away from an ill-conditioned root still reports it.
-    let judged = if converged { ln_vega } else { ln_vega_min };
-    let well_conditioned = match judged {
-        Some(lv) => exp(lv)? >= st.vega_min,
-        None => false,
+    if !converged {
+        // A solve that wandered away from an ill-conditioned root still reports it: judged at
+        // the evaluation where vega was smallest.
+        let well_conditioned = match ln_vega_min {
+            Some(lv) => exp(lv)? >= st.vega_min,
+            None => false,
+        };
+        return Err(if well_conditioned {
+            PricingError::NoConvergence
+        } else {
+            PricingError::IllConditioned
+        });
+    }
+    // Conditioning, judged at the returned root (codex's #12 review): vega = S Dq n(d1) √T there,
+    // against the threshold widened by `δ` (below) so that a true-root vega under it cannot
+    // pass.
+    let root = evaluate(st, v)?;
+    let Some(ln_vega) = root.ln_vega else {
+        return Err(PricingError::IllConditioned);
     };
-    if !well_conditioned {
+    let vega = exp(ln_vega)?;
+    if vega < st.vega_min {
         return Err(PricingError::IllConditioned);
     }
-    if !converged {
-        return Err(PricingError::NoConvergence);
+    let sigma = exp(v)?;
+    // slack: the round-trip envelope at the root, `IV_ERR_PRICE_FACTOR × E / vega + IV_ERR_REL ×
+    // σ`, the documented bound on |σ − σ*| between the returned σ and the exact root σ* of the
+    // target: the target and every evaluation are each within E of the exact price, so the
+    // computed root is within about 2E / vega of σ* (factor 4 for margin), plus the cubic
+    // remainder of the last step (`IV_ERR_REL`). 1 / vega = e^(−ln vega), at most 2^30 here
+    // since vega >= 2^28 E >= 2^28 × 64 ulps. Measured against exact mpmath roots
+    // (`tests/iv_fixture.rs`): at most 0.8% of it.
+    let slack = IV_ERR_PRICE_FACTOR
+        .mul_up(st.envelope)?
+        .mul_up(exp(ln_vega.checked_neg()?)?)?
+        .checked_add(IV_ERR_REL.mul_up(sigma)?)?;
+    // δ = (|d1 d2| + 1) × slack / σ + 2^-20, the vega derivative factor times the distance to
+    // the root, plus the rounding of vega itself:
+    //
+    // - ∂d1/∂σ = −d2 / σ (from d1 = ln(F/K) / (σ√T) + σ√T / 2), so ∂ ln vega / ∂ σ =
+    //   −d1 ∂d1/∂σ = d1 d2 / σ, that is d ln vega / d ln σ = d1 d2;
+    // - |ln σ − ln σ*| <= slack / σ (to first order; slack / σ <= 2^-20 here), so
+    //   |ln vega(σ) − ln vega(σ*)| <= |d1 d2| × slack / σ, with d1 d2 at the returned σ; the `+ 1`
+    //   covers d1 d2's own change over that interval, which is far below 1 at a relative
+    //   width of 2^-20;
+    // - `VEGA_JUDGE_REL` (2^-20) covers the rounding of the computed vega (`d1`, `ln S`, `qT`,
+    //   `ln T` and `exp`, each orders of magnitude smaller) and the second-order terms of
+    //   e^(±δ').
+    //
+    // Then vega >= thr (1 + δ) implies vega(σ*) >= thr. Checked on the threshold fixtures:
+    // none of the targets whose exact-root vega is below the threshold is answered
+    // (`tests/iv_fixture.rs`).
+    let spread = Fixed::from_raw(
+        root.d1
+            .mul_up(root.d2)?
+            .raw()
+            .checked_abs()
+            .ok_or(PricingError::Overflow)?,
+    )
+    .checked_add(Fixed::ONE)?;
+    let delta = spread
+        .mul_up(slack.mul_up(exp(v.checked_neg()?)?)?)?
+        .checked_add(VEGA_JUDGE_REL)?;
+    if vega < st.vega_min.mul_up(Fixed::ONE.checked_add(delta)?)? {
+        return Err(PricingError::IllConditioned);
     }
-    to_volatility(exp(v)?)
+    to_volatility(sigma, slack)
+}
+
+/// One evaluation at `v = ln σ`: `ln σ√T`, `d1`, `d2`, `ln n(d1)` and `ln vega`, the last two
+/// `None` when `d1²` would not fit (`n(d1)` is then zero).
+struct Eval {
+    ls: Fixed,
+    d1: Fixed,
+    d2: Fixed,
+    ln_pdf: Option<Fixed>,
+    ln_vega: Option<Fixed>,
+}
+
+fn evaluate(st: &Setup, v: Fixed) -> Result<Eval, PricingError> {
+    let ls = v.checked_add(st.half_ln_t)?;
+    let sst = exp(ls)?;
+    let d1 = d1_terms(
+        st.s,
+        st.k,
+        st.r,
+        st.q,
+        st.ln_s,
+        st.ln_k,
+        v,
+        st.half_ln_t,
+        ls,
+        sst,
+    )?;
+    let d2 = d1.checked_sub(sst)?;
+    // ln n(d1) = −d1² / 2 − ln √(2π)
+    let ln_pdf = if d1.raw().unsigned_abs() < D1_LIMIT {
+        Some(
+            half(d1.mul_down(d1)?)
+                .checked_add(LN_SQRT_2PI)?
+                .checked_neg()?,
+        )
+    } else {
+        None
+    };
+    // ln vega = ln S Dq + ln n(d1) + ln √T
+    let ln_vega = match ln_pdf {
+        Some(lp) => Some(st.ln_s_dq.checked_add(lp)?.checked_add(st.half_ln_t)?),
+        None => None,
+    };
+    Ok(Eval {
+        ls,
+        d1,
+        d2,
+        ln_pdf,
+        ln_vega,
+    })
 }
 
 /// The Chebyshev step in `v = ln σ`, capped at [`MAX_STEP`]: `−n (1 + c / 2)` with
@@ -443,16 +532,15 @@ fn cell(x: Fixed, n: usize) -> Result<(usize, Fixed), PricingError> {
     Ok((whole, Fixed::from_raw(x.raw() & ((1 << 64) - 1))))
 }
 
-/// `σ` as a [`Volatility`]: a root within `2^-20` relative of a range end is that end (the
-/// round trip of a price at `σ = 0.005` or `5` may land a few ulps outside); past it,
-/// `DomainError`.
-fn to_volatility(sigma: Fixed) -> Result<Volatility, PricingError> {
+/// `σ` as a [`Volatility`]: a root outside the range by at most `slack`, the solve's own
+/// round-trip envelope, is that end (the round trip of a price at `σ = 0.005` or `5` may land
+/// just outside); past it, `DomainError`.
+fn to_volatility(sigma: Fixed, slack: Fixed) -> Result<Volatility, PricingError> {
     let (lo, hi) = (Volatility::MIN.get(), Volatility::MAX.get());
-    let slack = |end: Fixed| Fixed::from_raw(end.raw() >> 20);
-    if sigma < lo && sigma >= lo.checked_sub(slack(lo))? {
+    if sigma < lo && sigma >= lo.checked_sub(slack)? {
         return Ok(Volatility::MIN);
     }
-    if sigma > hi && sigma <= hi.checked_add(slack(hi))? {
+    if sigma > hi && sigma <= hi.checked_add(slack)? {
         return Ok(Volatility::MAX);
     }
     Volatility::try_new(sigma)

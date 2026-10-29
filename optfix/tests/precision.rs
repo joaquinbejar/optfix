@@ -488,7 +488,8 @@ fn implied_vol_section(n: usize) -> String {
         )
         .unwrap();
     }
-    let fx = common::iv::fixture_check();
+    let fx = common::iv::fixture_check("iv_fixture.csv");
+    let th = common::iv::fixture_check("iv_threshold.csv");
     write!(
         s,
         "\nAgainst the independent mpmath reference (`tests/data/iv_fixture.csv`, \
@@ -498,6 +499,27 @@ fn implied_vol_section(n: usize) -> String {
          volatility of each rounded target; the other {} rejected (`IllConditioned`, or no \
          root inside the bounds).\n",
         fx.rows, fx.answered, fx.worst, fx.rejected
+    )
+    .unwrap();
+    write!(
+        s,
+        "\nAt the conditioning threshold (`tests/data/iv_threshold.csv`, \
+         `tools/iv_fixture/gen_iv_threshold.py`: {} targets whose exact root's vega is the \
+         threshold times `1 + ε`, `ε` from `−2^-6` to `2^-6` down to `±2^-26` and 0): no target \
+         below the threshold is answered, every one at `1 + 2^-8` or above is; {} answered \
+         (worst {:.3e} of the envelope), {} rejected, of which {} answered and {} rejected in \
+         `[thr, thr (1 + 2^-8))`, where `implied_vol` widens the threshold by its own `δ`.\n",
+        th.rows, th.answered, th.worst, th.rejected, th.band_answered, th.band_rejected
+    )
+    .unwrap();
+    let cx = common::iv::fixture_check("iv_threshold_codex.csv");
+    write!(
+        s,
+        "\nCodex's adversarial threshold set (`tests/data/iv_threshold_codex.csv`, \
+         `tools/iv_fixture/codex/`, 100 mpmath digits, the exact ratio of the root's vega to \
+         the threshold per target): {} targets, none with a ratio below 1 answered; {} \
+         answered (worst {:.3e} of the envelope), {} rejected.\n",
+        cx.rows, cx.answered, cx.worst, cx.rejected
     )
     .unwrap();
     s
