@@ -354,10 +354,12 @@ fn iterate(
     //
     // - ∂d1/∂σ = −d2 / σ (from d1 = ln(F/K) / (σ√T) + σ√T / 2), so ∂ ln vega / ∂ σ =
     //   −d1 ∂d1/∂σ = d1 d2 / σ, that is d ln vega / d ln σ = d1 d2;
-    // - |ln σ − ln σ*| <= slack / σ (to first order; slack / σ <= 2^-20 here), so
-    //   |ln vega(σ) − ln vega(σ*)| <= |d1 d2| × slack / σ, with d1 d2 at the returned σ; the `+ 1`
-    //   covers d1 d2's own change over that interval, which is far below 1 at a relative
-    //   width of 2^-20;
+    // - |ln σ − ln σ*| <= slack / σ to first order, and slack / σ <= 2^-18 (about 3 × 10^-6)
+    //   here: 4 E / (vega σ) <= 4 × 2^-28 / 0.005 since vega >= 2^28 E and σ >= 0.005, plus
+    //   2^-40 (codex measured up to 2.98 × 10^-6 on answered cases). So
+    //   |ln vega(σ) − ln vega(σ*)| <= |d1 d2| × slack / σ with d1 d2 at the returned σ, up to the
+    //   change of d1 d2 across ±slack, which the `+ 1` covers (measured at most 1.5 × 10^-4;
+    //   the higher-order terms of ln σ − ln σ* are below (slack / σ)², about 10^-11);
     // - `VEGA_JUDGE_REL` (2^-20) covers the rounding of the computed vega (`d1`, `ln S`, `qT`,
     //   `ln T` and `exp`, each orders of magnitude smaller) and the second-order terms of
     //   e^(±δ').
