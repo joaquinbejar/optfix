@@ -12,7 +12,10 @@
 
 mod error;
 mod fixed;
+mod kernel;
 mod quantity;
+#[doc(hidden)]
+pub mod repr;
 mod u256;
 
 pub use error::PricingError;
