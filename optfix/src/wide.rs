@@ -49,15 +49,9 @@ mod tests {
         assert_eq!(mul_shr(1, 1, 256, u), Ok(1));
         assert_eq!(mul_shr(0, 7, 300, u), Ok(0));
         assert_eq!(mul_shr(1 << 64, 1 << 64, 64, d), Ok(1 << 64));
-        // u128::MAX rounding up by one more unit overflows.
-        assert_eq!(
-            mul_shr(u128::MAX, u128::MAX, 128, u).and_then(|_| mul_shr(
-                u128::MAX,
-                (1 << 127) + 1,
-                127,
-                u
-            )),
-            Err(PricingError::Overflow)
-        );
+        // Floor exactly u128::MAX, inexact: only rounding up overflows (the last checked_add).
+        let (a, b) = (u128::MAX - 1, (1u128 << 127) + 1);
+        assert_eq!(mul_shr(a, b, 127, d), Ok(u128::MAX));
+        assert_eq!(mul_shr(a, b, 127, u), Err(PricingError::Overflow));
     }
 }
