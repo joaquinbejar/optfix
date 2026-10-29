@@ -11,7 +11,7 @@
 #![no_std]
 
 use bytemuck::Pod;
-use optfix::repr::{Binary, Decimal, Repr};
+use optfix::repr::{Binary, BinaryAtanh, Decimal, DecimalNative, Repr};
 use optfix::{Fixed, FixedBytes, PricingError};
 use pinocchio::cpi::set_return_data;
 use pinocchio::error::ProgramError;
@@ -51,6 +51,12 @@ pub enum Instruction {
     ExpDecimal = 6,
     /// `ln` in decimal `10^18` (milestone 3 comparison).
     LnDecimal = 7,
+    /// `exp` in decimal `10^18`, computed in decimal arithmetic (milestone 3 baseline).
+    ExpDecimalNative = 8,
+    /// `ln` in decimal `10^18`, computed in decimal arithmetic (milestone 3 baseline).
+    LnDecimalNative = 9,
+    /// `ln` in Q64.64, atanh form (milestone 3 comparison of the two `ln` forms).
+    LnBinaryAtanh = 10,
 }
 
 impl Instruction {
@@ -70,6 +76,9 @@ impl Instruction {
             5 => Ok(Self::LnBinary),
             6 => Ok(Self::ExpDecimal),
             7 => Ok(Self::LnDecimal),
+            8 => Ok(Self::ExpDecimalNative),
+            9 => Ok(Self::LnDecimalNative),
+            10 => Ok(Self::LnBinaryAtanh),
             _ => Err(BenchError::UnknownInstruction),
         }
     }
@@ -138,6 +147,9 @@ pub fn process_instruction(
         Instruction::LnBinary => unary(args, raw_fn::<Binary, false>)?,
         Instruction::ExpDecimal => unary(args, raw_fn::<Decimal, true>)?,
         Instruction::LnDecimal => unary(args, raw_fn::<Decimal, false>)?,
+        Instruction::ExpDecimalNative => unary(args, raw_fn::<DecimalNative, true>)?,
+        Instruction::LnDecimalNative => unary(args, raw_fn::<DecimalNative, false>)?,
+        Instruction::LnBinaryAtanh => unary(args, raw_fn::<BinaryAtanh, false>)?,
     };
     set_return_data(&encode_result(result));
     Ok(())

@@ -21,6 +21,11 @@ pub(crate) use tables::{
 use tables::{
     EXP_COEF, EXP_TABLE, EXP_TABLE_BITS, LN2_Q120, LN_COEF, LN_RINV, LN_TABLE, LN_TABLE_BITS,
 };
+pub(crate) use tables::{
+    EXP_COEF_DEC, EXP_STEP_LO_DEC27, EXP_TABLE_DEC, LN2_DEC, LN2_LO_DEC27, LN_COEF_DEC,
+    LN_RINV_DEC, LN_TABLE_DEC,
+};
+pub(crate) use tables::{EXP_TABLE_BITS as EXP_BITS, LN_TABLE_BITS as LN_BITS};
 
 /// Index into `EXP_COEF` (which starts at `c2`) from which Horner steps use
 /// [`mul_hi_approx`]: `p_4` and above.
@@ -310,4 +315,110 @@ fn shr64(a: u64, s: u32) -> Result<u64, PricingError> {
 #[inline]
 fn shl64(a: u64, s: u32) -> Result<u64, PricingError> {
     a.checked_shl(s).ok_or(PricingError::Overflow)
+}
+
+/// `(hi × 2^64 + lo) / d` for a normalized divisor (`d >= 2^63`) and `hi < d`, so the
+/// quotient fits a `u64`. Knuth's algorithm D on 32-bit digits, where every digit operation is
+/// a native 64-bit instruction; each quotient digit is estimated from the top divisor digit and
+/// corrected at most twice.
+pub(crate) fn div_128_64(hi: u64, lo: u64, d: u64) -> Result<u64, PricingError> {
+    if d < 1 << 63 || hi >= d {
+        return Err(PricingError::Overflow);
+    }
+    let (d1, d0) = (shr64(d, 32)?, d & LOW_32);
+    let (l1, l0) = (shr64(lo, 32)?, lo & LOW_32);
+    let q1 = div_digit(hi, l1, d1, d0)?;
+    // Remainder after the first digit: (hi : l1) − q1 × d is below d < 2^64, so it is exact
+    // modulo 2^64 and the wrapping operations below compute it exactly.
+    let u = shl64(hi & LOW_32, 32)? | l1;
+    let rem = u.wrapping_sub(q1.wrapping_mul(d));
+    let q0 = div_digit(rem, l0, d1, d0)?;
+    Ok(shl64(q1, 32)? | q0)
+}
+
+/// One 32-bit quotient digit of `(u × 2^32 + next) / d` for `d = d1 × 2^32 + d0`, `u < d`.
+/// With a two-digit divisor the refinement test covers the whole divisor, so the corrected
+/// estimate is exact and needs no add-back.
+fn div_digit(u: u64, next: u64, d1: u64, d0: u64) -> Result<u64, PricingError> {
+    let mut q = u.checked_div(d1).ok_or(PricingError::DomainError)?;
+    let mut r = u.checked_sub(mul64(q, d1)?).ok_or(PricingError::Overflow)?;
+    for _ in 0..2 {
+        // q is at most 2 too large (Knuth's theorem B): fix it against the full divisor.
+        let too_big = q > LOW_32 || (r <= LOW_32 && mul64(q, d0)? > (shl64(r, 32)? | next));
+        if !too_big {
+            break;
+        }
+        q = q.checked_sub(1).ok_or(PricingError::Overflow)?;
+        r = r.checked_add(d1).ok_or(PricingError::Overflow)?;
+    }
+    Ok(q)
+}
+
+/// `ln(m / 2^63 × 2^e) × 2^120` through `ln(c_j) + 2 atanh((m − c_j) / (m + c_j))`, the
+/// one-division form of `docs/PLAN.md` 4.3, on the same buckets as [`ln_core`].
+pub(crate) fn ln_core_atanh(e: i64, m: u64) -> Result<i128, PricingError> {
+    use tables::{ATANH_COEF, LN_C_TABLE};
+    let frac = m.checked_sub(1 << 63).ok_or(PricingError::DomainError)?;
+    let j = round_shr_u64(frac, 63u32.saturating_sub(LN_TABLE_BITS));
+    // c_j = 1 + j/128 in Q1.63, up to 2 (j = 128) as a u128.
+    let c = u128::from(j)
+        .checked_shl(63u32.saturating_sub(LN_TABLE_BITS))
+        .and_then(|v| v.checked_add(1 << 63))
+        .ok_or(PricingError::Overflow)?;
+    let j = usize::try_from(j).map_err(|_| PricingError::Overflow)?;
+    let lnc = *LN_C_TABLE.get(j).ok_or(PricingError::Overflow)?;
+    // s = (m − c) / (m + c) in Q.72: |s| <= 2^-9. The denominator (m + c) / 2 is in
+    // [2^63, 2^64), so it fits and is normalized; s = |m − c| × 2^71 / ((m + c) / 2).
+    let m128 = u128::from(m);
+    let neg = m128 < c;
+    let num = if neg {
+        c.checked_sub(m128)
+    } else {
+        m128.checked_sub(c)
+    }
+    .and_then(|v| u64::try_from(v).ok())
+    .ok_or(PricingError::Overflow)?;
+    let den = u64::try_from(m128.checked_add(c).ok_or(PricingError::Overflow)? >> 1)
+        .map_err(|_| PricingError::Overflow)?;
+    // num × 2^71 as (hi, lo) = (num × 2^7, 0): num < 2^56, so hi < 2^63 <= den.
+    let s72 = div_128_64(shl64(num, 7)?, 0, den)?;
+    // atanh(s) = s + s^3 (1/3 + s^2 (1/5 + s^2 / 7)), s in Q.72.
+    let s2 = mul_hi(s72, s72)?; // Q.80
+    let (c3, rest) = ATANH_COEF.split_first().ok_or(PricingError::Overflow)?;
+    let (c5, c7) = match rest {
+        [a, b] => (*a, *b),
+        _ => return Err(PricingError::Overflow),
+    };
+    // Q.80 × Q0.64 / 2^64 = Q.80; back to Q0.64 by >> 16. The error is scaled by s^5.
+    let inner = c5
+        .checked_add(round_shr_u64(mul_hi_approx(s2, c7)?, 16))
+        .ok_or(PricingError::Overflow)?;
+    let poly = c3
+        .checked_add(round_shr_u64(mul_hi_approx(s2, inner)?, 16))
+        .ok_or(PricingError::Overflow)?;
+    // s^3 P: (s × s^2) in Q.88, then × P (Q0.64) in Q.88; to Q.72 by >> 16.
+    let s3 = mul_hi(s72, s2)?;
+    let s3p = round_shr_u64(mul_hi(s3, poly)?, 16);
+    let at = s72.checked_add(s3p).ok_or(PricingError::Overflow)?; // atanh |s|, Q.72
+                                                                  // 2 atanh in Q.120: × 2 × 2^48.
+    let at120 = i128::from(at) << 49;
+    let at120 = if neg {
+        at120.checked_neg()
+    } else {
+        Some(at120)
+    }
+    .ok_or(PricingError::Overflow)?;
+    let e_ln2 = i128::try_from(mul_u128(e.unsigned_abs(), LN2_Q120)?)
+        .map_err(|_| PricingError::Overflow)?;
+    let e_ln2 = if e < 0 {
+        e_ln2.checked_neg()
+    } else {
+        Some(e_ln2)
+    }
+    .ok_or(PricingError::Overflow)?;
+    let table = i128::try_from(round_shr_u128(lnc, 8)).map_err(|_| PricingError::Overflow)?;
+    e_ln2
+        .checked_add(table)
+        .and_then(|v| v.checked_add(at120))
+        .ok_or(PricingError::Overflow)
 }

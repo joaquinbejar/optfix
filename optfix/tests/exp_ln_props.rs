@@ -25,7 +25,7 @@
 use std::sync::OnceLock;
 
 use num_bigint::BigInt;
-use optfix::repr::{Binary, Decimal, Repr};
+use optfix::repr::{Binary, BinaryAtanh, Decimal, DecimalNative, Repr};
 use optfix::PricingError;
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed};
@@ -164,6 +164,24 @@ impl Unit for Decimal {
     }
 }
 
+impl Unit for BinaryAtanh {
+    fn to_ref(raw: i128) -> BigInt {
+        Binary::to_ref(raw)
+    }
+    fn ulps(raw: i128, y: &BigInt) -> f64 {
+        Binary::ulps(raw, y)
+    }
+}
+
+impl Unit for DecimalNative {
+    fn to_ref(raw: i128) -> BigInt {
+        Decimal::to_ref(raw)
+    }
+    fn ulps(raw: i128, y: &BigInt) -> f64 {
+        Decimal::ulps(raw, y)
+    }
+}
+
 /// `exp` error in ulps of `max(e^x, 1)`.
 fn exp_err<R: Unit>(raw: i128, y: &BigInt) -> f64 {
     let e = R::ulps(raw, y).abs();
@@ -187,6 +205,8 @@ const EXP_BOUND_BINARY: f64 = 3.0;
 const LN_BOUND_BINARY: f64 = 2.0;
 const EXP_BOUND_DECIMAL: f64 = 1.0;
 const LN_BOUND_DECIMAL: f64 = 1.0;
+const EXP_BOUND_NATIVE: f64 = 4.0;
+const LN_BOUND_NATIVE: f64 = 4.0;
 
 fn check_exp<R: Unit>(x: i128, bound: f64) -> Result<(), TestCaseError> {
     // Beyond ±50 the result is far outside both ranges: no reference needed.
@@ -270,6 +290,21 @@ proptest! {
     }
 
     #[test]
+    fn prop_exp_decimal_native_within_bound(x in exp_arg::<DecimalNative>()) {
+        check_exp::<DecimalNative>(x, EXP_BOUND_NATIVE)?;
+    }
+
+    #[test]
+    fn prop_ln_decimal_native_within_bound(x in ln_arg::<DecimalNative>()) {
+        check_ln::<DecimalNative>(x, LN_BOUND_NATIVE)?;
+    }
+
+    #[test]
+    fn prop_ln_binary_atanh_within_bound(x in ln_arg::<BinaryAtanh>()) {
+        check_ln::<BinaryAtanh>(x, LN_BOUND_BINARY)?;
+    }
+
+    #[test]
     fn prop_ln_binary_within_bound(x in ln_arg::<Binary>()) {
         check_ln::<Binary>(x, LN_BOUND_BINARY)?;
     }
@@ -289,6 +324,7 @@ fn test_exact_points() {
             Binary::ln as fn(i128) -> _,
         ),
         (Decimal::ONE, Decimal::exp, Decimal::ln),
+        (DecimalNative::ONE, DecimalNative::exp, DecimalNative::ln),
     ] {
         assert_eq!(exp(0), Ok(one));
         assert_eq!(ln(one), Ok(0));
@@ -454,6 +490,21 @@ fn report_rows<R: Unit>(out: &mut String, n: usize, ulp: &str) {
     }
 }
 
+fn report_ln_rows<R: Unit>(out: &mut String, n: usize, ulp: &str) {
+    use std::fmt::Write as _;
+    for (i, d) in ln_domains::<R>().iter().enumerate() {
+        let (e, x) = max_error::<R>(d, false, n, 0x0F7F_1C5E_0000_0000 ^ (i as u64) << 8);
+        let xv = ratio(&R::to_ref(x));
+        writeln!(
+            out,
+            "| `ln` | {} | {} | {e:.3} | {ulp} | {xv:.6e} |",
+            R::NAME,
+            d.label
+        )
+        .unwrap();
+    }
+}
+
 #[test]
 fn test_precision_report() {
     let n: usize = std::env::var("OPTFIX_PRECISION_SAMPLES")
@@ -464,7 +515,9 @@ fn test_precision_report() {
     s.push_str("| Function | Representation | Domain | Max error | Unit | At x |\n");
     s.push_str("| --- | --- | --- | ---: | --- | ---: |\n");
     report_rows::<Binary>(&mut s, n, "ulp `2^-64`");
+    report_ln_rows::<BinaryAtanh>(&mut s, n, "ulp `2^-64`");
     report_rows::<Decimal>(&mut s, n, "ulp `10^-18`");
+    report_rows::<DecimalNative>(&mut s, n, "ulp `10^-18`");
     println!("{s}");
     if let Ok(path) = std::env::var("OPTFIX_PRECISION_OUT") {
         std::fs::write(path, s).unwrap();

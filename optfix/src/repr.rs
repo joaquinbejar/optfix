@@ -8,11 +8,15 @@
 //! can measure both until the decision deletes one.
 
 use crate::kernel::{
-    exp_core, ln_core, lo64, mul_wide, normalize, round_shr_i128, round_shr_i64, round_shr_u128,
-    round_shr_u64, DEC_TO_Q70_Q53, EXP_INV_STEP_DEC, EXP_INV_STEP_Q25, EXP_STEP_HI_DEC,
-    EXP_STEP_HI_Q64, EXP_STEP_LO_DEC_Q110, EXP_STEP_LO_Q114, LN_1E18_Q120,
+    exp_core, ln_core, ln_core_atanh, lo64, mul_wide, normalize, round_shr_i128, round_shr_i64,
+    round_shr_u128, round_shr_u64, DEC_TO_Q70_Q53, EXP_INV_STEP_DEC, EXP_INV_STEP_Q25,
+    EXP_STEP_HI_DEC, EXP_STEP_HI_Q64, EXP_STEP_LO_DEC_Q110, EXP_STEP_LO_Q114, LN_1E18_Q120,
 };
-use crate::PricingError;
+use crate::kernel::{
+    EXP_BITS, EXP_COEF_DEC, EXP_STEP_LO_DEC27, EXP_TABLE_DEC, LN2_DEC, LN2_LO_DEC27, LN_BITS,
+    LN_COEF_DEC, LN_RINV_DEC, LN_TABLE_DEC,
+};
+use crate::{Fixed, PricingError};
 
 /// A fixed-point representation with its own `exp` and `ln`.
 pub trait Repr {
@@ -41,6 +45,36 @@ pub struct Binary;
 /// Decimal: value `raw / 10^18`.
 #[derive(Debug, Clone, Copy)]
 pub struct Decimal;
+
+/// Decimal `10^18` computed natively: the same reduction, tables and polynomials as
+/// [`Decimal`], but every step is a decimal [`Fixed`] multiply (a 256-bit product divided by
+/// `10^18`, rounded down). The baseline that shows what the binary core saves.
+#[derive(Debug, Clone, Copy)]
+pub struct DecimalNative;
+
+/// Q64.64 with `ln` in the atanh form of `docs/PLAN.md` 4.3 (one division), for the
+/// comparison of the two `ln` forms on the binary representation. `exp` is [`Binary`]'s.
+#[derive(Debug, Clone, Copy)]
+pub struct BinaryAtanh;
+
+impl Repr for BinaryAtanh {
+    const NAME: &'static str = "Q64.64, ln atanh form";
+    const ONE: i128 = 1 << 64;
+
+    fn exp(x: i128) -> Result<i128, PricingError> {
+        Binary::exp(x)
+    }
+
+    fn ln(x: i128) -> Result<i128, PricingError> {
+        let raw = u128::try_from(x)
+            .ok()
+            .filter(|&r| r != 0)
+            .ok_or(PricingError::DomainError)?;
+        let (p, m) = normalize(raw)?;
+        let y = ln_core_atanh(p.checked_sub(1).ok_or(PricingError::Overflow)?, m)?;
+        round_shr_i128(y, 56)
+    }
+}
 
 /// `10^18`.
 const E18: u64 = 1_000_000_000_000_000_000;
@@ -187,6 +221,122 @@ impl Repr for Decimal {
             .checked_add(frac)
             .ok_or(PricingError::Overflow)?;
         signed(mag, y < 0)
+    }
+}
+
+impl Repr for DecimalNative {
+    const NAME: &'static str = "decimal 10^18, native";
+    const ONE: i128 = E18 as i128;
+
+    fn exp(x: i128) -> Result<i128, PricingError> {
+        if x >= EXP_LIMIT_DEC {
+            return Err(PricingError::Overflow);
+        }
+        if x <= -EXP_LIMIT_DEC {
+            return Ok(0);
+        }
+        // Same reduction index and exact high part as `Decimal::exp`.
+        let xs = i64::try_from(x >> 30).map_err(|_| PricingError::Overflow)?;
+        let n = xs
+            .checked_mul(EXP_INV_STEP_DEC)
+            .and_then(|p| p.checked_add(1 << 49))
+            .map(|p| p >> 50)
+            .ok_or(PricingError::Overflow)?;
+        let nhi = signed(mul_wide(n.unsigned_abs(), EXP_STEP_HI_DEC)?, n < 0)?;
+        let d = x.checked_sub(nhi).ok_or(PricingError::Overflow)?;
+        // r = d − n LO, with n LO (below 2^42 units of 10^-27) rounded to 10^-18.
+        let lo = n
+            .checked_mul(EXP_STEP_LO_DEC27)
+            .and_then(|v| v.checked_add(500_000_000))
+            .and_then(|v| v.checked_div_euclid(1_000_000_000))
+            .ok_or(PricingError::Overflow)?;
+        let r = Fixed::from_raw(
+            d.checked_sub(i128::from(lo))
+                .ok_or(PricingError::Overflow)?,
+        );
+        let k = n.checked_shr(EXP_BITS).ok_or(PricingError::Overflow)?;
+        let j = usize::try_from(n & ((1 << EXP_BITS) - 1)).map_err(|_| PricingError::Overflow)?;
+        // p = c2 + r (c3 + ...), q = r + r^2 p, v = T_j (1 + q).
+        let (last, rest) = EXP_COEF_DEC.split_last().ok_or(PricingError::Overflow)?;
+        let mut p = Fixed::from_raw(*last);
+        for &c in rest.iter().rev() {
+            p = Fixed::from_raw(c).checked_add(r.mul_down(p)?)?;
+        }
+        let q = r.checked_add(r.mul_down(r)?.mul_down(p)?)?;
+        let t = Fixed::from_raw(*EXP_TABLE_DEC.get(j).ok_or(PricingError::Overflow)?);
+        let v = t.checked_add(t.mul_down(q)?)?.raw();
+        // × 2^k.
+        if k >= 0 {
+            let s = u32::try_from(k).map_err(|_| PricingError::Overflow)?;
+            v.checked_shl(s)
+                .filter(|r| r.checked_shr(s) == Some(v))
+                .ok_or(PricingError::Overflow)
+        } else {
+            let s = u32::try_from(k.unsigned_abs()).map_err(|_| PricingError::Overflow)?;
+            if s >= 127 {
+                return Ok(0);
+            }
+            round_shr_i128(v, s)
+        }
+    }
+
+    fn ln(x: i128) -> Result<i128, PricingError> {
+        let raw = u128::try_from(x)
+            .ok()
+            .filter(|&r| r != 0)
+            .ok_or(PricingError::DomainError)?;
+        // m = x / 2^k in [1, 2): 10^18 is in [2^59, 2^60), so start from k = bits − 60 and fix
+        // up by one.
+        let bits = 128u32.saturating_sub(raw.leading_zeros());
+        let mut k = i64::from(bits).saturating_sub(60);
+        let mut m = if k >= 0 {
+            round_shr_u128(raw, u32::try_from(k).map_err(|_| PricingError::Overflow)?)
+        } else {
+            raw.checked_shl(u32::try_from(k.unsigned_abs()).map_err(|_| PricingError::Overflow)?)
+                .ok_or(PricingError::Overflow)?
+        };
+        let one = u128::from(E18);
+        if m < one {
+            m = m.checked_mul(2).ok_or(PricingError::Overflow)?;
+            k = k.saturating_sub(1);
+        } else if m >= 2 * one {
+            m = round_shr_u128(m, 1);
+            k = k.saturating_add(1);
+        }
+        let m = i128::try_from(m).map_err(|_| PricingError::Overflow)?;
+        // Bucket j = round((m − 1) × 128); 10^18 / 128 is an integer.
+        let width = i128::from(E18 >> LN_BITS);
+        let j = m
+            .checked_sub(Self::ONE)
+            .and_then(|f| f.checked_add(width >> 1))
+            .and_then(|f| f.checked_div(width))
+            .and_then(|j| usize::try_from(j).ok())
+            .ok_or(PricingError::Overflow)?;
+        let rinv = Fixed::from_raw(*LN_RINV_DEC.get(j).ok_or(PricingError::Overflow)?);
+        let z = Fixed::from_raw(m).mul_down(rinv)?.checked_sub(Fixed::ONE)?;
+        // q = c2 − z (c3 − ...), ln(1 + z) = z − z^2 q.
+        let (last, rest) = LN_COEF_DEC.split_last().ok_or(PricingError::Overflow)?;
+        let mut q = Fixed::from_raw(*last);
+        for &c in rest.iter().rev() {
+            q = Fixed::from_raw(c).checked_sub(z.mul_down(q)?)?;
+        }
+        let l = z.checked_sub(z.mul_down(z)?.mul_down(q)?)?;
+        // k ln 2 with the constant split in two, as in the exp reduction: k × HI is exact and
+        // k × LO (below 2^37 units of 10^-27) is rounded to 10^-18.
+        let k_lo = k
+            .checked_mul(LN2_LO_DEC27)
+            .and_then(|v| v.checked_add(500_000_000))
+            .and_then(|v| v.checked_div_euclid(1_000_000_000))
+            .ok_or(PricingError::Overflow)?;
+        let k_ln2 = i128::from(k)
+            .checked_mul(LN2_DEC)
+            .and_then(|v| v.checked_add(i128::from(k_lo)))
+            .ok_or(PricingError::Overflow)?;
+        let lnt = *LN_TABLE_DEC.get(j).ok_or(PricingError::Overflow)?;
+        k_ln2
+            .checked_add(lnt)
+            .and_then(|s| s.checked_add(l.raw()))
+            .ok_or(PricingError::Overflow)
     }
 }
 

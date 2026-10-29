@@ -21,7 +21,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use litesvm::LiteSVM;
-use optfix::repr::{Binary as Q64, Decimal, Repr};
+use optfix::repr::{Binary as Q64, BinaryAtanh, Decimal, DecimalNative, Repr};
 use optfix::{Fixed, PricingError};
 use solana_address::Address;
 use solana_instruction::Instruction;
@@ -42,6 +42,9 @@ enum Ix {
     LnBinary = 5,
     ExpDecimal = 6,
     LnDecimal = 7,
+    ExpDecimalNative = 8,
+    LnDecimalNative = 9,
+    LnBinaryAtanh = 10,
 }
 
 /// Status byte plus one 16-byte little-endian value.
@@ -149,7 +152,7 @@ fn raw_fn<R: Repr, const EXP: bool>(x: Fixed) -> Result<Fixed, PricingError> {
     f(x.raw()).map(Fixed::from_raw)
 }
 
-const ROWS: [Row; 7] = [
+const ROWS: [Row; 10] = [
     Row {
         ix: Ix::MulDown,
         name: "MulDown",
@@ -191,6 +194,28 @@ const ROWS: [Row; 7] = [
         name: "LnDecimal",
         op: Op::Unary(raw_fn::<Decimal, false>),
         domain: Domain::LnArg { one: Decimal::ONE },
+    },
+    Row {
+        ix: Ix::ExpDecimalNative,
+        name: "ExpDecimalNative",
+        op: Op::Unary(raw_fn::<DecimalNative, true>),
+        domain: Domain::ExpArg {
+            one: DecimalNative::ONE,
+        },
+    },
+    Row {
+        ix: Ix::LnDecimalNative,
+        name: "LnDecimalNative",
+        op: Op::Unary(raw_fn::<DecimalNative, false>),
+        domain: Domain::LnArg {
+            one: DecimalNative::ONE,
+        },
+    },
+    Row {
+        ix: Ix::LnBinaryAtanh,
+        name: "LnBinaryAtanh",
+        op: Op::Unary(raw_fn::<BinaryAtanh, false>),
+        domain: Domain::LnArg { one: Q64::ONE },
     },
 ];
 
