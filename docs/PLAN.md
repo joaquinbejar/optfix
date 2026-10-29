@@ -244,7 +244,8 @@ published error bounds), Marsaglia (series, iteration count varies with `x`).
 `d1 = (ln(S/K) + (r + σ²/2)T) / (σ√T)`, `d2 = d1 − σ√T`. Degenerate cases handled before the
 formula: `T == 0` returns intrinsic value with delta 0 or ±1, gamma and vega 0; `σ√T` below a
 threshold likewise returns forward intrinsic: `max(S − K e^{−rT}, 0)` for a call,
-`max(K e^{−rT} − S, 0)` for a put, with delta 0 or ±1. The out-of-the-money side is priced
+`max(K e^{−rT} − S, 0)` for a put, with delta 0 or ±1. The out-of-the-money side, by forward moneyness (`S` vs `K e^{−rT}`, not `S` vs `K`, so that
+`S − K e^{−rT}` has a fixed sign), is priced
 directly and the in-the-money side via put-call parity (`C = P + S − K e^{−rT}`), a sum of
 positive terms. Fixed-point errors are absolute, so the ITM formula's cancellation would not
 amplify them; parity is used because it reuses the OTM evaluation, which has small values and
@@ -373,4 +374,4 @@ Each milestone is one feature branch (`feat/m<N>-<name>`) and one PR.
    oracle stable while you change OptionStratLib; note the 0.22 release hold.
 7. Pinocchio 0.12 came out today. Start `bench-program` on 0.12 (new repo, no migration
    later) or on 0.11 to match matchbook? Proposal: 0.12.
-8. Resolved in review: `Fixed::raw`/`from_raw` yes; newtypes only via `try_from_fixed`.
+8. Proposal (from review, pending your approval): `Fixed::raw`/`from_raw` yes; newtypes only via `try_from_fixed`.
