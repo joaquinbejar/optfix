@@ -21,7 +21,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use litesvm::LiteSVM;
-use optfix::{Fixed, PricingError};
+use optfix::{Fixed, PricingError, Rounding};
 use solana_address::Address;
 use solana_instruction::Instruction;
 use solana_keypair::Keypair;
@@ -41,6 +41,7 @@ enum Ix {
     Ln = 5,
     NormCdf = 6,
     NormPdf = 7,
+    MulShr = 8,
 }
 
 /// Status byte plus one 16-byte little-endian value.
@@ -132,6 +133,16 @@ type Binary = fn(Fixed, Fixed) -> Result<Fixed, PricingError>;
 enum Op {
     Unary(Unary),
     Binary(Binary),
+    /// `wide::mul_shr` on the raw bits of two values, shift 64, rounding down.
+    MulShr,
+}
+
+/// The shift `MulShr` is measured with: a Q64.64 product.
+const MUL_SHR_SHIFT: u32 = 64;
+
+/// `x`'s 128 bits as a `u128`, and back.
+fn bits(x: Fixed) -> u128 {
+    u128::from_le_bytes(x.raw().to_le_bytes())
 }
 
 /// Inputs of a row.
@@ -145,6 +156,8 @@ enum Domain {
     LnArg,
     /// Normal CDF and PDF arguments: uniform in `[−9.25, 9.25]`.
     NormArg,
+    /// Pairs from [`Rng::any`], read as `u128`.
+    Wide,
 }
 
 /// One measured instruction and the host function its result must equal.
@@ -155,7 +168,7 @@ struct Row {
     domain: Domain,
 }
 
-const ROWS: [Row; 7] = [
+const ROWS: [Row; 8] = [
     Row {
         ix: Ix::MulDown,
         name: "MulDown",
@@ -198,20 +211,34 @@ const ROWS: [Row; 7] = [
         op: Op::Unary(optfix::norm_pdf),
         domain: Domain::NormArg,
     },
+    Row {
+        ix: Ix::MulShr,
+        name: "MulShr",
+        op: Op::MulShr,
+        domain: Domain::Wide,
+    },
 ];
 
 fn apply(op: Op, a: Fixed, b: Fixed) -> Result<Fixed, PricingError> {
     match op {
         Op::Unary(f) => f(a),
         Op::Binary(f) => f(a, b),
+        Op::MulShr => optfix::wide::mul_shr(bits(a), bits(b), MUL_SHR_SHIFT, Rounding::Down)
+            .map(|v| Fixed::from_raw(i128::from_le_bytes(v.to_le_bytes()))),
     }
 }
 
 fn data(row: &Row, a: Fixed, b: Fixed) -> Vec<u8> {
     let mut d = vec![row.ix as u8];
     d.extend_from_slice(&a.to_bytes().0);
-    if let Op::Binary(_) = row.op {
-        d.extend_from_slice(&b.to_bytes().0);
+    match row.op {
+        Op::Binary(_) => d.extend_from_slice(&b.to_bytes().0),
+        Op::MulShr => {
+            d.extend_from_slice(&b.to_bytes().0);
+            d.extend_from_slice(&MUL_SHR_SHIFT.to_le_bytes());
+            d.push(0);
+        }
+        Op::Unary(_) => {}
     }
     d
 }
@@ -311,6 +338,7 @@ fn measure() -> Measurement {
                         Domain::ExpArg => (rng.exp_arg(), Fixed::ZERO),
                         Domain::LnArg => (rng.ln_arg(), Fixed::ZERO),
                         Domain::NormArg => (rng.norm_arg(), Fixed::ZERO),
+                        Domain::Wide => (rng.any(), rng.any()),
                     };
                     // sqrt is measured on |a|: a negative input is a cheap DomainError.
                     let a = match (row.op, row.domain) {
@@ -368,7 +396,9 @@ fn table(m: &Measurement) -> String {
          `SqrtDown` magnitudes log-uniform in `[10^-6, 10^9]` with random signs (`sqrt` takes \
          the absolute value); `exp` arguments uniform in `[−42, 43]`; `ln` arguments \
          log-uniform in `[10^-6, 10^9]`; `norm_cdf` and `norm_pdf` arguments uniform in \
-         `[−9.25, 9.25]`. Every on-chain result equals the host result bit for bit, and two runs in fresh VMs give identical \
+         `[−9.25, 9.25]`; `MulShr` (`wide::mul_shr`, shift 64, rounding down) two `u128` \
+         with log-uniform magnitudes over the whole range. Every on-chain result \
+         equals the host result bit for bit, and two runs in fresh VMs give identical \
          numbers. Release profile: `lto = \"fat\"`, `codegen-units = 1`; a program built with \
          another profile will measure differently."
     )
@@ -378,8 +408,9 @@ fn table(m: &Measurement) -> String {
         s,
         "\"Net\" is the median minus the `Noop` median ({noop_med} CU), which covers the \
          entrypoint, decoding one `FixedBytes` argument and return data. `MulDown` and \
-         `DivDown` decode two arguments, so their net figure still includes the second \
-         decode; the other rows decode one, like `Noop`."
+         `DivDown` decode two arguments and `MulShr` two plus a shift and a rounding, so \
+         their net figures still include the extra decoding; the other rows decode one, like \
+         `Noop`."
     )
     .unwrap();
     writeln!(s).unwrap();
