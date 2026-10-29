@@ -232,8 +232,9 @@ loser is deleted, not kept behind a feature: one representation, one set of erro
 
 256-bit intermediates are implemented in-crate with only the operations needed (`mul_wide`,
 `div_rem` by a `u128`, shifts). `u128 × u128` is not native on SBF (it lowers to
-compiler-builtins `__multi3`), so limb width matters: milestone 2 benchmarked `MulDown` with
-2 × `u128` limbs and with 4 × `u64` limbs and kept 4 × `u64` (decision log). No `ruint` or
+compiler-builtins `__multi3`), so the kernel matters: milestone 2 benchmarked the milestone 1
+kernel (2 × `u128` limbs) against a 4 × `u64` kernel with a short-division path and kept the
+latter (decision log). No `ruint` or
 `primitive-types`: they pull in more than we need and their CU cost is unknown.
 
 ### 4.2 `exp`
@@ -460,19 +461,25 @@ Milestone 1 (2026-10-29):
 
 Milestone 2 (2026-10-29):
 
-- **Limb layout: 4 × `u64`.** Measured at commit `cc48b4b` (`make bench` there reproduces it),
-  1,000 in-domain inputs, median CU with the `Noop` baseline of 164 CU included:
+- **`U256` kernel: 4 × `u64` limbs.** Two complete kernels were compared, not two layouts of
+  one algorithm. The milestone 1 kernel (2 × `u128` limbs) runs algorithm D for every divisor;
+  the milestone 2 kernel (4 × `u64` limbs) adds a short-division path for one-digit divisors,
+  which the `10^18` scale always takes. The gains below belong to the whole kernel and cannot be
+  attributed to the limb layout alone; a 2 × `u128` kernel with the same short-division path was
+  not measured. Measured at commit `cc48b4b` (`make bench` there reproduces it), 1,000 in-domain
+  inputs, median CU with the `Noop` baseline of 164 CU included:
 
-  | Operation | 2 × `u128` limbs | 4 × `u64` limbs | Change |
+  | Operation | 2 × `u128` kernel (M1) | 4 × `u64` kernel (M2) | Change |
   | --- | ---: | ---: | ---: |
   | `mul_down`, divisor opaque | 1,895 | 1,702 | −10% |
   | `mul_down`, divisor constant | 1,889 | 1,696 | −10% |
   | `div_down` | 1,761 | 1,701 | −3% |
   | `sqrt_down` | 8,309 | 8,044 | −3% |
 
-  4 × `u64` is cheaper at the median for every operation. Its `sqrt_down` worst case is higher
-  (14,040 against 11,809 CU), from the two-digit division in large Newton steps; milestone 5
-  can revisit if `sqrt` dominates the pricing cost. The milestone 1 kernel is deleted.
+  The 4 × `u64` kernel is cheaper at the median for every operation and is kept. Its `sqrt_down`
+  worst case is higher (14,040 against 11,809 CU), from the two-digit division in large Newton
+  steps; milestone 5 can revisit if `sqrt` dominates the pricing cost. The milestone 1 kernel is
+  deleted.
 - **Checked arithmetic costs about 6% on `mul_down`.** The two-`u128`-limb kernel with
   `wrapping_*` limb operations measured 1,774 CU against 1,895 checked (−121 CU). The rules'
   `checked_*` requirement stays; the cost is small next to the division.

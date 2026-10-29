@@ -270,7 +270,9 @@ fn table(m: &Measurement) -> String {
     writeln!(
         s,
         "\"Net\" is the median minus the `Noop` median ({noop_med} CU), which covers the \
-         entrypoint, argument decoding and return data."
+         entrypoint, decoding one `FixedBytes` argument and return data. `MulDown` and \
+         `DivDown` decode two arguments, so their net figure still includes the second \
+         decode; `SqrtDown` decodes one, like `Noop`."
     )
     .unwrap();
     writeln!(s).unwrap();
