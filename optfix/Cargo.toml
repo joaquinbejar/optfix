@@ -10,6 +10,10 @@ readme = "../README.md"
 keywords = ["options", "fixed-point", "black-scholes", "solana", "no-std"]
 categories = ["finance", "mathematics", "no-std"]
 
+[features]
+# Benchmark-only kernel variants for the milestone 2 comparison. Not a public API.
+bench-internals = []
+
 [dependencies]
 bytemuck = { workspace = true }
 

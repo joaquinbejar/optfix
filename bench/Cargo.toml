@@ -1,0 +1,21 @@
+[package]
+name = "optfix-bench"
+description = "LiteSVM harness that runs optfix-bench-program and produces docs/benchmarks.md"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dev-dependencies]
+litesvm = { workspace = true }
+optfix = { workspace = true, features = ["bench-internals"] }
+solana-address = { workspace = true }
+solana-instruction = { workspace = true }
+solana-keypair = { workspace = true }
+solana-signer = { workspace = true }
+solana-transaction = { workspace = true }
+
+[lints]
+workspace = true
