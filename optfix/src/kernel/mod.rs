@@ -8,8 +8,8 @@
 //! Formats are written `Qa.b`: `b` fractional bits. `exp` reduces `x = (64k + j) ln2/64 + r`
 //! with `|r| <= ln2/128` and returns `2^k × 2^(j/64) × e^r`; `ln` writes `x = 2^e × m` with
 //! `m` in `[1, 2)`, picks the nearest of 129 bucket centres `c_j = 1 + j/128` and returns
-//! `e ln2 − ln(1/c_j) + ln(1 + z)` with `|z| <= 2^-8`. Constants come from
-//! `tools/gen_tables.py`.
+//! `e ln2 − ln(RINV_j) + ln(1 + z)` with `RINV_j ≈ 1/c_j` and `z = m × RINV_j − 1`,
+//! `|z| <= 2^-8`. Constants come from `tools/gen_tables.py`.
 
 mod tables;
 
