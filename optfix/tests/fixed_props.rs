@@ -26,7 +26,8 @@ use optfix::{
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed};
 
-const SCALE: i128 = 1_000_000_000_000_000_000;
+/// Raw value of 1.0: `Fixed` is Q64.64.
+const SCALE: i128 = 1 << 64;
 
 /// Cases per property. `OPTFIX_PROPTEST_CASES` overrides the default of one million.
 fn config() -> Config {
@@ -254,9 +255,9 @@ const SPECIAL: &[i128] = &[
     i128::MIN + 1,
     i64::MAX as i128,
     i64::MIN as i128,
-    // floor(sqrt(i128::MAX × 10^18)): squaring it with mul_* is the overflow edge.
-    13_043_817_825_332_782_212_349_571_806,
-    13_043_817_825_332_782_212_349_571_807,
+    // floor(sqrt(i128::MAX × 2^64)): squaring it with mul_* is the overflow edge.
+    56_022_770_974_786_139_918_731_938_227,
+    56_022_770_974_786_139_918_731_938_228,
 ];
 
 fn log_uniform() -> impl Strategy<Value = i128> {
@@ -349,12 +350,12 @@ proptest! {
     }
 
     #[test]
-    fn prop_to_scaled_brackets_exact_value(a in raw_value(), decimals in 0u8..=60) {
+    fn prop_to_scaled_brackets_exact_value(a in raw_value(), decimals in 0u8..=80) {
         let x = Fixed::from_raw(a);
         let down = x.to_scaled(decimals, Rounding::Down);
         let up = x.to_scaled(decimals, Rounding::Up);
-        // The multiplier 10^(decimals − 18) itself must fit in an i128.
-        if decimals > 18 + 38 {
+        // The excess factor 10^(decimals − 38) itself must fit in an i128.
+        if decimals > 38 + 38 {
             prop_assert_eq!(down, Err(PricingError::Overflow));
         } else {
             let n = Big::int(a).mul(&Big::pow10(u32::from(decimals)));

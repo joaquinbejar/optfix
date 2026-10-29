@@ -1,7 +1,9 @@
 //! Quantity newtypes: each wraps a [`Fixed`] and proves its own range.
 //!
 //! The ranges are the supported domain of `docs/PLAN.md` (section "Supported domain and error
-//! envelope"), which is also exactly what the tests cover. There are no conversions between
+//! envelope"), which is also exactly what the tests cover. Bounds that Q64.64 cannot hold
+//! exactly (`10^-6`, `0.005`, `−0.1`) are rounded outward to the next representable value, so
+//! either rounding of a boundary constant is accepted; the domain grows by under one ulp. There are no conversions between
 //! the newtypes, so the compiler rejects a `Volatility` passed as a `Strike`.
 
 use crate::{Fixed, PricingError, Rounding};
@@ -56,8 +58,9 @@ macro_rules! bounded_quantity {
 bounded_quantity!(
     /// Price of the underlying, in quote units.
     Spot,
-    min_raw: 1_000_000_000_000,
-    max_raw: 1_000_000_000_000_000_000_000_000_000,
+    // floor(10^-6 × 2^64), 10^9 × 2^64
+    min_raw: 18_446_744_073_709,
+    max_raw: 18_446_744_073_709_551_616_000_000_000,
     range: "`[10^-6, 10^9]`"
 );
 
@@ -65,8 +68,9 @@ bounded_quantity!(
     /// Strike price, in the same unit as [`Spot`]. The two-input constraint
     /// `S/K in [0.05, 20]` is checked by the pricing functions, not here.
     Strike,
-    min_raw: 1_000_000_000_000,
-    max_raw: 1_000_000_000_000_000_000_000_000_000,
+    // floor(10^-6 × 2^64), 10^9 × 2^64
+    min_raw: 18_446_744_073_709,
+    max_raw: 18_446_744_073_709_551_616_000_000_000,
     range: "`[10^-6, 10^9]`"
 );
 
@@ -81,8 +85,9 @@ bounded_quantity!(
 bounded_quantity!(
     /// Annualized volatility sigma (`0.20` is 20%).
     Volatility,
-    min_raw: 5_000_000_000_000_000,
-    max_raw: 5_000_000_000_000_000_000,
+    // floor(0.005 × 2^64), 5 × 2^64
+    min_raw: 92_233_720_368_547_758,
+    max_raw: 92_233_720_368_547_758_080,
     range: "`[0.005, 5]`"
 );
 
@@ -90,16 +95,18 @@ bounded_quantity!(
     /// Continuously compounded annual rate: the risk-free rate, or the carry (continuous
     /// yield `q`).
     Rate,
-    min_raw: -100_000_000_000_000_000,
-    max_raw: 500_000_000_000_000_000,
+    // floor(−0.1 × 2^64), 0.5 × 2^64
+    min_raw: -1_844_674_407_370_955_162,
+    max_raw: 9_223_372_036_854_775_808,
     range: "`[-0.1, 0.5]`"
 );
 
 bounded_quantity!(
     /// Time to expiry in years: time remaining, not an absolute timestamp.
     Years,
+    // 30 × 2^64
     min_raw: 0,
-    max_raw: 30_000_000_000_000_000_000,
+    max_raw: 553_402_322_211_286_548_480,
     range: "`[0, 30]`"
 );
 
@@ -133,6 +140,7 @@ mod tests {
     use super::{Price, Rate, Spot, Strike, Volatility, Years, SECONDS_PER_YEAR};
     use crate::{Fixed, PricingError, Rounding};
 
+    /// `num / den` rounded down: the outward rounding of a lower bound.
     fn ratio(num: i128, den: i128) -> Fixed {
         Fixed::from_ratio(num, den, Rounding::Down).unwrap()
     }
@@ -191,9 +199,9 @@ mod tests {
     fn test_years_from_seconds_rounding_brackets_one_second() {
         let down = Years::from_seconds(1, Rounding::Down).unwrap().get();
         let up = Years::from_seconds(1, Rounding::Up).unwrap().get();
-        // 1 / 31_536_000 = 3.1709791983764586...e-8
-        assert_eq!(down.raw(), 31_709_791_983);
-        assert_eq!(up.raw(), 31_709_791_984);
+        // 2^64 / 31_536_000 = 584942417355.072...
+        assert_eq!(down.raw(), 584_942_417_355);
+        assert_eq!(up.raw(), 584_942_417_356);
     }
 
     #[test]

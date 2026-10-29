@@ -11,7 +11,6 @@
 #![no_std]
 
 use bytemuck::Pod;
-use optfix::repr::{Binary, BinaryAtanh, Decimal, DecimalNative, Repr};
 use optfix::{Fixed, FixedBytes, PricingError};
 use pinocchio::cpi::set_return_data;
 use pinocchio::error::ProgramError;
@@ -43,20 +42,10 @@ pub enum Instruction {
     DivDown = 2,
     /// `Fixed::sqrt_down`.
     SqrtDown = 3,
-    /// `exp` in Q64.64 (milestone 3 comparison).
-    ExpBinary = 4,
-    /// `ln` in Q64.64 (milestone 3 comparison).
-    LnBinary = 5,
-    /// `exp` in decimal `10^18` (milestone 3 comparison).
-    ExpDecimal = 6,
-    /// `ln` in decimal `10^18` (milestone 3 comparison).
-    LnDecimal = 7,
-    /// `exp` in decimal `10^18`, computed in decimal arithmetic (milestone 3 baseline).
-    ExpDecimalNative = 8,
-    /// `ln` in decimal `10^18`, computed in decimal arithmetic (milestone 3 baseline).
-    LnDecimalNative = 9,
-    /// `ln` in Q64.64, atanh form (milestone 3 comparison of the two `ln` forms).
-    LnBinaryAtanh = 10,
+    /// `optfix::exp`.
+    Exp = 4,
+    /// `optfix::ln`.
+    Ln = 5,
 }
 
 impl Instruction {
@@ -72,13 +61,8 @@ impl Instruction {
             1 => Ok(Self::MulDown),
             2 => Ok(Self::DivDown),
             3 => Ok(Self::SqrtDown),
-            4 => Ok(Self::ExpBinary),
-            5 => Ok(Self::LnBinary),
-            6 => Ok(Self::ExpDecimal),
-            7 => Ok(Self::LnDecimal),
-            8 => Ok(Self::ExpDecimalNative),
-            9 => Ok(Self::LnDecimalNative),
-            10 => Ok(Self::LnBinaryAtanh),
+            4 => Ok(Self::Exp),
+            5 => Ok(Self::Ln),
             _ => Err(BenchError::UnknownInstruction),
         }
     }
@@ -143,13 +127,8 @@ pub fn process_instruction(
         Instruction::MulDown => binary(args, Fixed::mul_down)?,
         Instruction::DivDown => binary(args, Fixed::div_down)?,
         Instruction::SqrtDown => unary(args, Fixed::sqrt_down)?,
-        Instruction::ExpBinary => unary(args, raw_fn::<Binary, true>)?,
-        Instruction::LnBinary => unary(args, raw_fn::<Binary, false>)?,
-        Instruction::ExpDecimal => unary(args, raw_fn::<Decimal, true>)?,
-        Instruction::LnDecimal => unary(args, raw_fn::<Decimal, false>)?,
-        Instruction::ExpDecimalNative => unary(args, raw_fn::<DecimalNative, true>)?,
-        Instruction::LnDecimalNative => unary(args, raw_fn::<DecimalNative, false>)?,
-        Instruction::LnBinaryAtanh => unary(args, raw_fn::<BinaryAtanh, false>)?,
+        Instruction::Exp => unary(args, optfix::exp)?,
+        Instruction::Ln => unary(args, optfix::ln)?,
     };
     set_return_data(&encode_result(result));
     Ok(())
@@ -184,10 +163,4 @@ fn unary(
 ) -> Result<Result<Fixed, PricingError>, BenchError> {
     let a: FixedBytes = decode(args)?;
     Ok(f(a.get()))
-}
-
-/// `R::exp` (`EXP = true`) or `R::ln` on the raw value of a `Fixed`.
-fn raw_fn<R: Repr, const EXP: bool>(x: Fixed) -> Result<Fixed, PricingError> {
-    let f = if EXP { R::exp } else { R::ln };
-    f(x.raw()).map(Fixed::from_raw)
 }

@@ -1,12 +1,12 @@
-//! Property tests for `exp` and `ln` in both milestone 3 representations.
+//! Property tests for `exp` and `ln`: every result is within the published bound.
 //!
 //! The reference is an arbitrary-precision fixed-point implementation written here on
 //! `num-bigint` with 256 fractional bits (series for `ln 2`, `e^r` and `atanh`), so it shares
 //! no code or constants with the crate's kernel. `tools/reference.txt`, produced by Python's
 //! correctly rounded `decimal` module (`tools/gen_reference.py`), checks the reference itself.
 //!
-//! Errors are measured in ulps of the representation: for `exp`, ulps of `max(e^x, 1)` (a
-//! relative bound for large results, an absolute one below 1); for `ln`, absolute ulps.
+//! Errors are measured in ulps (`2^-64`): for `exp`, ulps of `max(e^x, 1)` (a relative bound
+//! for large results, an absolute one below 1); for `ln`, absolute ulps.
 
 #![allow(
     clippy::unwrap_used,
@@ -25,8 +25,7 @@
 use std::sync::OnceLock;
 
 use num_bigint::BigInt;
-use optfix::repr::{Binary, BinaryAtanh, Decimal, DecimalNative, Repr};
-use optfix::PricingError;
+use optfix::{exp, ln, Fixed, PricingError, EXP_MAX_ERROR_ULPS, LN_MAX_ERROR_ULPS};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed};
 
@@ -127,11 +126,12 @@ fn ln_ref(x: &BigInt) -> BigInt {
     two_atanh(&s) + ln2() * e
 }
 
-trait Unit: Repr {
-    /// `raw` as a Q.P reference value.
-    fn to_ref(raw: i128) -> BigInt;
-    /// Ulps between `raw` and the reference value `y` (`y` in Q.P), signed: `raw − y`.
-    fn ulps(raw: i128, y: &BigInt) -> f64;
+/// Raw value of 1.0.
+const ONE: i128 = 1 << 64;
+
+/// `raw` as a Q.P reference value.
+fn to_ref(raw: i128) -> BigInt {
+    BigInt::from(raw) << (P - 64)
 }
 
 /// `num / 2^P` as an f64.
@@ -144,47 +144,14 @@ fn ratio(num: &BigInt) -> f64 {
     top * 2f64.powi(shift as i32 - P as i32)
 }
 
-impl Unit for Binary {
-    fn to_ref(raw: i128) -> BigInt {
-        BigInt::from(raw) << (P - 64)
-    }
-    fn ulps(raw: i128, y: &BigInt) -> f64 {
-        // (raw × 2^(P−64) − y) / 2^(P−64), in units of 2^-64.
-        ratio(&((Self::to_ref(raw) - y) << 64))
-    }
-}
-
-impl Unit for Decimal {
-    fn to_ref(raw: i128) -> BigInt {
-        (BigInt::from(raw) << P) / BigInt::from(Self::ONE)
-    }
-    fn ulps(raw: i128, y: &BigInt) -> f64 {
-        // raw − y × 10^18, in units of 10^-18.
-        ratio(&((BigInt::from(raw) << P) - y * BigInt::from(Self::ONE)))
-    }
-}
-
-impl Unit for BinaryAtanh {
-    fn to_ref(raw: i128) -> BigInt {
-        Binary::to_ref(raw)
-    }
-    fn ulps(raw: i128, y: &BigInt) -> f64 {
-        Binary::ulps(raw, y)
-    }
-}
-
-impl Unit for DecimalNative {
-    fn to_ref(raw: i128) -> BigInt {
-        Decimal::to_ref(raw)
-    }
-    fn ulps(raw: i128, y: &BigInt) -> f64 {
-        Decimal::ulps(raw, y)
-    }
+/// Signed ulps (`2^-64`) between `raw` and the reference value `y`: `raw − y`.
+fn ulps(raw: i128, y: &BigInt) -> f64 {
+    ratio(&((to_ref(raw) - y) << 64))
 }
 
 /// `exp` error in ulps of `max(e^x, 1)`.
-fn exp_err<R: Unit>(raw: i128, y: &BigInt) -> f64 {
-    let e = R::ulps(raw, y).abs();
+fn exp_err(raw: i128, y: &BigInt) -> f64 {
+    let e = ulps(raw, y).abs();
     if y > &one() {
         e / ratio(y)
     } else {
@@ -192,74 +159,57 @@ fn exp_err<R: Unit>(raw: i128, y: &BigInt) -> f64 {
     }
 }
 
-/// Largest representable value as a reference value.
-fn max_ref<R: Unit>() -> BigInt {
-    R::to_ref(i128::MAX)
-}
-
-// ---------------------------------------------------------------------------------------
-// Bounds asserted by the properties (ulps of the representation).
-// ---------------------------------------------------------------------------------------
-
-const EXP_BOUND_BINARY: f64 = 3.0;
-const LN_BOUND_BINARY: f64 = 2.0;
-const EXP_BOUND_DECIMAL: f64 = 1.0;
-const LN_BOUND_DECIMAL: f64 = 1.0;
-const EXP_BOUND_NATIVE: f64 = 4.0;
-const LN_BOUND_NATIVE: f64 = 4.0;
-
-fn check_exp<R: Unit>(x: i128, bound: f64) -> Result<(), TestCaseError> {
-    // Beyond ±50 the result is far outside both ranges: no reference needed.
-    let far = 50 * R::ONE;
-    if x.unsigned_abs() > far.unsigned_abs() {
+fn check_exp(x: i128) -> Result<(), TestCaseError> {
+    let bound = f64::from(EXP_MAX_ERROR_ULPS);
+    // Beyond ±50 the result is far outside the range: no reference needed.
+    if x.unsigned_abs() > (50 * ONE).unsigned_abs() {
         let want = if x > 0 {
             Err(PricingError::Overflow)
         } else {
-            Ok(0)
+            Ok(Fixed::ZERO)
         };
-        prop_assert_eq!(R::exp(x), want, "{} exp({})", R::NAME, x);
+        prop_assert_eq!(exp(Fixed::from_raw(x)), want, "exp({})", x);
         return Ok(());
     }
-    let y = exp_ref(&R::to_ref(x));
-    match R::exp(x) {
-        Ok(raw) => {
-            let e = exp_err::<R>(raw, &y);
-            prop_assert!(e <= bound, "{} exp({x}) = {raw}: error {e} ulp", R::NAME);
+    let y = exp_ref(&to_ref(x));
+    match exp(Fixed::from_raw(x)) {
+        Ok(v) => {
+            let e = exp_err(v.raw(), &y);
+            prop_assert!(e <= bound, "exp({x}) = {}: error {e} ulp", v.raw());
         }
         Err(PricingError::Overflow) => {
             // Overflow only when the true result is within the bound of the top.
             let margin = &y >> 60;
             prop_assert!(
-                &y + margin > max_ref::<R>(),
-                "{} exp({x}) overflowed below the maximum",
-                R::NAME
+                &y + margin > to_ref(i128::MAX),
+                "exp({x}) overflowed below the maximum"
             );
         }
-        Err(e) => prop_assert!(false, "{} exp({x}): unexpected {e:?}", R::NAME),
+        Err(e) => prop_assert!(false, "exp({x}): unexpected {e:?}"),
     }
     Ok(())
 }
 
-fn check_ln<R: Unit>(x: i128, bound: f64) -> Result<(), TestCaseError> {
-    match R::ln(x) {
-        Ok(raw) => {
+fn check_ln(x: i128) -> Result<(), TestCaseError> {
+    let bound = f64::from(LN_MAX_ERROR_ULPS);
+    match ln(Fixed::from_raw(x)) {
+        Ok(v) => {
             prop_assert!(x > 0);
-            let e = R::ulps(raw, &ln_ref(&R::to_ref(x))).abs();
-            prop_assert!(e <= bound, "{} ln({x}) = {raw}: error {e} ulp", R::NAME);
+            let e = ulps(v.raw(), &ln_ref(&to_ref(x))).abs();
+            prop_assert!(e <= bound, "ln({x}) = {}: error {e} ulp", v.raw());
         }
         Err(PricingError::DomainError) => prop_assert!(x <= 0),
-        Err(e) => prop_assert!(false, "{} ln({x}): unexpected {e:?}", R::NAME),
+        Err(e) => prop_assert!(false, "ln({x}): unexpected {e:?}"),
     }
     Ok(())
 }
 
-/// Arguments of `exp`: uniform over the interesting range `[−48, 48]` (raw), plus small
-/// magnitudes, near zero and any raw value.
-fn exp_arg<R: Repr>() -> impl Strategy<Value = i128> {
-    let one = R::ONE;
+/// Arguments of `exp`: uniform over `[−48, 48]`, small magnitudes, near zero and any raw
+/// value.
+fn exp_arg() -> impl Strategy<Value = i128> {
     prop_oneof![
-        4 => -48 * one..48 * one,
-        2 => -one..one,
+        4 => -48 * ONE..48 * ONE,
+        2 => -ONE..ONE,
         1 => -1_000_000i128..1_000_000,
         1 => any::<i128>(),
     ]
@@ -267,11 +217,10 @@ fn exp_arg<R: Repr>() -> impl Strategy<Value = i128> {
 
 /// Arguments of `ln`: log-uniform positive magnitudes over the whole raw range, values near
 /// one, and any raw value (non-positive ones must be `DomainError`).
-fn ln_arg<R: Repr>() -> impl Strategy<Value = i128> {
-    let one = R::ONE;
+fn ln_arg() -> impl Strategy<Value = i128> {
     prop_oneof![
         4 => (0u32..127, any::<u128>()).prop_map(|(s, m)| ((m >> 1) >> s) as i128),
-        2 => one - one / 16..one + one / 16,
+        2 => ONE - ONE / 16..ONE + ONE / 16,
         1 => any::<i128>(),
     ]
 }
@@ -280,61 +229,13 @@ proptest! {
     #![proptest_config(config())]
 
     #[test]
-    fn prop_exp_binary_within_bound(x in exp_arg::<Binary>()) {
-        check_exp::<Binary>(x, EXP_BOUND_BINARY)?;
+    fn prop_exp_within_bound(x in exp_arg()) {
+        check_exp(x)?;
     }
 
     #[test]
-    fn prop_exp_decimal_within_bound(x in exp_arg::<Decimal>()) {
-        check_exp::<Decimal>(x, EXP_BOUND_DECIMAL)?;
-    }
-
-    #[test]
-    fn prop_exp_decimal_native_within_bound(x in exp_arg::<DecimalNative>()) {
-        check_exp::<DecimalNative>(x, EXP_BOUND_NATIVE)?;
-    }
-
-    #[test]
-    fn prop_ln_decimal_native_within_bound(x in ln_arg::<DecimalNative>()) {
-        check_ln::<DecimalNative>(x, LN_BOUND_NATIVE)?;
-    }
-
-    #[test]
-    fn prop_ln_binary_atanh_within_bound(x in ln_arg::<BinaryAtanh>()) {
-        check_ln::<BinaryAtanh>(x, LN_BOUND_BINARY)?;
-    }
-
-    #[test]
-    fn prop_ln_binary_within_bound(x in ln_arg::<Binary>()) {
-        check_ln::<Binary>(x, LN_BOUND_BINARY)?;
-    }
-
-    #[test]
-    fn prop_ln_decimal_within_bound(x in ln_arg::<Decimal>()) {
-        check_ln::<Decimal>(x, LN_BOUND_DECIMAL)?;
-    }
-}
-
-#[test]
-fn test_exact_points() {
-    for (one, exp, ln) in [
-        (
-            Binary::ONE,
-            Binary::exp as fn(i128) -> _,
-            Binary::ln as fn(i128) -> _,
-        ),
-        (Decimal::ONE, Decimal::exp, Decimal::ln),
-        (DecimalNative::ONE, DecimalNative::exp, DecimalNative::ln),
-    ] {
-        assert_eq!(exp(0), Ok(one));
-        assert_eq!(ln(one), Ok(0));
-        assert_eq!(ln(0), Err(PricingError::DomainError));
-        assert_eq!(ln(-1), Err(PricingError::DomainError));
-        assert_eq!(ln(i128::MIN), Err(PricingError::DomainError));
-        assert_eq!(exp(i128::MAX), Err(PricingError::Overflow));
-        assert_eq!(exp(i128::MIN), Ok(0));
-        assert!(ln(i128::MAX).is_ok());
-        assert!(ln(1).is_ok());
+    fn prop_ln_within_bound(x in ln_arg()) {
+        check_ln(x)?;
     }
 }
 
@@ -351,8 +252,8 @@ fn test_reference_matches_python_decimal() {
         let (func, repr, x, want) = (f[0], f[1], f[2].parse::<i128>().unwrap(), f[3]);
         let want: BigInt = want.parse().unwrap(); // y × 2^160, rounded
         let xr = match repr {
-            "bin" => Binary::to_ref(x),
-            "dec" => Decimal::to_ref(x),
+            "bin" => to_ref(x),
+            "dec" => (BigInt::from(x) << P) / BigInt::from(10i128.pow(18)),
             _ => panic!("repr {repr}"),
         };
         let got = match func {
@@ -397,66 +298,74 @@ impl Rng {
     }
 }
 
-/// One sampled domain of a function: label, raw-argument generator.
-struct Domain<R: Repr> {
+/// One sampled domain: label and raw-argument generator.
+struct Domain {
     label: &'static str,
     gen: fn(&mut Rng) -> i128,
-    _r: std::marker::PhantomData<R>,
 }
 
-fn domain<R: Repr>(label: &'static str, gen: fn(&mut Rng) -> i128) -> Domain<R> {
-    Domain {
-        label,
-        gen,
-        _r: std::marker::PhantomData,
-    }
-}
-
-fn exp_domains<R: Repr>() -> Vec<Domain<R>> {
+fn exp_domains() -> Vec<Domain> {
     vec![
-        domain("x in [−1, 1]", |g| g.range(-R::ONE, R::ONE)),
-        domain("x in [−18, 18]", |g| g.range(-18 * R::ONE, 18 * R::ONE)),
-        domain("x in [−47, 47]", |g| g.range(-47 * R::ONE, 47 * R::ONE)),
+        Domain {
+            label: "x in [−1, 1]",
+            gen: |g| g.range(-ONE, ONE),
+        },
+        Domain {
+            label: "x in [−18, 18]",
+            gen: |g| g.range(-18 * ONE, 18 * ONE),
+        },
+        Domain {
+            label: "x in [−47, 47]",
+            gen: |g| g.range(-47 * ONE, 47 * ONE),
+        },
     ]
 }
 
-fn ln_domains<R: Repr>() -> Vec<Domain<R>> {
+fn ln_domains() -> Vec<Domain> {
     vec![
-        domain("x in [0.9, 1.1]", |g| {
-            g.range(R::ONE * 9 / 10, R::ONE * 11 / 10)
-        }),
-        domain("x in [0.05, 20]", |g| g.range(R::ONE / 20, 20 * R::ONE)),
-        domain("x in [10^-6, 10^9], log-uniform", |g| {
-            // 2^k × [1, 2) with k uniform over the binary exponents of [10^-6, 10^9].
-            let lo = R::ONE / 1_000_000;
-            let hi = R::ONE * 1_000_000_000;
-            let (kl, kh) = (
-                127 - lo.leading_zeros() as i32,
-                127 - hi.leading_zeros() as i32,
-            );
-            let k = kl + (g.next() % (kh - kl + 1) as u64) as i32;
-            let base = 1i128 << k;
-            (base + g.range(0, base)).clamp(lo, hi)
-        }),
-        domain("any positive raw value", |g| {
-            ((g.wide() >> 1) >> (g.next() % 127)).max(1) as i128
-        }),
+        Domain {
+            label: "x in [0.9, 1.1]",
+            gen: |g| g.range(ONE * 9 / 10, ONE * 11 / 10),
+        },
+        Domain {
+            label: "x in [0.05, 20]",
+            gen: |g| g.range(ONE / 20, 20 * ONE),
+        },
+        Domain {
+            label: "x in [10^-6, 10^9], log-uniform",
+            gen: |g| {
+                // 2^k × [1, 2) with k uniform over the binary exponents of [10^-6, 10^9].
+                let lo = ONE / 1_000_000;
+                let hi = ONE * 1_000_000_000;
+                let (kl, kh) = (
+                    127 - lo.leading_zeros() as i32,
+                    127 - hi.leading_zeros() as i32,
+                );
+                let k = kl + (g.next() % (kh - kl + 1) as u64) as i32;
+                let base = 1i128 << k;
+                (base + g.range(0, base)).clamp(lo, hi)
+            },
+        },
+        Domain {
+            label: "any positive raw value",
+            gen: |g| ((g.wide() >> 1) >> (g.next() % 127)).max(1) as i128,
+        },
     ]
 }
 
 /// Max error (ulps) and the argument where it occurs.
-fn max_error<R: Unit>(d: &Domain<R>, exp: bool, n: usize, seed: u64) -> (f64, i128) {
+fn max_error(d: &Domain, is_exp: bool, n: usize, seed: u64) -> (f64, i128) {
     let mut g = Rng(seed);
     let mut worst = (0.0, 0);
     for _ in 0..n {
         let x = (d.gen)(&mut g);
-        let e = if exp {
-            match R::exp(x) {
-                Ok(raw) => exp_err::<R>(raw, &exp_ref(&R::to_ref(x))),
+        let e = if is_exp {
+            match exp(Fixed::from_raw(x)) {
+                Ok(v) => exp_err(v.raw(), &exp_ref(&to_ref(x))),
                 Err(_) => continue,
             }
         } else {
-            R::ulps(R::ln(x).unwrap(), &ln_ref(&R::to_ref(x))).abs()
+            ulps(ln(Fixed::from_raw(x)).unwrap().raw(), &ln_ref(&to_ref(x))).abs()
         };
         if e > worst.0 {
             worst = (e, x);
@@ -465,45 +374,25 @@ fn max_error<R: Unit>(d: &Domain<R>, exp: bool, n: usize, seed: u64) -> (f64, i1
     worst
 }
 
-fn report_rows<R: Unit>(out: &mut String, n: usize, ulp: &str) {
-    use std::fmt::Write as _;
-    for (name, exp, domains) in [
-        ("exp", true, exp_domains::<R>()),
-        ("ln", false, ln_domains::<R>()),
-    ] {
-        for (i, d) in domains.iter().enumerate() {
-            let (e, x) = max_error::<R>(
-                d,
-                exp,
-                n,
-                0x0F7F_1C5E_0000_0000 ^ (i as u64) << 8 ^ u64::from(exp),
-            );
-            let xv = ratio(&R::to_ref(x));
-            writeln!(
-                out,
-                "| `{name}` | {} | {} | {e:.3} | {ulp} | {xv:.6e} |",
-                R::NAME,
-                d.label
-            )
-            .unwrap();
-        }
-    }
-}
+/// Milestone 3 record, measured at commit `ca7fedd` with 1,000,000 samples per domain
+/// (`make precision` there reproduces it); the decimal candidates no longer exist.
+const COMPARISON: &str = "
+## Representation comparison (milestone 3)
 
-fn report_ln_rows<R: Unit>(out: &mut String, n: usize, ulp: &str) {
-    use std::fmt::Write as _;
-    for (i, d) in ln_domains::<R>().iter().enumerate() {
-        let (e, x) = max_error::<R>(d, false, n, 0x0F7F_1C5E_0000_0000 ^ (i as u64) << 8);
-        let xv = ratio(&R::to_ref(x));
-        writeln!(
-            out,
-            "| `ln` | {} | {} | {e:.3} | {ulp} | {xv:.6e} |",
-            R::NAME,
-            d.label
-        )
-        .unwrap();
-    }
-}
+Maximum error over every domain above, measured at commit `ca7fedd` (`make precision` there \
+reproduces the full table), for each candidate of `docs/PLAN.md` 4.1. Decimal ulps are \
+`10^-18`. Q64.64 won on compute units (`docs/benchmarks.md`) and is the only one kept.
+
+| Function | Representation | Max error | Unit | Absolute |
+| --- | --- | ---: | --- | ---: |
+| `exp` | Q64.64 | 1.974 | ulp `2^-64` of `max(e^x, 1)` | `1.1 × 10^-19` |
+| `ln` | Q64.64 | 1.507 | ulp `2^-64` | `8.2 × 10^-20` |
+| `ln` | Q64.64, atanh form | 1.502 | ulp `2^-64` | `8.1 × 10^-20` |
+| `exp` | decimal `10^18`, binary core | 0.594 | ulp `10^-18` of `max(e^x, 1)` | `5.9 × 10^-19` |
+| `ln` | decimal `10^18`, binary core | 0.597 | ulp `10^-18` | `6.0 × 10^-19` |
+| `exp` | decimal `10^18`, native | 3.127 | ulp `10^-18` of `max(e^x, 1)` | `3.1 × 10^-18` |
+| `ln` | decimal `10^18`, native | 3.032 | ulp `10^-18` | `3.0 × 10^-18` |
+";
 
 #[test]
 fn test_precision_report() {
@@ -517,18 +406,29 @@ fn test_precision_report() {
         "Generated by `make precision` (`optfix/tests/exp_ln_props.rs`); do not edit by hand. \
          Maximum error over {n} deterministic samples per row (splitmix64), against a \
          256-bit reference (`num-bigint` series, itself checked against Python's correctly \
-         rounded `decimal` in `tools/reference.txt`). `exp` errors are in ulps of \
-         `max(e^x, 1)`, a relative bound for results above 1 and an absolute one below; `ln` \
-         errors are absolute. One ulp is `2^-64` (about `5.4 × 10^-20`) in Q64.64 and \
-         `10^-18` in decimal. The property tests (`make test`) assert the bounds over one \
-         million random cases each.\n\n"
+         rounded `decimal` in `tools/reference.txt`). One ulp is `2^-64`, about \
+         `5.4 × 10^-20`. `exp` errors are in ulps of `max(e^x, 1)`, a relative bound for \
+         results above 1 and an absolute one below; `ln` errors are absolute. The bounds are \
+         `EXP_MAX_ERROR_ULPS` and `LN_MAX_ERROR_ULPS`, which the property tests (`make test`) \
+         assert over one million random cases each.\n\n"
     ));
-    s.push_str("| Function | Representation | Domain | Max error | Unit | At x |\n");
-    s.push_str("| --- | --- | --- | ---: | --- | ---: |\n");
-    report_rows::<Binary>(&mut s, n, "ulp `2^-64`");
-    report_ln_rows::<BinaryAtanh>(&mut s, n, "ulp `2^-64`");
-    report_rows::<Decimal>(&mut s, n, "ulp `10^-18`");
-    report_rows::<DecimalNative>(&mut s, n, "ulp `10^-18`");
+    s.push_str("| Function | Domain | Max error (ulp) | Bound (ulp) | At x |\n");
+    s.push_str("| --- | --- | ---: | ---: | ---: |\n");
+    for (name, is_exp, bound, domains) in [
+        ("exp", true, EXP_MAX_ERROR_ULPS, exp_domains()),
+        ("ln", false, LN_MAX_ERROR_ULPS, ln_domains()),
+    ] {
+        for (i, d) in domains.iter().enumerate() {
+            let seed = 0x0F7F_1C5E_0000_0000 ^ (i as u64) << 8 ^ u64::from(is_exp);
+            let (e, x) = max_error(d, is_exp, n, seed);
+            let xv = ratio(&to_ref(x));
+            s.push_str(&format!(
+                "| `{name}` | {} | {e:.3} | {bound} | {xv:.6e} |\n",
+                d.label
+            ));
+        }
+    }
+    s.push_str(COMPARISON);
     s.push_str("\nRun `make precision` to regenerate this file.\n");
     println!("{s}");
     if let Ok(path) = std::env::var("OPTFIX_PRECISION_OUT") {

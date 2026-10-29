@@ -5,15 +5,12 @@ use bytemuck::{Pod, Zeroable};
 use crate::u256::U256;
 use crate::PricingError;
 
-/// Number of decimal digits after the point. Provisional: milestone 3 chooses between this
-/// decimal representation and binary Q64.64.
-const SCALE_DECIMALS: u8 = 18;
+/// Number of fractional bits: `Fixed` is binary Q64.64, chosen by measurement in milestone 3
+/// (`docs/PLAN.md`, decision log).
+pub(crate) const FRAC_BITS: u32 = 64;
 
-/// `10^SCALE_DECIMALS`: the raw value of `1.0`.
-const SCALE: i128 = 1_000_000_000_000_000_000;
-
-/// [`SCALE`] as an unsigned divisor.
-const SCALE_U: u128 = SCALE.unsigned_abs();
+/// `2^64`: the raw value of `1.0`.
+const SCALE: i128 = 1 << FRAC_BITS;
 
 /// Direction of a rounding.
 ///
@@ -27,9 +24,11 @@ pub enum Rounding {
     Up,
 }
 
-/// Signed fixed-point number with value `raw / 10^18`.
+/// Signed fixed-point number with value `raw / 2^64` (binary Q64.64).
 ///
-/// Resolution (one ulp) is `10^-18`; the range is about `±1.7 × 10^20`. `Fixed` does not
+/// Resolution (one ulp) is `2^-64`, about `5.4 × 10^-20`; the range is about `±9.2 × 10^18`.
+/// Decimal values such as `0.1` are not exact: convert them with [`Fixed::from_ratio`] and an
+/// explicit rounding, and back to token units with [`Fixed::to_scaled`]. `Fixed` does not
 /// implement `Add`, `Mul` and the other operators: an operator can neither take a rounding
 /// direction nor return an error. Every operation is checked and returns
 /// [`PricingError::Overflow`] instead of wrapping.
@@ -45,12 +44,12 @@ impl Fixed {
     pub const ZERO: Self = Self(0);
     /// `1`.
     pub const ONE: Self = Self(SCALE);
-    /// The largest value, `(2^127 − 1) / 10^18`.
+    /// The largest value, `2^63 − 2^-64`.
     pub const MAX: Self = Self(i128::MAX);
-    /// The smallest value, `−2^127 / 10^18`.
+    /// The smallest value, `−2^63`.
     pub const MIN: Self = Self(i128::MIN);
 
-    /// Wraps a raw value `raw / 10^18`. Every `i128` is a valid `Fixed`, so this cannot fail;
+    /// Wraps a raw value `raw / 2^64`. Every `i128` is a valid `Fixed`, so this cannot fail;
     /// it exists for zero-copy storage.
     #[must_use]
     #[inline]
@@ -58,7 +57,7 @@ impl Fixed {
         Self(raw)
     }
 
-    /// The raw value: `self × 10^18`.
+    /// The raw value: `self × 2^64`.
     #[must_use]
     #[inline]
     pub const fn raw(self) -> i128 {
@@ -69,10 +68,8 @@ impl Fixed {
     #[must_use]
     #[inline]
     pub const fn from_int(n: i64) -> Self {
-        // |n| <= 2^63 and SCALE < 2^60, so |n × SCALE| < 2^123: the product always fits.
-        #[allow(clippy::arithmetic_side_effects)]
-        let raw = n as i128 * SCALE;
-        Self(raw)
+        // n × 2^64 is in [−2^127, 2^127 − 2^64]: the shift never loses a bit.
+        Self((n as i128) << FRAC_BITS)
     }
 
     /// `num / den`, rounded in direction `r`.
@@ -82,8 +79,8 @@ impl Fixed {
     /// `DomainError` if `den == 0`; `Overflow` if the result does not fit.
     #[must_use = "the result carries a possible error"]
     pub fn from_ratio(num: i128, den: i128, r: Rounding) -> Result<Self, PricingError> {
-        // num / den = (num × SCALE / den) / SCALE.
-        quotient(num, SCALE, den, r)
+        // num / den = (num × 2^64 / den) / 2^64.
+        scaled_quotient(num, den, r)
     }
 
     /// `self × 10^decimals` as an integer, rounded in direction `r`: converts to an amount in
@@ -91,32 +88,24 @@ impl Fixed {
     ///
     /// # Errors
     ///
-    /// `Overflow` if the result, or the factor `10^(decimals − 18)` when `decimals > 18`, does
+    /// `Overflow` if the result, or the factor `10^(decimals − 38)` when `decimals > 38`, does
     /// not fit in an `i128`.
     #[must_use = "the result carries a possible error"]
     pub fn to_scaled(self, decimals: u8, r: Rounding) -> Result<i128, PricingError> {
-        match SCALE_DECIMALS.checked_sub(decimals) {
-            Some(shift) => {
-                let d = pow10(shift)?;
-                let q = self.0.checked_div_euclid(d).ok_or(PricingError::Overflow)?;
-                let rem = self.0.checked_rem_euclid(d).ok_or(PricingError::Overflow)?;
-                // `d > 0`, so `div_euclid` is the floor.
-                match r {
-                    Rounding::Down => Ok(q),
-                    Rounding::Up if rem != 0 => q.checked_add(1).ok_or(PricingError::Overflow),
-                    Rounding::Up => Ok(q),
-                }
-            }
-            None => {
-                let shift = decimals
-                    .checked_sub(SCALE_DECIMALS)
+        // raw × 10^decimals / 2^64. 10^38 is the largest power of ten in an i128; above it
+        // the excess factor goes on the raw value first, and when that overflows so does the
+        // result (it is then at least 2^127 × 10^38 / 2^64).
+        let (a, b) = match decimals.checked_sub(38) {
+            Some(excess) if excess > 0 => {
+                let head = self
+                    .0
+                    .checked_mul(pow10(excess)?)
                     .ok_or(PricingError::Overflow)?;
-                // Exact: no rounding needed.
-                self.0
-                    .checked_mul(pow10(shift)?)
-                    .ok_or(PricingError::Overflow)
+                (head, pow10(38)?)
             }
-        }
+            _ => (self.0, pow10(decimals)?),
+        };
+        scaled_product(a, b, r).map(Self::raw)
     }
 
     /// `self + o`, exact.
@@ -165,8 +154,8 @@ impl Fixed {
     /// `Overflow` if the result does not fit.
     #[must_use = "the result carries a possible error"]
     pub fn mul_down(self, o: Self) -> Result<Self, PricingError> {
-        // a × b = (a.raw × b.raw / SCALE) / SCALE.
-        quotient(self.0, o.0, SCALE, Rounding::Down)
+        // a × b = (a.raw × b.raw / 2^64) / 2^64: a shift, no division.
+        scaled_product(self.0, o.0, Rounding::Down)
     }
 
     /// `self × o`, rounded up (toward positive infinity). Uses a 256-bit intermediate.
@@ -176,7 +165,7 @@ impl Fixed {
     /// `Overflow` if the result does not fit.
     #[must_use = "the result carries a possible error"]
     pub fn mul_up(self, o: Self) -> Result<Self, PricingError> {
-        quotient(self.0, o.0, SCALE, Rounding::Up)
+        scaled_product(self.0, o.0, Rounding::Up)
     }
 
     /// `self / o`, rounded down (toward negative infinity).
@@ -186,8 +175,8 @@ impl Fixed {
     /// `DomainError` if `o == 0`; `Overflow` if the result does not fit.
     #[must_use = "the result carries a possible error"]
     pub fn div_down(self, o: Self) -> Result<Self, PricingError> {
-        // a / b = (a.raw × SCALE / b.raw) / SCALE.
-        quotient(self.0, SCALE, o.0, Rounding::Down)
+        // a / b = (a.raw × 2^64 / b.raw) / 2^64.
+        scaled_quotient(self.0, o.0, Rounding::Down)
     }
 
     /// `self / o`, rounded up (toward positive infinity).
@@ -197,7 +186,7 @@ impl Fixed {
     /// `DomainError` if `o == 0`; `Overflow` if the result does not fit.
     #[must_use = "the result carries a possible error"]
     pub fn div_up(self, o: Self) -> Result<Self, PricingError> {
-        quotient(self.0, SCALE, o.0, Rounding::Up)
+        scaled_quotient(self.0, o.0, Rounding::Up)
     }
 
     /// `sqrt(self)`, rounded down.
@@ -220,11 +209,11 @@ impl Fixed {
         self.sqrt(Rounding::Up)
     }
 
-    /// `sqrt(self)` rounded in direction `r`: the integer square root of `raw × SCALE`.
+    /// `sqrt(self)` rounded in direction `r`: the integer square root of `raw × 2^64`.
     fn sqrt(self, r: Rounding) -> Result<Self, PricingError> {
         let raw = u128::try_from(self.0).map_err(|_| PricingError::DomainError)?;
-        let n = U256::mul_wide(raw, SCALE_U)?;
-        // n < 2^127 × 2^60, so the root is below 2^94 and the square below 2^188.
+        let n = U256::shl_64(raw);
+        // n < 2^127 × 2^64, so the root is below 2^96 and the square below 2^192.
         let root = n.isqrt()?;
         let exact = U256::mul_wide(root, root)? == n;
         let root = match r {
@@ -283,20 +272,33 @@ fn pow10(k: u8) -> Result<i128, PricingError> {
         .ok_or(PricingError::Overflow)
 }
 
-/// `a × b / d` as a raw `Fixed`, rounded in direction `r`, with a 256-bit intermediate.
+/// `a × b / 2^64` as a raw `Fixed`, rounded in direction `r`, with a 256-bit intermediate.
+///
+/// `Overflow` if the result does not fit in an `i128`.
+fn scaled_product(a: i128, b: i128, r: Rounding) -> Result<Fixed, PricingError> {
+    let negative = (a < 0) ^ (b < 0);
+    let (q, rem) = U256::mul_wide(a.unsigned_abs(), b.unsigned_abs())?.split_64()?;
+    finish(negative, q, rem != 0, r)
+}
+
+/// `a × 2^64 / d` as a raw `Fixed`, rounded in direction `r`, with a 256-bit intermediate.
 ///
 /// `DomainError` if `d == 0`; `Overflow` if the result does not fit in an `i128`.
-fn quotient(a: i128, b: i128, d: i128, r: Rounding) -> Result<Fixed, PricingError> {
+fn scaled_quotient(a: i128, d: i128, r: Rounding) -> Result<Fixed, PricingError> {
     if d == 0 {
         return Err(PricingError::DomainError);
     }
-    let negative = ((a < 0) ^ (b < 0)) ^ (d < 0);
-    let n = U256::mul_wide(a.unsigned_abs(), b.unsigned_abs())?;
-    let (q, rem) = n.div_rem(d.unsigned_abs())?;
-    // The exact value is ±(q + rem / |d|) with 0 <= rem / |d| < 1. Rounding moves the
-    // magnitude one unit away from zero when the value is inexact and the direction points
-    // away from zero: up for a positive value, down for a negative one.
-    let away = rem != 0
+    let negative = (a < 0) ^ (d < 0);
+    let (q, rem) = U256::shl_64(a.unsigned_abs()).div_rem(d.unsigned_abs())?;
+    finish(negative, q, rem != 0, r)
+}
+
+/// The signed result `±(q + f)` for an exact magnitude `q + f`, `0 <= f < 1`, `f > 0` iff
+/// `inexact`, rounded in direction `r`.
+fn finish(negative: bool, q: u128, inexact: bool, r: Rounding) -> Result<Fixed, PricingError> {
+    // Rounding moves the magnitude one unit away from zero when the value is inexact and the
+    // direction points away from zero: up for a positive value, down for a negative one.
+    let away = inexact
         && matches!(
             (negative, r),
             (false, Rounding::Up) | (true, Rounding::Down)
@@ -333,21 +335,20 @@ mod tests {
     fn test_from_int_extremes_are_exact() {
         assert_eq!(Fixed::from_int(0), Fixed::ZERO);
         assert_eq!(Fixed::from_int(1), Fixed::ONE);
+        assert_eq!(Fixed::from_int(-1).raw(), -SCALE);
         assert_eq!(
             Fixed::from_int(i64::MAX).raw(),
             i128::from(i64::MAX) * SCALE
         );
-        assert_eq!(
-            Fixed::from_int(i64::MIN).raw(),
-            i128::from(i64::MIN) * SCALE
-        );
+        assert_eq!(Fixed::from_int(i64::MIN), Fixed::MIN);
     }
 
     #[test]
     fn test_mul_rounds_toward_infinities_not_zero() {
-        let third = fx(333_333_333_333_333_333); // just below 1/3
+        // 1/3 is not representable: floor and ceiling of 2^64 / 3.
+        let third_down = fx(SCALE / 3);
         let three = Fixed::from_int(3);
-        assert_eq!(third.mul_down(three).unwrap(), fx(999_999_999_999_999_999));
+        assert_eq!(third_down.mul_down(three).unwrap(), fx(SCALE - 1));
         // 1 ulp × 0.5: exact 0.5 ulp
         let half = fx(SCALE / 2);
         assert_eq!(fx(1).mul_down(half).unwrap(), fx(0));
@@ -390,17 +391,18 @@ mod tests {
     #[test]
     fn test_div_one_third_brackets_exact_value() {
         let three = Fixed::from_int(3);
+        // 2^64 = 3 × 6148914691236517205 + 1.
         assert_eq!(
             Fixed::ONE.div_down(three).unwrap(),
-            fx(333_333_333_333_333_333)
+            fx(6_148_914_691_236_517_205)
         );
         assert_eq!(
             Fixed::ONE.div_up(three).unwrap(),
-            fx(333_333_333_333_333_334)
+            fx(6_148_914_691_236_517_206)
         );
         assert_eq!(
             Fixed::ONE.checked_neg().unwrap().div_down(three).unwrap(),
-            fx(-333_333_333_333_333_334)
+            fx(-6_148_914_691_236_517_206)
         );
     }
 
@@ -418,10 +420,24 @@ mod tests {
     }
 
     #[test]
+    fn test_from_ratio_one_tenth_brackets_exact_value() {
+        // 2^64 / 10 = 1844674407370955161.6
+        assert_eq!(
+            Fixed::from_ratio(1, 10, Rounding::Down).unwrap(),
+            fx(1_844_674_407_370_955_161)
+        );
+        assert_eq!(
+            Fixed::from_ratio(1, 10, Rounding::Up).unwrap(),
+            fx(1_844_674_407_370_955_162)
+        );
+    }
+
+    #[test]
     fn test_sqrt_of_two_brackets_exact_value() {
         let two = Fixed::from_int(2);
-        assert_eq!(two.sqrt_down().unwrap(), fx(1_414_213_562_373_095_048));
-        assert_eq!(two.sqrt_up().unwrap(), fx(1_414_213_562_373_095_049));
+        // sqrt(2) × 2^64 = 26087635650665564424.699...
+        assert_eq!(two.sqrt_down().unwrap(), fx(26_087_635_650_665_564_424));
+        assert_eq!(two.sqrt_up().unwrap(), fx(26_087_635_650_665_564_425));
         assert_eq!(Fixed::from_int(4).sqrt_up().unwrap(), Fixed::from_int(2));
     }
 
@@ -448,26 +464,44 @@ mod tests {
 
     #[test]
     fn test_to_scaled_rounds_toward_infinities() {
-        let x = fx(1_234_567_890_123_456_789); // 1.234567890123456789
-        assert_eq!(x.to_scaled(6, Rounding::Down).unwrap(), 1_234_567);
-        assert_eq!(x.to_scaled(6, Rounding::Up).unwrap(), 1_234_568);
+        // 1.25 + 2^-64: just above 1.25, so 6 decimals round to 1.250000 or 1.250001.
+        let x = fx(SCALE + SCALE / 4 + 1);
+        assert_eq!(x.to_scaled(6, Rounding::Down).unwrap(), 1_250_000);
+        assert_eq!(x.to_scaled(6, Rounding::Up).unwrap(), 1_250_001);
         let neg = x.checked_neg().unwrap();
-        assert_eq!(neg.to_scaled(6, Rounding::Down).unwrap(), -1_234_568);
-        assert_eq!(neg.to_scaled(6, Rounding::Up).unwrap(), -1_234_567);
-        assert_eq!(x.to_scaled(18, Rounding::Up).unwrap(), x.raw());
+        assert_eq!(neg.to_scaled(6, Rounding::Down).unwrap(), -1_250_001);
+        assert_eq!(neg.to_scaled(6, Rounding::Up).unwrap(), -1_250_000);
+        // Exact: 1.25 × 10^2.
+        assert_eq!(
+            fx(SCALE + SCALE / 4).to_scaled(2, Rounding::Up).unwrap(),
+            125
+        );
         assert_eq!(
             Fixed::ONE.to_scaled(20, Rounding::Down).unwrap(),
             10i128.pow(20)
+        );
+        // One ulp at 40 decimals: 10^40 / 2^64 = 542101086242752217003.7...
+        assert_eq!(
+            fx(1).to_scaled(40, Rounding::Down).unwrap(),
+            542_101_086_242_752_217_003
+        );
+        assert_eq!(
+            fx(1).to_scaled(40, Rounding::Up).unwrap(),
+            542_101_086_242_752_217_004
         );
     }
 
     #[test]
     fn test_to_scaled_large_decimals_overflow() {
         assert_eq!(
-            Fixed::ONE.to_scaled(57, Rounding::Down),
+            Fixed::ONE.to_scaled(39, Rounding::Down),
             Err(PricingError::Overflow)
         );
-        assert_eq!(Fixed::ZERO.to_scaled(56, Rounding::Down), Ok(0));
+        assert_eq!(Fixed::ZERO.to_scaled(76, Rounding::Down), Ok(0));
+        assert_eq!(
+            Fixed::ZERO.to_scaled(77, Rounding::Down),
+            Err(PricingError::Overflow)
+        );
         assert_eq!(
             Fixed::ZERO.to_scaled(u8::MAX, Rounding::Down),
             Err(PricingError::Overflow)
