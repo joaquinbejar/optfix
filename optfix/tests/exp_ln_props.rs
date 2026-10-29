@@ -374,12 +374,12 @@ fn max_error(d: &Domain, is_exp: bool, n: usize, seed: u64) -> (f64, i128) {
     worst
 }
 
-/// Milestone 3 record, measured at commit `ca7fedd` with 1,000,000 samples per domain
+/// Milestone 3 record, measured at commit `6adf034` with 1,000,000 samples per domain
 /// (`make precision` there reproduces it); the decimal candidates no longer exist.
 const COMPARISON: &str = "
 ## Representation comparison (milestone 3)
 
-Maximum error over every domain above, measured at commit `ca7fedd` (`make precision` there \
+Maximum error over every domain above, measured at commit `6adf034` (`make precision` there \
 reproduces the full table), for each candidate of `docs/PLAN.md` 4.1. Decimal ulps are \
 `10^-18`. Q64.64 won on compute units (`docs/benchmarks.md`) and is the only one kept.
 

@@ -595,7 +595,7 @@ Milestone 2 (2026-10-29):
 
 Milestone 3 (2026-10-29):
 
-- **Representation: binary Q64.64.** Measured at commit `ca7fedd` (`make bench` and
+- **Representation: binary Q64.64.** Measured at commit `6adf034` (`make bench` and
   `make precision` there reproduce it) on the same inputs and release profile, net median CU
   with the `Noop` baseline subtracted, worst case in parentheses, and the maximum error over
   1,000,000 samples per domain:

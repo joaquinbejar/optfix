@@ -308,12 +308,12 @@ fn stats(v: &[u64]) -> (u64, u64, u64) {
     (s[0], s[s.len() / 2], s[s.len() - 1])
 }
 
-/// Milestone 3 record: `make bench` at commit `ca7fedd` reproduces it; the decimal candidates
+/// Milestone 3 record: `make bench` at commit `6adf034` reproduces it; the decimal candidates
 /// and the atanh form no longer exist.
 const COMPARISON: &str = "
 ## Representation comparison (milestone 3)
 
-Measured at commit `ca7fedd`, where `make bench` reproduces it, with the inputs above: each \
+Measured at commit `6adf034`, where `make bench` reproduces it, with the inputs above: each \
 candidate of `docs/PLAN.md` 4.1 on the same arguments and build profile. \"Decimal, binary \
 core\" converts in and out of the 64-bit-digit kernel that Q64.64 uses; \"decimal, native\" \
 runs the same reduction and polynomials as decimal `Fixed` multiplies. Net CU, `Noop` \
