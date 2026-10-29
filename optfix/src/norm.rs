@@ -78,11 +78,43 @@ pub fn norm_pdf(x: Fixed) -> Result<Fixed, PricingError> {
     scale(v, INV_SQRT_2PI_Q128, k)
 }
 
+/// `(N(x), n(x))` from one evaluation of `e^(−x²/2)`, as [`norm_cdf`] and [`norm_pdf`] would
+/// return them (the same values, bit for bit). Black-Scholes greeks need both at `d1`.
+pub(crate) fn norm_cdf_pdf(x: Fixed) -> Result<(Fixed, Fixed), PricingError> {
+    let a = x.raw().unsigned_abs();
+    if a >= PDF_LIMIT {
+        return Ok((
+            if x.raw() < 0 { Fixed::ZERO } else { Fixed::ONE },
+            Fixed::ZERO,
+        ));
+    }
+    let parts = exp_parts(neg_half_square(a)?)?;
+    let pdf = match parts {
+        Some((v, k)) => scale(v, INV_SQRT_2PI_Q128, k)?,
+        None => Fixed::ZERO,
+    };
+    let tail = match parts {
+        Some((v, k)) if a < NORM_CDF_CUTOFF.raw().unsigned_abs() => lower_tail_from(a, v, k)?,
+        _ => Fixed::ZERO,
+    };
+    let cdf = if x.raw() < 0 {
+        tail
+    } else {
+        Fixed::ONE.checked_sub(tail)?
+    };
+    Ok((cdf, pdf))
+}
+
 /// `N(−a)` for `0 <= a < 9.25` (raw Q64.64), rounded to nearest.
 fn lower_tail(a: u128) -> Result<Fixed, PricingError> {
-    let Some((v, k)) = exp_parts(neg_half_square(a)?)? else {
-        return Ok(Fixed::ZERO);
-    };
+    match exp_parts(neg_half_square(a)?)? {
+        Some((v, k)) => lower_tail_from(a, v, k),
+        None => Ok(Fixed::ZERO),
+    }
+}
+
+/// `N(−a)` for `0 <= a < 9.25` given `e^(−a²/2) = v / 2^63 × 2^k` from the `exp` kernel.
+fn lower_tail_from(a: u128, v: u64, k: i64) -> Result<Fixed, PricingError> {
     // Segment i = floor(4a); t = a − (i + 1/2)/4 in Q.66, |t| <= 1/8, so |t| × 2^66 <= 2^63.
     let shift = FRAC_BITS.saturating_sub(NORM_TABLE_BITS);
     let i = usize::try_from(a >> shift).map_err(|_| PricingError::Overflow)?;
@@ -193,6 +225,31 @@ mod tests {
                 .unwrap();
             assert_eq!(sum, Fixed::ONE);
             assert_eq!(norm_pdf(x), norm_pdf(nx));
+        }
+    }
+
+    #[test]
+    fn test_norm_cdf_pdf_matches_the_separate_functions() {
+        for raw in [
+            0i128,
+            1,
+            -1,
+            1 << 62,
+            -(5 << 64),
+            (37 << 62) - 1,
+            37 << 62,
+            -(37 << 62),
+            15 << 64,
+            16 << 64,
+            i128::MIN,
+            i128::MAX,
+        ] {
+            let x = Fixed::from_raw(raw);
+            assert_eq!(
+                super::norm_cdf_pdf(x).unwrap(),
+                (norm_cdf(x).unwrap(), norm_pdf(x).unwrap()),
+                "x = {raw}"
+            );
         }
     }
 

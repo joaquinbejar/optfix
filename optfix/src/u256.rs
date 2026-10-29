@@ -44,12 +44,12 @@ fn join(hi: u64, lo: u64) -> u128 {
     u128::from(hi).checked_shl(64).unwrap_or(0) | u128::from(lo)
 }
 
-/// Full product of two 64-bit limbs. `(2^64 − 1)^2 < 2^128`, so it never fails.
+/// Full product of two 64-bit limbs, from 32-bit halves in the kernel's carry form (about
+/// 26 CU on SBF against about 50 for the `__multi3` call a `u128` multiply lowers to; see
+/// `crate::kernel::mul_full`). `(2^64 − 1)^2 < 2^128`, so it never fails.
 #[inline]
 fn mul64(a: u64, b: u64) -> Result<u128, PricingError> {
-    u128::from(a)
-        .checked_mul(u128::from(b))
-        .ok_or(PricingError::Overflow)
+    crate::kernel::mul_wide(a, b)
 }
 
 /// Sum of 64-bit terms in a `u128`; with at most a few terms it never fails.
