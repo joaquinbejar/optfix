@@ -439,6 +439,9 @@ Each milestone is one feature branch (`feat/m<N>-<name>`) and one PR.
    and the `q = 0` regression of 4.7), both kinds,
    with the documented envelopes, and `price_and_greeks` costs less than a benchmark-only baseline that
    computes `price` and each greek separately (not public API).
+   Note from the milestone 3 review (codex): binary `sqrt` costs about 36% more than decimal
+   on matched samples (10,703 against 7,878 CU), so profile the whole `price_and_greeks` path
+   before claiming any total saving from Q64.64; the division follow-up applies to `sqrt`.
 6. **Implied volatility.** *Done when* round-trip `implied_vol(price(σ)) ≈ σ` holds within the
    documented bound wherever vega exceeds a documented threshold, for `q > 0`, `q < 0` and
    `q = 0`, `ArbitrageBound` and
