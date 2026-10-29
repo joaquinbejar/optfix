@@ -46,6 +46,10 @@ pub enum Instruction {
     Exp = 4,
     /// `optfix::ln`.
     Ln = 5,
+    /// `optfix::norm_cdf`.
+    NormCdf = 6,
+    /// `optfix::norm_pdf`.
+    NormPdf = 7,
 }
 
 impl Instruction {
@@ -63,6 +67,8 @@ impl Instruction {
             3 => Ok(Self::SqrtDown),
             4 => Ok(Self::Exp),
             5 => Ok(Self::Ln),
+            6 => Ok(Self::NormCdf),
+            7 => Ok(Self::NormPdf),
             _ => Err(BenchError::UnknownInstruction),
         }
     }
@@ -129,6 +135,8 @@ pub fn process_instruction(
         Instruction::SqrtDown => unary(args, Fixed::sqrt_down)?,
         Instruction::Exp => unary(args, optfix::exp)?,
         Instruction::Ln => unary(args, optfix::ln)?,
+        Instruction::NormCdf => unary(args, optfix::norm_cdf)?,
+        Instruction::NormPdf => unary(args, optfix::norm_pdf)?,
     };
     set_return_data(&encode_result(result));
     Ok(())

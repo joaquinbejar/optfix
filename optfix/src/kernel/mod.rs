@@ -17,7 +17,10 @@ use crate::PricingError;
 use tables::{
     EXP_COEF, EXP_TABLE, EXP_TABLE_BITS, LN2_Q120, LN_COEF, LN_RINV, LN_TABLE, LN_TABLE_BITS,
 };
-pub(crate) use tables::{EXP_INV_STEP_Q25, EXP_STEP_HI_Q64, EXP_STEP_LO_Q114};
+pub(crate) use tables::{
+    EXP_INV_STEP_Q25, EXP_STEP_HI_Q64, EXP_STEP_LO_Q114, INV_SQRT_2PI_Q128, NORM_B0, NORM_COEF,
+    NORM_TABLE_BITS,
+};
 
 /// Index into `EXP_COEF` (which starts at `c2`) from which Horner steps use
 /// [`mul_hi_approx`]: `p_4` and above.
@@ -136,7 +139,8 @@ pub(crate) fn round_shr_i128(v: i128, s: u32) -> Result<i128, PricingError> {
 /// `e^x` for `x = n ln2/64 + r70 / 2^70`, as `(v, k)` with `e^x ≈ v / 2^63 × 2^k`.
 ///
 /// `v` is in `[0.99, 2) × 2^63` when `|r| <= ln2/128` (plus the reduction slack); its error is
-/// below 2 units of `2^-63` (measured bound in the crate tests).
+/// below one unit of `2^-63` (the table and the last product are rounded to 64 bits).
+#[inline(always)]
 pub(crate) fn exp_core(n: i64, r70: i64) -> Result<(u64, i64), PricingError> {
     let k = n
         .checked_shr(EXP_TABLE_BITS)

@@ -15,6 +15,9 @@ bytemuck = { version = "1.25", default-features = false, features = ["derive"] }
 proptest = "1.12"
 # Test reference for exp and ln (arbitrary precision); dev-dependency only.
 num-bigint = "0.5"
+# The pricing oracle (PLAN 4.7): dev-dependency only, pricing feature only.
+optionstratlib = { version = "0.23", default-features = false, features = ["pricing"] }
+rust_decimal = "1.43"
 optfix = { path = "optfix", version = "0.1" }
 # Pinocchio 0.11 generation: decided exception to the latest-stable rule (docs/PLAN.md).
 pinocchio = { version = "0.11", default-features = false, features = ["cpi"] }

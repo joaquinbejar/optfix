@@ -39,6 +39,8 @@ enum Ix {
     SqrtDown = 3,
     Exp = 4,
     Ln = 5,
+    NormCdf = 6,
+    NormPdf = 7,
 }
 
 /// Status byte plus one 16-byte little-endian value.
@@ -104,6 +106,12 @@ impl Rng {
         Fixed::from_raw(((-42.0 + 85.0 * u) * ONE) as i128)
     }
 
+    /// Uniform in `[−9.25, 9.25]`: the range where `N(x)` is computed rather than saturated.
+    fn norm_arg(&mut self) -> Fixed {
+        let u = (self.next() >> 11) as f64 / (1u64 << 53) as f64;
+        Fixed::from_raw(((-9.25 + 18.5 * u) * ONE) as i128)
+    }
+
     /// Log-uniform in `[10^-6, 10^9]`: prices, strikes and their ratios.
     fn ln_arg(&mut self) -> Fixed {
         self.log_uniform()
@@ -135,6 +143,8 @@ enum Domain {
     ExpArg,
     /// `ln` arguments: log-uniform in `[10^-6, 10^9]`.
     LnArg,
+    /// Normal CDF and PDF arguments: uniform in `[−9.25, 9.25]`.
+    NormArg,
 }
 
 /// One measured instruction and the host function its result must equal.
@@ -145,7 +155,7 @@ struct Row {
     domain: Domain,
 }
 
-const ROWS: [Row; 5] = [
+const ROWS: [Row; 7] = [
     Row {
         ix: Ix::MulDown,
         name: "MulDown",
@@ -175,6 +185,18 @@ const ROWS: [Row; 5] = [
         name: "Ln",
         op: Op::Unary(optfix::ln),
         domain: Domain::LnArg,
+    },
+    Row {
+        ix: Ix::NormCdf,
+        name: "NormCdf",
+        op: Op::Unary(optfix::norm_cdf),
+        domain: Domain::NormArg,
+    },
+    Row {
+        ix: Ix::NormPdf,
+        name: "NormPdf",
+        op: Op::Unary(optfix::norm_pdf),
+        domain: Domain::NormArg,
     },
 ];
 
@@ -288,6 +310,7 @@ fn measure() -> Measurement {
                         Domain::Prices => inputs[i],
                         Domain::ExpArg => (rng.exp_arg(), Fixed::ZERO),
                         Domain::LnArg => (rng.ln_arg(), Fixed::ZERO),
+                        Domain::NormArg => (rng.norm_arg(), Fixed::ZERO),
                     };
                     // sqrt is measured on |a|: a negative input is a cheap DomainError.
                     let a = match (row.op, row.domain) {
@@ -344,7 +367,8 @@ fn table(m: &Measurement) -> String {
          {RANDOM_INPUTS} values or pairs from seed `{SEED:#x}`: for `MulDown`, `DivDown` and \
          `SqrtDown` magnitudes log-uniform in `[10^-6, 10^9]` with random signs (`sqrt` takes \
          the absolute value); `exp` arguments uniform in `[−42, 43]`; `ln` arguments \
-         log-uniform in `[10^-6, 10^9]`. Every on-chain result equals the host result bit for bit, and two runs in fresh VMs give identical \
+         log-uniform in `[10^-6, 10^9]`; `norm_cdf` and `norm_pdf` arguments uniform in \
+         `[−9.25, 9.25]`. Every on-chain result equals the host result bit for bit, and two runs in fresh VMs give identical \
          numbers. Release profile: `lto = \"fat\"`, `codegen-units = 1`; a program built with \
          another profile will measure differently."
     )

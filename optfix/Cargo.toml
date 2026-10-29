@@ -15,7 +15,9 @@ bytemuck = { workspace = true }
 
 [dev-dependencies]
 num-bigint = { workspace = true }
+optionstratlib = { workspace = true }
 proptest = { workspace = true }
+rust_decimal = { workspace = true }
 
 [lints]
 workspace = true

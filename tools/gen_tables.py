@@ -14,7 +14,7 @@ Every constant is the exact real value rounded to nearest (ties to even) at the 
 from decimal import Decimal as D, getcontext, ROUND_HALF_EVEN
 from math import factorial
 
-getcontext().prec = 100
+getcontext().prec = 120
 
 LN2 = D(2).ln()
 
@@ -26,6 +26,11 @@ EXP_DEGREE = 6
 LN_TABLE_BITS = 7
 # ln(1 + z) = z − z^2 q(z) with q of degree LN_DEGREE − 2 fitted to (z − ln(1 + z)) / z^2.
 LN_DEGREE = 7
+# N(−a) = e^(−a²/2) P(a) for a >= 0, P piecewise polynomial of degree NORM_DEGREE on
+# segments of width 2^-NORM_TABLE_BITS covering [0, NORM_SEGMENTS / 4).
+NORM_TABLE_BITS = 2
+NORM_SEGMENTS = 37
+NORM_DEGREE = 12
 # Fit intervals: |r| <= ln2/128 and |z| <= 2^-8, widened slightly for the estimated reduction
 # index and the rounded reciprocals.
 FIT_MARGIN = D(1) + D(2) ** -10
@@ -85,6 +90,36 @@ def cheb_fit(f, degree, half_width):
     n = degree + 1
     nodes = [half_width * cos((2 * k + 1) * pi() / (2 * n)) for k in range(n)]
     return solve([[x ** i for i in range(n)] for x in nodes], [f(x) for x in nodes])
+
+
+def norm_p(a):
+    """P(a) = N(−a) e^(a²/2) = e^(a²/2) / 2 − S(a) / √(2π), S(a) = Σ a^(2n+1) / (2n+1)!!.
+
+    The series has only positive terms; at a = 9.25 the subtraction cancels about 20 digits of
+    the 120 in the context.
+    """
+    term, total, k = a, D(0), 1
+    while term > D(10) ** -110:
+        total += term
+        k += 2
+        term = term * a * a / k
+    return (a * a / 2).exp() / 2 - total / (2 * pi()).sqrt()
+
+
+def cheb_fit_on(f, degree, lo, hi):
+    """Polynomial in t = x − centre interpolating f at the Chebyshev nodes of [lo, hi]."""
+    centre, half = (lo + hi) / 2, (hi - lo) / 2
+    n = degree + 1
+    ts = [half * cos((2 * k + 1) * pi() / (2 * n)) for k in range(n)]
+
+    def powers(t):
+        out, v = [], D(1)
+        for _ in range(n):
+            out.append(v)
+            v *= t
+        return out
+
+    return solve([powers(t) for t in ts], [f(centre + t) for t in ts])
 
 
 def rnd(x):
@@ -161,8 +196,38 @@ def main():
         array("LN_COEF", "u64", ln_coef,
               f"`q(z) = (z − ln(1 + z)) / z^2 ≈ Σ (−1)^i LN_COEF[i] z^i / 2^64` on `|z| <= "
               f"2^-{LN_TABLE_BITS + 1}` (Taylor: `1/(i + 2)`)."),
+        "",
+        f"/// `log2` of the number of normal-CDF segments per unit: segments of width "
+        f"`1/{1 << NORM_TABLE_BITS}`.",
+        f"pub(crate) const NORM_TABLE_BITS: u32 = {NORM_TABLE_BITS};",
+        "",
+        const("INV_SQRT_2PI_Q128", "u128", scaled(1 / (2 * pi()).sqrt(), 128), "`1 / √(2π) × 2^128`."),
+        "",
+        norm_table(),
     ]
     print("\n".join(out))
+
+
+def norm_table():
+    w = D(1) / (1 << NORM_TABLE_BITS)
+    b0, rows = [], []
+    for i in range(NORM_SEGMENTS):
+        coef = cheb_fit_on(norm_p, NORM_DEGREE, i * w, (i + 1) * w)
+        # Signs alternate (+, −, +, ...) on every segment; store magnitudes.
+        for k, c in enumerate(coef):
+            if (c > 0) != (k % 2 == 0):
+                raise SystemExit(f"segment {i}: coefficient {k} breaks the sign pattern")
+        b0.append(f"    {scaled(coef[0], 128):#x},")
+        rows.append("    [" + ", ".join(f"{scaled(abs(c), 64):#x}" for c in coef[1:]) + "],")
+    seg = (f"`a` in `[i/{1 << NORM_TABLE_BITS}, (i + 1)/{1 << NORM_TABLE_BITS})`, "
+           f"`t = a − (i + 1/2)/{1 << NORM_TABLE_BITS}`")
+    return "\n".join(
+        [f"/// `P(a) = N(−a) e^(a²/2) ≈ NORM_B0[i] / 2^128 − t Σ (−1)^k NORM_COEF[i][k] t^k / 2^64` "
+         f"on segment `i`, {seg}.",
+         f"pub(crate) const NORM_COEF: [[u64; {NORM_DEGREE}]; {NORM_SEGMENTS}] = ["]
+        + rows + ["];", "",
+                  "/// The constant terms of the segment polynomials, at `2^128`.",
+                  f"pub(crate) const NORM_B0: [u128; {NORM_SEGMENTS}] = ["] + b0 + ["];"])
 
 
 if __name__ == "__main__":
