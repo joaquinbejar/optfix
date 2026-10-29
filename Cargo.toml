@@ -13,6 +13,8 @@ repository = "https://github.com/joaquinbejar/optfix"
 # Versions checked on crates.io (max_stable_version) on 2026-10-29.
 bytemuck = { version = "1.25", default-features = false, features = ["derive"] }
 proptest = "1.12"
+# Test reference for exp and ln (arbitrary precision); dev-dependency only.
+num-bigint = "0.5"
 optfix = { path = "optfix", version = "0.1" }
 # Pinocchio 0.11 generation: decided exception to the latest-stable rule (docs/PLAN.md).
 pinocchio = { version = "0.11", default-features = false, features = ["cpi"] }
