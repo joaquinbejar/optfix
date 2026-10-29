@@ -17,8 +17,9 @@ use pinocchio::error::ProgramError;
 use pinocchio::{AccountView, Address, ProgramResult};
 
 // The macros expand to the `extern "C"` entrypoint and the target's allocator and panic hooks;
-// that generated code is the only `unsafe` in this crate.
-#[allow(unsafe_code)]
+// that generated code is the only `unsafe` in this crate. `no_allocator!` also defines
+// `allocate_unchecked`, whose offset helper asserts its bounds; nothing here calls it.
+#[allow(unsafe_code, clippy::disallowed_macros)]
 mod entry {
     pinocchio::program_entrypoint!(super::process_instruction);
     pinocchio::no_allocator!();

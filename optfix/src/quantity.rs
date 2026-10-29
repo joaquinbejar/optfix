@@ -124,7 +124,11 @@ impl Years {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::arithmetic_side_effects,
+    clippy::disallowed_macros
+)]
 mod tests {
     use super::{Price, Rate, Spot, Strike, Volatility, Years, SECONDS_PER_YEAR};
     use crate::{Fixed, PricingError, Rounding};

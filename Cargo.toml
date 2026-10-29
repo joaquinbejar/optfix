@@ -1,5 +1,5 @@
 [workspace]
-members = ["optfix", "bench-program", "bench"]
+members = ["optfix", "bench-program", "bench", "lint-control"]
 resolver = "2"
 
 [workspace.package]
@@ -28,8 +28,12 @@ solana-transaction = "4.3"
 [workspace.lints.rust]
 unsafe_code = "deny"
 missing_docs = "deny"
-# Pinocchio's entrypoint macros test `target_os = "solana"`.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
+# Pinocchio's entrypoint macros test `target_os = "solana"`; `lint_control` is set only by
+# `make lint-control`.
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(target_os, values("solana"))',
+    'cfg(lint_control)',
+] }
 
 [workspace.lints.clippy]
 panic = "deny"
@@ -44,6 +48,7 @@ integer_division = "deny"
 float_arithmetic = "deny"
 panic_in_result_fn = "deny"
 manual_assert = "deny"
+disallowed_macros = "deny"          # list in clippy.toml
 
 [profile.release]
 overflow-checks = true

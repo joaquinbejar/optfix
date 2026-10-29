@@ -46,6 +46,21 @@ fmt-check:
 lint:
 	cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+# Failing control: clippy must reject each panicking macro in lint-control's library code
+# (compiled only under --cfg lint_control, in its own target dir so the cfg does not leak).
+# No -D warnings here, so it also fails if [workspace.lints] stops denying the lint.
+LINT_CONTROL_MACROS = assert assert_eq assert_ne debug_assert debug_assert_eq debug_assert_ne panic unreachable
+.PHONY: lint-control
+lint-control:
+	@out="$$(RUSTFLAGS='--cfg lint_control' cargo clippy -p lint-control --lib \
+		--target-dir target/lint-control 2>&1)"; \
+	if [ $$? -eq 0 ]; then echo "lint-control: clippy accepted panicking macros in lib code"; exit 1; fi; \
+	for m in $(LINT_CONTROL_MACROS); do \
+		echo "$$out" | grep -q "^error: use of a disallowed macro \`[a-z]*::$$m\`" \
+			|| { echo "$$out"; echo "lint-control: $$m! was not rejected"; exit 1; }; \
+	done; \
+	echo "lint-control: clippy rejects $(LINT_CONTROL_MACROS)"
+
 # Rustdoc with every warning denied
 .PHONY: doc
 doc:
@@ -53,7 +68,7 @@ doc:
 
 # Pre-push checks: must pass with zero warnings
 .PHONY: pre-push
-pre-push: fmt-check lint program test doc
+pre-push: fmt-check lint lint-control program test doc
 
 .PHONY: clean
 clean:
