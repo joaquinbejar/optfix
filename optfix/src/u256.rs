@@ -265,7 +265,8 @@ fn sub_3(a: (u64, u128), b: (u64, u128)) -> Result<(u64, u128), PricingError> {
 #[allow(
     clippy::unwrap_used,
     clippy::arithmetic_side_effects,
-    clippy::integer_division
+    clippy::integer_division,
+    clippy::disallowed_macros
 )]
 mod tests {
     use super::U256;

@@ -46,6 +46,12 @@ fmt-check:
 lint:
 	cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+# Failing control: clippy must reject every banned macro in lint-control's library code, on
+# each probe line with the exact definition path (see lint-control/check.sh).
+.PHONY: lint-control
+lint-control:
+	@sh lint-control/check.sh
+
 # Rustdoc with every warning denied
 .PHONY: doc
 doc:
@@ -53,7 +59,7 @@ doc:
 
 # Pre-push checks: must pass with zero warnings
 .PHONY: pre-push
-pre-push: fmt-check lint program test doc
+pre-push: fmt-check lint lint-control program test doc
 
 .PHONY: clean
 clean:

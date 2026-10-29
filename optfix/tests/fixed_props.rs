@@ -13,6 +13,7 @@
     clippy::arithmetic_side_effects,
     clippy::integer_division,
     clippy::panic_in_result_fn,
+    clippy::disallowed_macros,
     missing_docs
 )]
 

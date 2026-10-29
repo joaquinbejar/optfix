@@ -35,7 +35,12 @@ impl fmt::Display for PricingError {
 impl core::error::Error for PricingError {}
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::disallowed_macros
+)]
 mod tests {
     extern crate std;
 

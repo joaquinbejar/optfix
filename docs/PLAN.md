@@ -107,11 +107,21 @@ pub struct EuropeanOption {
 pub struct MarketInputs { pub spot: Spot, pub vol: Volatility, pub rate: Rate, pub carry: Rate }
 // carry: continuous yield q (Black-Scholes-Merton); the lease rate for XAU/XAG, 0 for none.
 
+/// Inputs of `implied_vol`: `MarketInputs` without the volatility being solved for. Named
+/// fields, because `rate` and `carry` share the `Rate` type and positional arguments could be
+/// swapped without a compile error.
+pub struct IvInputs { pub spot: Spot, pub rate: Rate, pub carry: Rate }
+
+/// Bounds below use `Dq = e^{−qT}`; over the domain table `Dq` is in `[e^{−15}, e^{3}]`
+/// (`q = 0.5, T = 30` and `q = −0.1, T = 30`), so `|delta|` can reach about 20.1.
 pub struct Greeks {
-    pub delta: Fixed,   // dV/dS, in [-1, 1]
+    pub delta: Fixed,   // dV/dS: call in [0, Dq], put in [−Dq, 0]
     pub gamma: Fixed,   // d2V/dS2, >= 0, per unit of spot
-    pub vega:  Fixed,   // dV/dsigma per 1.00 of vol (divide by 100 for "per vol point")
-    pub theta: Fixed,   // dV/dt in calendar time per year (= -dV/dT), usually <= 0
+    pub vega:  Fixed,   // dV/dsigma per 1.00 of vol (divide by 100 for "per vol point"),
+                        // >= 0, at most S × Dq × √T / √(2π)
+    pub theta: Fixed,   // dV/dt in calendar time per year (= -dV/dT); sign not fixed: deep
+                        // in the money it is about q S Dq − r K e^{−rT} for a call and the
+                        // negative of that for a put, either of which can be > 0
 }
 
 pub struct Priced { pub price: Price, pub greeks: Greeks }
@@ -152,12 +162,12 @@ pub fn norm_pdf(x: Fixed) -> Result<Fixed, PricingError>;     // n(x)
 pub fn intrinsic(opt: &EuropeanOption, spot: Spot) -> Price;
 pub fn price(opt: &EuropeanOption, m: &MarketInputs) -> Result<Price, PricingError>;
 pub fn price_and_greeks(opt: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingError>;
-pub fn implied_vol(opt: &EuropeanOption, spot: Spot, rate: Rate, target: Price)
+pub fn implied_vol(opt: &EuropeanOption, m: &IvInputs, target: Price)
     -> Result<Volatility, PricingError>;
 ```
 
-`price_and_greeks` computes `d1`, `d2`, `N(d1)`, `N(d2)`, `n(d1)`, `sqrt(T)` and the discount
-factor once and derives all four greeks from them. `price` is a thin wrapper that skips the
+`price_and_greeks` computes `d1`, `d2`, `N(d1)`, `N(d2)`, `n(d1)`, `sqrt(T)` and the two
+discount factors `e^{−rT}` and `e^{−qT}` once and derives all four greeks from them. `price` is a thin wrapper that skips the
 greeks.
 
 ### Rounding contract for compound functions
@@ -201,7 +211,7 @@ bound for a wider accepted domain). Accepted 2026-10-29:
 | --- | --- |
 | `Spot`, `Strike` | `[10^-6, 10^9]` each, `S/K` in `[0.05, 20]` |
 | `Volatility` | `[0.005, 5]` |
-| `Rate` | `[-0.1, 0.5]` |
+| `Rate` | `[-0.1, 0.5]`, for both `rate` (`r`) and `carry` (`q`); so `e^{−qT}` is in `[e^{−15}, e^{3}]` and the forward factor `e^{(r−q)T}` in `[e^{−18}, e^{18}]` |
 | `Years` | `[0, 30]`; the degenerate branch of 4.5 applies when `σ√T` is below its threshold (which covers `T = 0` and very small `T`) |
 
 Error envelopes are input-dependent formulas, not one constant: for price,
@@ -269,27 +279,44 @@ published error bounds), Marsaglia (series, iteration count varies with `x`).
 
 ### 4.5 Black-Scholes
 
-`d1 = (ln(S/K) + (r + σ²/2)T) / (σ√T)`, `d2 = d1 − σ√T`. Degenerate cases handled before the
-formula: `T == 0` returns intrinsic value with delta 0 or ±1, gamma and vega 0; `σ√T` below a
-threshold likewise returns forward intrinsic: `max(S − K e^{−rT}, 0)` for a call,
-`max(K e^{−rT} − S, 0)` for a put, with delta 0 or ±1. The out-of-the-money side, by forward moneyness (`S` vs `K e^{−rT}`, not `S` vs `K`, so that
-`S − K e^{−rT}` has a fixed sign), is priced
-directly and the in-the-money side via put-call parity (`C = P + S − K e^{−rT}`), a sum of
-positive terms. Fixed-point errors are absolute, so the ITM formula's cancellation would not
-amplify them; parity is used because it reuses the OTM evaluation, which has small values and
-the tail-accurate `N`.
+Black-Scholes-Merton with continuous carry `q`. Write `Dr = e^{−rT}`, `Dq = e^{−qT}` and
+`F = S e^{(r−q)T}` (so `S Dq = F Dr`):
+
+- `d1 = (ln(S/K) + (r − q + σ²/2)T) / (σ√T)`, `d2 = d1 − σ√T`.
+- `C = S Dq N(d1) − K Dr N(d2)`, `P = K Dr N(−d2) − S Dq N(−d1)`.
+- Greeks: delta `Dq N(d1)` (call) and `−Dq N(−d1)` (put); gamma `Dq n(d1) / (S σ √T)`; vega
+  `S Dq n(d1) √T`; theta (call) `−S Dq n(d1) σ / (2√T) − r K Dr N(d2) + q S Dq N(d1)`, (put)
+  `−S Dq n(d1) σ / (2√T) + r K Dr N(−d2) − q S Dq N(−d1)`. Bounds as in the `Greeks` struct.
+
+With `q = 0`, `Dq` is exactly `ONE` (`exp(0)` is exact), so every formula reduces to plain
+Black-Scholes without an extra rounding.
+
+Degenerate cases handled before the formula: `T == 0` returns intrinsic value (`Dq = Dr = 1`)
+with delta 0 or ±1, gamma and vega 0, and theta from the forward intrinsic below at `T = 0`.
+`σ√T` below a threshold likewise returns forward intrinsic: `max(S Dq − K Dr, 0)` for a call, `max(K Dr − S Dq, 0)` for a put, with delta 0 or
+`±Dq`, gamma and vega 0, and theta the derivative of that intrinsic (`q S Dq − r K Dr` for an
+in-the-money call, its negative for an in-the-money put, 0 out of the money). The
+out-of-the-money side, by forward moneyness (`S Dq` vs `K Dr`, equivalently `F` vs `K`, not `S`
+vs `K`, so that `S Dq − K Dr` has a fixed sign), is priced directly and the in-the-money side
+via put-call parity (`C = P + S Dq − K Dr`), a sum of positive terms. Fixed-point errors are
+absolute, so the ITM formula's cancellation would not amplify them; parity is used because it
+reuses the OTM evaluation, which has small values and the tail-accurate `N`.
 
 ### 4.6 Implied volatility
 
-1. Check bounds: `max(0, S − K e^{−rT}) < target < S` for calls (puts analogous), else
-   `ArbitrageBound`. Strict inequalities: at the bounds, vol is 0 or infinite.
-2. Initial guess: Brenner-Subrahmanyam `σ0 = √(2π/T) × C/S` near the money; Li (2005) rational
-   approximation away from it. Milestone 6 compares both on a grid of moneyness and picks the
+Inputs are `IvInputs { spot, rate, carry }`; `Dr`, `Dq` and `F` as in 4.5.
+
+1. Check bounds: `max(0, S Dq − K Dr) < target < S Dq` for calls and
+   `max(0, K Dr − S Dq) < target < K Dr` for puts, else `ArbitrageBound`. Strict inequalities:
+   at the bounds, vol is 0 or infinite.
+2. Initial guess: Brenner-Subrahmanyam `σ0 = √(2π/T) × C/(S Dq)` near the money (forward
+   moneyness, `F` vs `K`); Li (2005) rational approximation away from it, applied to the
+   forward-normalized price. Milestone 6 compares both on a grid of moneyness and picks the
    switch point by measured iterations.
 3. Up to 3 Halley iterations (Newton with the volga correction, which `price_and_greeks`
-   almost gives for free), iterating in normalized price space (price over forward, or its
-   log for deep OTM) rather than raw price, which converges far better for deep OTM and short
-   `T`. Stop at tolerance; otherwise `NoConvergence`. A fixed cap keeps the CU bound fixed;
+   almost gives for free), iterating in normalized price space (price over the discounted
+   forward `S Dq`, or its log for deep OTM) rather than raw price, which converges far better
+   for deep OTM and short `T`. Stop at tolerance; otherwise `NoConvergence`. A fixed cap keeps the CU bound fixed;
    milestone 6 measures the `NoConvergence` rate over the milestone 5 grid.
 
 Possible later upgrade: Jäckel, "Let's be rational" (2015), which reaches machine precision in
@@ -313,6 +340,15 @@ careful `f64` behavior that would need its own fixed-point error analysis.
   converts to `f64` and calls `statrs::Normal::cdf` (`kernels.rs:385`), so the oracle is about
   `10^-16` relative and worse in the tails. `exp`, `ln`, `erfc` are checked against `libm` f64
   and the same `mpmath` tables.
+- Carry `q`: OptionStratLib's Garman-Kohlhagen is the oracle with its foreign rate set to `q`.
+  Price, greeks and implied vol each have tests on three planned sets: `q > 0` (up to
+  `q = 0.5, T = 30`, where `Dq = e^{−15}`), `q < 0` (down to `q = −0.1, T = 30`, where
+  `Dq = e^{3}` and `|delta| > 1`; the delta bounds `[0, Dq]` and `[−Dq, 0]` are asserted), and a
+  `q = 0` regression: the same inputs with `carry = 0` must match the oracle's plain
+  Black-Scholes values within the same envelope, and a committed table of `q = 0` results is
+  checked bit for bit so later carry changes cannot move them. Put-call parity
+  `C − P = S Dq − K Dr` is checked within the sum of the two price envelopes, and the
+  `ArbitrageBound` edges of 4.6 use the carry-adjusted bounds.
 - Unit mismatches with the oracle: OptionStratLib's `theta` is per day (divided by 365,
   `equations.rs:1373`) and `vega` is per 1% (divided by 100, `equations.rs:1525`). Tests
   rescale the oracle to optfix units (theta per year, vega per 1.00) explicitly, never by
@@ -326,6 +362,7 @@ Mirrors matchbook:
 optfix/            no_std library, the only crate published to crates.io
 bench-program/     Pinocchio program, one instruction per public function (publish = false)
 bench/             LiteSVM tests that run bench-program and print the CU table (publish = false)
+lint-control/      failing control for the lint set, `make lint-control` (publish = false)
 tools/             offline coefficient generation (Sollya or Python + mpmath), not a crate
 docs/              PLAN.md, benchmarks.md, precision.md
 ```
@@ -361,11 +398,13 @@ Each milestone is one feature branch (`feat/m<N>-<name>`) and one PR.
    on exactly `[−8, −5]`, plus saturation tests beyond the cutoff) verified by proptest, and their CU rows are in the benchmarks doc.
 5. **Black-Scholes price and greeks.** `price`, `price_and_greeks`, `intrinsic`, degenerate
    cases. *Done when* proptest against OptionStratLib passes over the whole supported
-   domain table (every range, extremes, tiny `T`, `S` and `K` scaled together), both kinds,
+   domain table (every range, extremes, tiny `T`, `S` and `K` scaled together, `q > 0`, `q < 0`
+   and the `q = 0` regression of 4.7), both kinds,
    with the documented envelopes, and `price_and_greeks` costs less than a benchmark-only baseline that
    computes `price` and each greek separately (not public API).
 6. **Implied volatility.** *Done when* round-trip `implied_vol(price(σ)) ≈ σ` holds within the
-   documented bound wherever vega exceeds a documented threshold, `ArbitrageBound` and
+   documented bound wherever vega exceeds a documented threshold, for `q > 0`, `q < 0` and
+   `q = 0`, `ArbitrageBound` and
    `NoConvergence` are each covered by tests, the `NoConvergence` rate over the milestone 5 grid is
    reported, and the worst-case CU (all iterations) is in the table.
 7. **README with error and CU tables, v0.1 on crates.io.** *Done when* README tables are
@@ -434,7 +473,14 @@ against Agave 4.4.
 2. CU budget: is there a target for `price_and_greeks` (for example 15,000 CU) that should
    fail the bench if exceeded?
 3. Decision weights for milestone 3: CU only once errors meet the target, or a combined score?
-4. Decided (2026-10-29): continuous carry `q` in v0.1.
+4. Decided (2026-10-29): continuous carry `q` in v0.1. Plan review 2 (codex) made it
+   consistent: `d1` uses `r − q`; forward intrinsic, put-call parity, forward moneyness and the
+   implied vol call ceiling use `S e^{−qT}` (4.5, 4.6); `implied_vol` takes `IvInputs` with
+   `carry`; delta is bounded by `±e^{−qT}`, up to about 20.1 at `q = −0.1, T = 30`, not
+   `[−1, 1]`; theta's sign is not fixed; tests cover `q > 0`, `q < 0` and a `q = 0`
+   regression (4.7). The price envelope of question 1 is stated in `max(S, K)`, while carry
+   prices scale with `S e^{−qT}` (up to about `20 S`); milestone 5 measures whether the decided
+   envelope holds over the carry range before fixing `ERR_REL`.
 5. Year basis: 365 days (proposed) or 365.25?
 6. Decided (latest-stable rule): OptionStratLib 0.23 from crates.io as the oracle.
 7. Decided: Pinocchio 0.11, like the other three repos (exception recorded above).

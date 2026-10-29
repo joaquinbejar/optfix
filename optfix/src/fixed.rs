@@ -318,7 +318,8 @@ fn quotient(a: i128, b: i128, d: i128, r: Rounding) -> Result<Fixed, PricingErro
 #[allow(
     clippy::unwrap_used,
     clippy::arithmetic_side_effects,
-    clippy::integer_division
+    clippy::integer_division,
+    clippy::disallowed_macros
 )]
 mod tests {
     use super::{Fixed, FixedBytes, Rounding, SCALE};
