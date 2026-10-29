@@ -81,11 +81,11 @@ proves its own invariant. There are no `From<Fixed>` impls between them: a `Vola
 never be passed as a `Strike`, and the compiler rejects `bs_price(vol, spot, ...)`.
 
 ```rust
-pub struct Spot(Fixed);        // > 0. Price of the underlying in quote units.
-pub struct Strike(Fixed);      // > 0. Same unit as Spot.
+pub struct Spot(Fixed);        // price of the underlying in quote units; range: domain table
+pub struct Strike(Fixed);      // same unit as Spot; range: domain table
 pub struct Price(Fixed);       // >= 0. Option premium, same unit as Spot.
-pub struct Volatility(Fixed);  // annualized sigma, in (0, MAX_VOL]; MAX_VOL = 10.0 (1000%).
-pub struct Rate(Fixed);        // continuously compounded annual rate, in [-1.0, 1.0].
+pub struct Volatility(Fixed);  // annualized sigma; range: domain table
+pub struct Rate(Fixed);        // continuously compounded annual rate; range: domain table
 pub struct Years(Fixed);       // time to expiry, in [0, MAX_YEARS]; MAX_YEARS = 30.
 
 impl Years {
@@ -186,7 +186,10 @@ is never deployed to a public cluster.
 
 ### Supported domain and error envelope
 
-Constructors reject anything outside the **supported domain**, and the supported domain is
+The table is the single source of the ranges: `Spot` and `Strike` constructors check
+`[10^-6, 10^9]`, the others their own row, and the two-input `S/K` constraint is checked by
+`price`, `price_and_greeks` and `implied_vol`, which return `DomainError` (tested). Constructors
+reject anything outside the **supported domain**, and the supported domain is
 exactly what the tests cover (codex review: an envelope measured on a smaller grid is not a
 bound for a wider accepted domain). Proposal, to confirm with question 1:
 
@@ -195,10 +198,12 @@ bound for a wider accepted domain). Proposal, to confirm with question 1:
 | `Spot`, `Strike` | `[10^-6, 10^9]` each, `S/K` in `[0.05, 20]` |
 | `Volatility` | `[0.005, 5]` |
 | `Rate` | `[-0.1, 0.5]` |
-| `Years` | `[0, 30]`; below 1 second the degenerate branch applies |
+| `Years` | `[0, 30]`; the degenerate branch of 4.5 applies when `σ√T` is below its threshold (which covers `T = 0` and very small `T`) |
 
 Error envelopes are input-dependent formulas, not one constant: for price,
-`|err| <= ERR_REL × max(S, K) + ERR_ABS`, including approximation, fixed-point propagation,
+`|err| <= ERR_REL × max(S, K) + ERR_ABS`, with both constants fixed explicitly in milestone 5
+(`ERR_ABS` matters: at extreme moneyness, low `σ` and long `T` prices are about `10^-30 × S`),
+including approximation, fixed-point propagation,
 degenerate branches and input conversion. Tests sample every range, tiny `T`, the cutoff
 transitions, the range extremes, and `S` and `K` scaled together.
 
@@ -350,9 +355,9 @@ Each milestone is one feature branch (`feat/m<N>-<name>`) and one PR.
 4. **`N(x)` and `n(x)`.** *Done when* both meet published bounds (absolute everywhere, relative
    on exactly `[−8, −5]`, plus saturation tests beyond the cutoff) verified by proptest, and their CU rows are in the benchmarks doc.
 5. **Black-Scholes price and greeks.** `price`, `price_and_greeks`, `intrinsic`, degenerate
-   cases. *Done when* proptest against OptionStratLib passes over the grid `S/K in [0.2, 5]`,
-   `σ in [0.01, 3]`, `T in [1 day, 5 years]`, `r in [-0.05, 0.2]`, both kinds, with the
-   documented bounds, and `price_and_greeks` costs less than a benchmark-only baseline that
+   cases. *Done when* proptest against OptionStratLib passes over the whole supported
+   domain table (every range, extremes, tiny `T`, `S` and `K` scaled together), both kinds,
+   with the documented envelopes, and `price_and_greeks` costs less than a benchmark-only baseline that
    computes `price` and each greek separately (not public API).
 6. **Implied volatility.** *Done when* round-trip `implied_vol(price(σ)) ≈ σ` holds within the
    documented bound wherever vega exceeds a documented threshold, `ArbitrageBound` and
