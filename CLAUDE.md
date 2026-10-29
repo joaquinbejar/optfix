@@ -4,7 +4,8 @@ Fixed-point option pricing library: `no_std`, allocation-free, no Solana depende
 Workspace: `optfix/` (published crate), `bench-program/` (Pinocchio, one instruction per function,
 never deployed), `bench/` (LiteSVM CU table), `tools/` (offline coefficient generation).
 Every public function has a `pub const` error bound enforced by proptest against OptionStratLib
-(`optionstratlib` 0.23 from crates.io, dev-dependency only; its `big_n` is f64 grade; theta per day and vega per 1% must be rescaled) or `libm`/mpmath tables.
+(`optionstratlib` 0.23 from crates.io, dev-dependency only; its `big_n` is f64 grade; theta per day and vega per 1% must be rescaled) or a 256-bit `num-bigint` reference checked against Python `decimal` tables (`tools/`).
+`Fixed` is binary Q64.64 (`raw / 2^64`), decided in milestone 3.
 `clippy::float_arithmetic` is denied workspace-wide; tests, proptests and `bench/` that compare
 against f64/Decimal start with `#![allow(clippy::float_arithmetic)]` next to the other test allows.
 `integer_division` and `arithmetic_side_effects` are denied too: kernels use `checked_*`, and M2

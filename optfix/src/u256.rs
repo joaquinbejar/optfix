@@ -81,6 +81,26 @@ impl U256 {
         })
     }
 
+    /// Exact `x × 2^64`.
+    pub(crate) fn shl_64(x: u128) -> Self {
+        Self {
+            w0: 0,
+            w1: lo64(x),
+            w2: hi64(x),
+            w3: 0,
+        }
+    }
+
+    /// Quotient and remainder of `self / 2^64`: a shift, no division.
+    ///
+    /// `Overflow` if the quotient does not fit in a `u128`.
+    pub(crate) fn split_64(self) -> Result<(u128, u64), PricingError> {
+        if self.w3 != 0 {
+            return Err(PricingError::Overflow);
+        }
+        Ok((join(self.w2, self.w1), self.w0))
+    }
+
     /// Number of leading zero bits, in `0..=256`.
     fn leading_zeros(self) -> u32 {
         // Each `leading_zeros` is at most 64, so the sums stay at or below 256.

@@ -37,6 +37,8 @@ enum Ix {
     MulDown = 1,
     DivDown = 2,
     SqrtDown = 3,
+    Exp = 4,
+    Ln = 5,
 }
 
 /// Status byte plus one 16-byte little-endian value.
@@ -56,6 +58,9 @@ fn encode_result(r: Result<Fixed, PricingError>) -> [u8; RESULT_LEN] {
 const RANDOM_INPUTS: usize = 1_000;
 /// Seed of the input generator.
 const SEED: u64 = 0x0F7F_1C5B_E7C4_0002;
+
+/// `2^64`, the raw value of 1.0, as an f64 (exact).
+const ONE: f64 = 18_446_744_073_709_551_616.0;
 
 const PROGRAM_ID: Address = Address::new_from_array([7u8; 32]);
 
@@ -78,11 +83,30 @@ impl Rng {
     /// A value with magnitude log-uniform in `[10^-6, 10^9]` and a random sign: the range of
     /// prices and strikes in the supported domain.
     fn in_domain(&mut self) -> Fixed {
-        // raw in [10^12, 10^27]: a decimal exponent, then a mantissa in [1, 10).
-        let exp = 12 + (self.next() % 15) as u32;
-        let mantissa = 1_000_000 + (self.next() % 9_000_000) as i128;
-        let raw = mantissa * 10i128.pow(exp) / 1_000_000;
-        Fixed::from_raw(if self.next() & 1 == 0 { raw } else { -raw })
+        let v = self.log_uniform();
+        Fixed::from_raw(if self.next() & 1 == 0 {
+            v.raw()
+        } else {
+            -v.raw()
+        })
+    }
+
+    /// `10^(−6 + 15 u)` with `u` uniform in `[0, 1)` at `2^-53` resolution.
+    fn log_uniform(&mut self) -> Fixed {
+        let u = (self.next() >> 11) as f64 / (1u64 << 53) as f64;
+        Fixed::from_raw((10f64.powf(-6.0 + 15.0 * u) * ONE) as i128)
+    }
+
+    /// Uniform in `[−42, 43]`: the `exp` arguments of pricing (discount and forward factors
+    /// up to `e^±18`, `e^{−d²/2}`).
+    fn exp_arg(&mut self) -> Fixed {
+        let u = (self.next() >> 11) as f64 / (1u64 << 53) as f64;
+        Fixed::from_raw(((-42.0 + 85.0 * u) * ONE) as i128)
+    }
+
+    /// Log-uniform in `[10^-6, 10^9]`: prices, strikes and their ratios.
+    fn ln_arg(&mut self) -> Fixed {
+        self.log_uniform()
     }
 
     /// Any raw value, log-uniform magnitude, both signs: exercises overflow and edge paths.
@@ -102,28 +126,55 @@ enum Op {
     Binary(Binary),
 }
 
+/// Inputs of a row.
+#[derive(Clone, Copy)]
+enum Domain {
+    /// Pairs from [`Rng::in_domain`]; unary rows take the absolute value of the first.
+    Prices,
+    /// `exp` arguments: uniform in `[−42, 43]`.
+    ExpArg,
+    /// `ln` arguments: log-uniform in `[10^-6, 10^9]`.
+    LnArg,
+}
+
 /// One measured instruction and the host function its result must equal.
 struct Row {
     ix: Ix,
     name: &'static str,
     op: Op,
+    domain: Domain,
 }
 
-const ROWS: [Row; 3] = [
+const ROWS: [Row; 5] = [
     Row {
         ix: Ix::MulDown,
         name: "MulDown",
         op: Op::Binary(Fixed::mul_down),
+        domain: Domain::Prices,
     },
     Row {
         ix: Ix::DivDown,
         name: "DivDown",
         op: Op::Binary(Fixed::div_down),
+        domain: Domain::Prices,
     },
     Row {
         ix: Ix::SqrtDown,
         name: "SqrtDown",
         op: Op::Unary(Fixed::sqrt_down),
+        domain: Domain::Prices,
+    },
+    Row {
+        ix: Ix::Exp,
+        name: "Exp",
+        op: Op::Unary(optfix::exp),
+        domain: Domain::ExpArg,
+    },
+    Row {
+        ix: Ix::Ln,
+        name: "Ln",
+        op: Op::Unary(optfix::ln),
+        domain: Domain::LnArg,
     },
 ];
 
@@ -228,13 +279,20 @@ fn measure() -> Measurement {
     let rows = ROWS
         .iter()
         .map(|row| {
-            inputs
-                .iter()
-                .map(|&(a, b)| {
+            let mut rng = Rng(SEED);
+            (0..RANDOM_INPUTS)
+                .map(|i| {
+                    let (a, b) = match row.domain {
+                        // The shared pairs: `MulDown`, `DivDown` and `SqrtDown` keep the inputs
+                        // of milestone 2.
+                        Domain::Prices => inputs[i],
+                        Domain::ExpArg => (rng.exp_arg(), Fixed::ZERO),
+                        Domain::LnArg => (rng.ln_arg(), Fixed::ZERO),
+                    };
                     // sqrt is measured on |a|: a negative input is a cheap DomainError.
-                    let a = match row.op {
-                        Op::Unary(_) => Fixed::from_raw(a.raw().abs()),
-                        Op::Binary(_) => a,
+                    let a = match (row.op, row.domain) {
+                        (Op::Unary(_), Domain::Prices) => Fixed::from_raw(a.raw().abs()),
+                        _ => a,
                     };
                     vm.check(row, a, b)
                 })
@@ -250,6 +308,29 @@ fn stats(v: &[u64]) -> (u64, u64, u64) {
     (s[0], s[s.len() / 2], s[s.len() - 1])
 }
 
+/// Milestone 3 record: `make bench` at commit `6adf034` reproduces it; the decimal candidates
+/// and the atanh form no longer exist.
+const COMPARISON: &str = "
+## Representation comparison (milestone 3)
+
+Measured at commit `6adf034`, where `make bench` reproduces it, with the inputs above: each \
+candidate of `docs/PLAN.md` 4.1 on the same arguments and build profile. \"Decimal, binary \
+core\" converts in and out of the 64-bit-digit kernel that Q64.64 uses; \"decimal, native\" \
+runs the same reduction and polynomials as decimal `Fixed` multiplies. Net CU, `Noop` \
+(164 CU) subtracted:
+
+| Representation | `exp` median | `exp` max | `ln` median | `ln` max | `exp` + `ln` median |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Q64.64 | 337 | 352 | 460 | 465 | 797 |
+| Q64.64, `ln` atanh form | | | 614 | 655 | |
+| Decimal `10^18`, binary core | 462 | 479 | 470 | 529 | 932 |
+| Decimal `10^18`, native | 7,989 | 8,122 | 9,051 | 9,186 | 17,040 |
+
+Q64.64 is 15% cheaper than the best decimal form, outside the 10% band in which decimal \
+would have won for its exact token conversions (`docs/PLAN.md`, decision log); it is also \
+the more accurate (`docs/precision.md`).
+";
+
 fn table(m: &Measurement) -> String {
     let (noop_lo, noop_med, noop_hi) = stats(&m.noop);
     let toolchain = std::env::var("OPTFIX_SBF_TOOLCHAIN").unwrap_or_else(|_| "unknown".into());
@@ -260,9 +341,10 @@ fn table(m: &Measurement) -> String {
         s,
         "Generated by `make bench` (`bench/tests/cu.rs`); do not edit by hand. Compute units \
          measured in LiteSVM 0.18 on the SBF build of `bench-program` ({toolchain}). Inputs: \
-         {RANDOM_INPUTS} values or pairs from seed `{SEED:#x}`, magnitudes log-uniform in \
-         `[10^-6, 10^9]`, random signs (`sqrt` takes the absolute value). Every on-chain \
-         result equals the host result bit for bit, and two runs in fresh VMs give identical \
+         {RANDOM_INPUTS} values or pairs from seed `{SEED:#x}`: for `MulDown`, `DivDown` and \
+         `SqrtDown` magnitudes log-uniform in `[10^-6, 10^9]` with random signs (`sqrt` takes \
+         the absolute value); `exp` arguments uniform in `[−42, 43]`; `ln` arguments \
+         log-uniform in `[10^-6, 10^9]`. Every on-chain result equals the host result bit for bit, and two runs in fresh VMs give identical \
          numbers. Release profile: `lto = \"fat\"`, `codegen-units = 1`; a program built with \
          another profile will measure differently."
     )
@@ -273,7 +355,7 @@ fn table(m: &Measurement) -> String {
         "\"Net\" is the median minus the `Noop` median ({noop_med} CU), which covers the \
          entrypoint, decoding one `FixedBytes` argument and return data. `MulDown` and \
          `DivDown` decode two arguments, so their net figure still includes the second \
-         decode; `SqrtDown` decodes one, like `Noop`."
+         decode; the other rows decode one, like `Noop`."
     )
     .unwrap();
     writeln!(s).unwrap();
@@ -286,6 +368,8 @@ fn table(m: &Measurement) -> String {
         writeln!(s, "| `{}` | {lo} | {med} | {hi} | {net} |", row.name).unwrap();
     }
     let agave = std::env::var("OPTFIX_AGAVE").unwrap_or_else(|_| "unknown".into());
+    writeln!(s).unwrap();
+    s.push_str(COMPARISON);
     writeln!(s).unwrap();
     writeln!(s, "## Reproducing").unwrap();
     writeln!(s).unwrap();

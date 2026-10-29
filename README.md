@@ -6,4 +6,4 @@ Fixed-point option pricing for Solana programs: `no_std`, allocation-free and me
 
 Black-Scholes prices, greeks and implied volatility in integer arithmetic, with `ln`, `exp` and the normal CDF built to fit a program's compute budget. Every function ships with its error bound against an `f64` reference and its cost in CU, measured in LiteSVM.
 
-**Status:** design phase, no code yet.
+**Status:** in development, not yet published. Milestones 1 to 3 of `docs/PLAN.md` are done: `Fixed` (binary Q64.64) with directed rounding, the quantity newtypes, and `exp` and `ln` with published error bounds (`docs/precision.md`) and CU costs (`docs/benchmarks.md`).

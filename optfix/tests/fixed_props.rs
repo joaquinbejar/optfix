@@ -26,7 +26,8 @@ use optfix::{
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed};
 
-const SCALE: i128 = 1_000_000_000_000_000_000;
+/// Raw value of 1.0: `Fixed` is Q64.64.
+const SCALE: i128 = 1 << 64;
 
 /// Cases per property. `OPTFIX_PROPTEST_CASES` overrides the default of one million.
 fn config() -> Config {
@@ -254,9 +255,9 @@ const SPECIAL: &[i128] = &[
     i128::MIN + 1,
     i64::MAX as i128,
     i64::MIN as i128,
-    // floor(sqrt(i128::MAX × 10^18)): squaring it with mul_* is the overflow edge.
-    13_043_817_825_332_782_212_349_571_806,
-    13_043_817_825_332_782_212_349_571_807,
+    // floor(sqrt(i128::MAX × 2^64)): squaring it with mul_* is the overflow edge.
+    56_022_770_974_786_139_918_731_938_227,
+    56_022_770_974_786_139_918_731_938_228,
 ];
 
 fn log_uniform() -> impl Strategy<Value = i128> {
@@ -349,12 +350,12 @@ proptest! {
     }
 
     #[test]
-    fn prop_to_scaled_brackets_exact_value(a in raw_value(), decimals in 0u8..=60) {
+    fn prop_to_scaled_brackets_exact_value(a in raw_value(), decimals in 0u8..=80) {
         let x = Fixed::from_raw(a);
         let down = x.to_scaled(decimals, Rounding::Down);
         let up = x.to_scaled(decimals, Rounding::Up);
-        // The multiplier 10^(decimals − 18) itself must fit in an i128.
-        if decimals > 18 + 38 {
+        // The excess factor 10^(decimals − 38) itself must fit in an i128.
+        if decimals > 38 + 38 {
             prop_assert_eq!(down, Err(PricingError::Overflow));
         } else {
             let n = Big::int(a).mul(&Big::pow10(u32::from(decimals)));
@@ -362,6 +363,44 @@ proptest! {
             check_rounded(&n, &d, Rounding::Down, down)?;
             check_rounded(&n, &d, Rounding::Up, up)?;
             check_gap(&n, &d, down, up)?;
+        }
+    }
+
+    #[test]
+    fn prop_from_scaled_brackets_exact_value(amount in raw_value(), decimals in 0u8..=40) {
+        let down = raw(Fixed::from_scaled(amount, decimals, Rounding::Down));
+        let up = raw(Fixed::from_scaled(amount, decimals, Rounding::Up));
+        if decimals > 38 {
+            prop_assert_eq!(down, Err(PricingError::DomainError));
+            prop_assert_eq!(up, Err(PricingError::DomainError));
+        } else {
+            // amount / 10^d = (amount × 2^64 / 10^d) / 2^64.
+            let n = Big::int(amount).mul(&Big::int(SCALE));
+            let d = Big::pow10(u32::from(decimals));
+            check_rounded(&n, &d, Rounding::Down, down)?;
+            check_rounded(&n, &d, Rounding::Up, up)?;
+            check_gap(&n, &d, down, up)?;
+        }
+    }
+
+    #[test]
+    fn prop_token_round_trip_is_exact_with_opposite_roundings(
+        amount in prop_oneof![
+            3 => 0i128..=u64::MAX as i128,
+            1 => any::<i64>().prop_map(i128::from),
+        ],
+        decimals in 0u8..=19,
+    ) {
+        // One ulp is below one token unit for decimals <= 19, so down-then-up and
+        // up-then-down both return the amount.
+        for (into, back) in [(Rounding::Down, Rounding::Up), (Rounding::Up, Rounding::Down)] {
+            let x = Fixed::from_scaled(amount, decimals, into);
+            // Amounts too large for the representation overflow on the way in.
+            if let Ok(x) = x {
+                prop_assert_eq!(x.to_scaled(decimals, back), Ok(amount));
+            } else {
+                prop_assert_eq!(x, Err(PricingError::Overflow));
+            }
         }
     }
 

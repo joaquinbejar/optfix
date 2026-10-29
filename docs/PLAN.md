@@ -32,13 +32,14 @@ Garman-Kohlhagen), and implied volatility.
 
 ## 2. Domain model
 
-The representation (`Raw` below) is decided by milestone 3. Until then the sketches use `Raw =
-i128` and a `SCALE` that is either `10^18` (decimal) or `2^64` (binary Q64.64). The public API
-does not expose `SCALE` arithmetic: callers convert at the edges with `Fixed::from_ratio`,
+The representation is binary Q64.64: `Fixed(i128)` with value `raw / 2^64`, decided by
+measurement in milestone 3 (decision log). Resolution is `2^-64` (about `5.4 × 10^-20`) and the
+range about `±9.2 × 10^18`. The public API does not expose `SCALE` arithmetic: callers convert
+at the edges with `Fixed::from_ratio`,
 `from_int` and `to_scaled(decimals)`.
 
 ```rust
-/// Signed fixed-point number. Internal representation: `raw / SCALE`.
+/// Signed fixed-point number. Internal representation: `raw / 2^64` (Q64.64).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Debug, Pod, Zeroable)]
 #[repr(transparent)]
 pub struct Fixed(i128);
@@ -52,6 +53,7 @@ impl Fixed {
     pub const ZERO: Self; pub const ONE: Self; pub const MAX: Self; pub const MIN: Self;
     pub const fn from_int(n: i64) -> Self;                                  // exact
     pub fn from_ratio(num: i128, den: i128, r: Rounding) -> Result<Self, PricingError>;
+    pub fn from_scaled(amount: i128, decimals: u8, r: Rounding) -> Result<Self, PricingError>;
     pub fn to_scaled(self, decimals: u8, r: Rounding) -> Result<i128, PricingError>; // e.g. USDC 6
     pub fn checked_add(self, o: Self) -> Result<Self, PricingError>;        // exact or Overflow
     pub fn checked_sub(self, o: Self) -> Result<Self, PricingError>;
@@ -64,6 +66,13 @@ impl Fixed {
     pub fn sqrt_up(self) -> Result<Self, PricingError>;
 }
 ```
+
+Token-amount boundary (Q64.64, milestone 3): `10^-d` is not a dyadic fraction, so amounts are
+not exact in `Fixed`. `from_scaled(amount, d, r)` converts in and `to_scaled(d, r)` converts
+out, each with an explicit direction that the caller chooses toward the protocol. For
+`d <= 19` one ulp is below one token unit (`10^19 × 2^-64 ≈ 0.54`), so rounding down one way
+and up the other returns the amount exactly (property-tested); `from_scaled` accepts
+`d <= 38` and `to_scaled` `d <= 76`.
 
 `Fixed` deliberately does not implement `Add`, `Mul`, etc.: an operator cannot carry a rounding
 direction or return an error, and a panic on overflow is not acceptable on-chain.
@@ -191,7 +200,9 @@ instruction per public function, used only for CU measurement:
 | 1 | `MulDown` | 2 × `Fixed` | none |
 | 2 | `DivDown` | 2 × `Fixed` | none |
 | 3 | `SqrtDown` | `Fixed` | none |
-| ... | one per public function (`Exp`, `Ln` next) | its arguments, little-endian | none |
+| 4 | `Exp` | `Fixed` | none |
+| 5 | `Ln` | `Fixed` | none |
+| ... | one per public function (`NormCdf`, `NormPdf` next) | its arguments, little-endian | none |
 
 Each handler decodes its arguments with `bytemuck`, calls optfix, and writes the result with
 `set_return_data`, so the LiteSVM test also checks the on-chain result equals the host result
@@ -201,7 +212,8 @@ is never deployed to a public cluster.
 ### Supported domain and error envelope
 
 The table is the single source of the ranges: `Spot` and `Strike` constructors check
-`[10^-6, 10^9]`, the others their own row, and the two-input `S/K` constraint is checked by
+`[10^-6, 10^9]`, the others their own row (bounds Q64.64 cannot hold exactly, `10^-6`, `0.005`
+and `−0.1`, are rounded outward, so either rounding of a boundary constant is accepted), and the two-input `S/K` constraint is checked by
 `price`, `price_and_greeks` and `implied_vol`, which return `DomainError` (tested). Constructors
 reject anything outside the **supported domain**, and the supported domain is
 exactly what the tests cover (codex review: an envelope measured on a smaller grid is not a
@@ -214,6 +226,11 @@ bound for a wider accepted domain). Accepted 2026-10-29:
 | `Rate` | `[-0.1, 0.5]`, for both `rate` (`r`) and `carry` (`q`); so `e^{−qT}` is in `[e^{−15}, e^{3}]` and the forward factor `e^{(r−q)T}` in `[e^{−18}, e^{18}]` |
 | `Years` | `[0, 30]`; the degenerate branch of 4.5 applies when `σ√T` is below its threshold (which covers `T = 0` and very small `T`) |
 
+Range: `Fixed::MAX` is about `9.2 × 10^18` (Q64.64). The largest values the table produces
+fit with room to spare: `S` and `K` up to `10^9`, the forward `S e^{(r−q)T}` up to
+`10^9 × e^{18} ≈ 6.6 × 10^16`, prices and `S Dq` up to `10^9 × e^3 ≈ 2 × 10^10`; milestone 5
+checks the greeks' intermediates (gamma's `1 / (S σ √T)`) against it explicitly.
+
 Error envelopes are input-dependent formulas, not one constant: for price,
 `|err| <= ERR_REL × max(S, K) + ERR_ABS`, with both constants fixed explicitly in milestone 5
 (`ERR_ABS` matters: at extreme moneyness, low `σ` and long `T` prices are about `10^-30 × S`),
@@ -223,7 +240,10 @@ transitions, the range extremes, and `S` and `K` scaled together.
 
 ## 4. Key design decisions
 
-### 4.1 Representation: decimal `i128 × 10^18` vs binary Q64.64 (decided by measurement)
+### 4.1 Representation: decimal `i128 × 10^18` vs binary Q64.64 (decided: Q64.64)
+
+Decided in milestone 3 by the rule of question 3: Q64.64, at 797 CU for `exp` + `ln` against
+932 for the best decimal form (decision log). The comparison as planned:
 
 | | Decimal, scale `10^18` | Binary Q64.64 |
 | --- | --- | --- |
@@ -234,11 +254,10 @@ transitions, the range extremes, and `S` and `K` scaled together.
 | `exp` range reduction `2^k` | multiply by a power of two (a division by 10^18 later) | a shift |
 | `ln` range reduction to [1, 2) | find k with a comparison loop or a 10^18-aware log2 | leading-zero count |
 
-Recommendation on paper: Q64.64 is probably cheaper and decimal is more convenient at the
-edges. Per the brief, the decision is not taken here. Milestone 3 implements `exp` and `ln`
-in both, behind a private `Repr` trait, and the representation that wins on
-`CU × max error` for the two functions (weights in the open questions) becomes `Fixed`. The
-loser is deleted, not kept behind a feature: one representation, one set of error bounds.
+Recommendation on paper was: Q64.64 is probably cheaper and decimal is more convenient at
+the edges. Milestone 3 implemented `exp` and `ln` in both, behind a `Repr` trait, and the
+representation that won under the rule of question 3 became `Fixed`. The loser is deleted,
+not kept behind a feature: one representation, one set of error bounds.
 
 256-bit intermediates are implemented in-crate with only the operations needed (`mul_wide`,
 `div_rem` by a `u128`, shifts). `u128 × u128` is not native on SBF (it lowers to
@@ -249,17 +268,29 @@ latter (decision log). No `ruint` or
 
 ### 4.2 `exp`
 
-`exp(x) = 2^k × exp(r)` with `k = round(x / ln 2)` and `r = x − k ln 2`, `|r| <= ln2 / 2`, then a
-minimax polynomial (or a Padé `[n/n]`) for `exp(r)`. Coefficients are generated offline with
-Sollya or a Remez script in `tools/` and committed as integer constants with the script that
-made them, so they are reproducible. Overflow when `x` exceeds `ln(MAX)`; underflow returns
-`ZERO` (not an error) below `ln(ulp)`.
+As built (milestone 3): `x = (64k + j) ln2/64 + r` with `n = 64k + j = round(64 x / ln 2)` and
+`|r| <= ln2/128`, the step split in a high and a low part (Cody-Waite) so `x − n HI` is exact;
+then `exp(x) = 2^k × 2^(j/64) × e^r` with a 64-entry table of `2^(j/64)` and
+`e^r = 1 + r + r^2 p(r)`, `p` of degree 4. The polynomial runs on `u64` fractions with a
+64 × 64 → 128 product from 32-bit halves; the high-order steps, whose error is scaled by a power
+of `r`, use one native 32 × 32 multiply. Coefficients interpolate `(e^r − 1 − r) / r^2` at
+Chebyshev nodes (within a small factor of minimax at this degree), generated by
+`tools/gen_tables.py` with Python's standard `decimal` module and committed as integer
+constants, so they are reproducible without Sollya. `Overflow` when `e^x` exceeds `MAX`
+(`x` above about 43.668); results below half an ulp (`x` below about −45.05) are `ZERO`, not an
+error. Error bound `EXP_MAX_ERROR_ULPS = 3` ulps of `max(e^x, 1)`; measured 1.97.
 
 ### 4.3 `ln`
 
 Range reduction `x = 2^k × m`, `m in [1, 2)`, then `ln(x) = k ln 2 + p(m)`. Options for `p`:
 a minimax polynomial in `m − 1`, or in `s = (m − 1)/(m + 1)` (atanh series, odd and faster to
-converge, costs one division). Milestone 3 measures both on the winning representation.
+converge, costs one division). Milestone 3 measured both on Q64.64, each with 129 buckets
+`c_j = 1 + j/128`: the polynomial form `ln m = −ln(RINV_j) + ln(1 + z)`, `z = m × RINV_j − 1`
+with a table of rounded reciprocals (so `|z| <= 2^-8`) and `ln(1 + z) = z − z^2 q(z)`, `q` of
+degree 5, costs 460 CU; the atanh form `ln c_j + 2 atanh((m − c_j)/(m + c_j))` with a
+32-bit-digit division costs 614 CU at the same precision. The polynomial form is kept. Error
+bound `LN_MAX_ERROR_ULPS = 2` ulps absolute; measured 1.51, dominated by rounding `m` to 64
+bits and the final rounding.
 
 ### 4.4 Normal CDF
 
@@ -267,9 +298,9 @@ converge, costs one division). Milestone 3 measures both on the winning represen
 (1969), split into ranges (`|x| < 0.5`, `0.5 to 4`, `> 4`) so the relative error stays small in
 the tails, where an absolute-error approximation such as Abramowitz-Stegun 7.1.26
 (`|ε| < 1.5 × 10^-7` absolute) is useless for deep out-of-the-money options. The cutoff
-follows the fixed-point ulp, not `f64`: `N(x) < 10^-18` already at `x ≈ −8.8` (`≈ −9.1` for
-Q64.64), so for `x < −X_CUT` return `ZERO` and for `x > X_CUT`, `ONE`, with `X_CUT` about 9
-fixed by milestone 3's representation. This also bounds the tail range. Relative error is
+follows the fixed-point ulp, not `f64`: `N(x)` is below half an ulp of Q64.64 near
+`x ≈ −9.1`, so for `x < −X_CUT` return `ZERO` and for `x > X_CUT`, `ONE`, with `X_CUT` about
+9.1 for the Q64.64 chosen in milestone 3. This also bounds the tail range. Relative error is
 only meaningful where `N(x)` spans many ulps (at `x = −8`, `N ≈ 6 × 10^-16` is about 600 ulps
 at `10^-18`), so relative bounds are stated on `[−8, −5]` only, absolute bounds everywhere. The tail range uses
 `exp(−x²/2)` from 4.2, so `N` inherits its cost.
@@ -338,8 +369,12 @@ careful `f64` behavior that would need its own fixed-point error analysis.
   against an `mpmath` table committed under `tools/`, and optfix bounds are never claimed
   tighter than the oracle's measured error. `big_n` is `f64` grade, not `Decimal` grade: it
   converts to `f64` and calls `statrs::Normal::cdf` (`kernels.rs:385`), so the oracle is about
-  `10^-16` relative and worse in the tails. `exp`, `ln`, `erfc` are checked against `libm` f64
-  and the same `mpmath` tables.
+  `10^-16` relative and worse in the tails. `exp` and `ln` are checked against a 256-bit
+  `num-bigint` reference, itself checked against Python's correctly rounded `decimal` at fixed
+  points (`tools/reference.txt`); f64 `libm` is too coarse to see errors near `2^-64`.
+  `erfc` follows the same scheme in milestone 4. Python's standard `decimal` replaces `mpmath`
+  for the reference tables (decided 2026-10-29): it computes `exp` and `ln` correctly rounded
+  and needs no install.
 - Carry `q`: OptionStratLib's Garman-Kohlhagen is the oracle with its foreign rate set to `q`.
   Price, greeks and implied vol each have tests on three planned sets: `q > 0` (up to
   `q = 0.5, T = 30`, where `Dq = e^{−15}`), `q < 0` (down to `q = −0.1, T = 30`, where
@@ -363,8 +398,9 @@ optfix/            no_std library, the only crate published to crates.io
 bench-program/     Pinocchio program, one instruction per public function (publish = false)
 bench/             LiteSVM tests that run bench-program and print the CU table (publish = false)
 lint-control/      failing control for the lint set, `make lint-control` (publish = false)
-tools/             offline coefficient generation (Sollya or Python + mpmath), not a crate
-docs/              PLAN.md, benchmarks.md, precision.md
+tools/             offline generation (Python standard library only): kernel tables and
+                   reference values, not a crate
+docs/              PLAN.md, benchmarks.md (`make bench`), precision.md (`make precision`)
 ```
 
 Shared with matchbook: `edition = "2021"`, stable toolchain via `rust-toolchain.toml`, the same
@@ -389,7 +425,8 @@ Each milestone is one feature branch (`feat/m<N>-<name>`) and one PR.
    table with the rows, the on-chain result of
    `MulDown` equals the host result for 1,000 random inputs, and the CU numbers are stable
    across runs.
-3. **`ln` and `exp` in both representations, then the decision.** Both representations behind
+3. **`ln` and `exp` in both representations, then the decision.** (Done: Q64.64.) Both
+   representations behind
    a private trait, both bench rows, both error tables. *Done when* `docs/benchmarks.md` and
    `docs/precision.md` contain CU and max error for `exp` and `ln` in both representations, a
    short decision record is added to this plan, the losing representation is deleted, and
@@ -402,6 +439,9 @@ Each milestone is one feature branch (`feat/m<N>-<name>`) and one PR.
    and the `q = 0` regression of 4.7), both kinds,
    with the documented envelopes, and `price_and_greeks` costs less than a benchmark-only baseline that
    computes `price` and each greek separately (not public API).
+   Note from the milestone 3 review (codex): binary `sqrt` costs about 36% more than decimal
+   on matched samples (10,703 against 7,878 CU), so profile the whole `price_and_greeks` path
+   before claiming any total saving from Q64.64; the division follow-up applies to `sqrt`.
 6. **Implied volatility.** *Done when* round-trip `implied_vol(price(σ)) ≈ σ` holds within the
    documented bound wherever vega exceeds a documented threshold, for `q > 0`, `q < 0` and
    `q = 0`, `ArbitrageBound` and
@@ -448,6 +488,7 @@ whenever it is added or touched.
 | `solana-transaction` (dev, `bench/`) | 6.0.0 (4.3.0 used) | `4.3`, approved exception below |
 | `mollusk-svm` (dev, optional) | 0.16.4 | not used |
 | `optionstratlib` (dev, oracle) | 0.23.0 | `0.23` |
+| `num-bigint` (dev, `exp`/`ln` reference) | 0.5.1 | `0.5` |
 | `libm` (dev, reference) | 0.2.16 | `0.2` |
 
 optfix needs only `pinocchio` itself (in `bench-program/`); by decision (Joaquin,
@@ -466,13 +507,26 @@ is seeded from LiteSVM's own v0.18.1 lock: LiteSVM's `^4.3` requirements now sel
 `=`, so the build fails unless the whole family stays at 4.3.2. Revisit when LiteSVM releases
 against Agave 4.4.
 
+## Follow-ups (not in a milestone yet)
+
+- **Cheaper U256 division.** `div_*`, `from_ratio`, `from_scaled` and `sqrt` still divide
+  with `u128` operations, which lower to `__udivti3` (about 580 CU per call on SBF). A
+  32-bit-digit 128/64 step measured about 135 CU in milestone 3, so a division kernel on
+  native `u64` digits should cut `DivDown` (1,597 CU) and `SqrtDown` (10,703 CU) severalfold.
+  `MulDown` no longer divides since the switch to Q64.64 (284 CU).
+
 ## 6. Open questions
 
 1. Decided (2026-10-29): price error `<= 10^-9 × max(S, K) + ERR_ABS`, delta below `10^-9`;
    supported domain table accepted as proposed.
 2. CU budget: is there a target for `price_and_greeks` (for example 15,000 CU) that should
    fail the bench if exceeded?
-3. Decision weights for milestone 3: CU only once errors meet the target, or a combined score?
+3. Decided (2026-10-29, coordinator): a gate first, then CU. Each representation must reach
+   `exp` relative error and `ln` absolute error of at most `10^-15` over the supported range
+   (errors reported in ulps of both formats); among those that pass, the lower median CU of
+   `exp` + `ln` wins and the worst case is reported; within 10% decimal wins, for its exact
+   token conversions. Both formats are measured with the same inputs and build profile, and
+   decimal also in a variant that converts in and out of the binary kernel.
 4. Decided (2026-10-29): continuous carry `q` in v0.1. Plan review 2 (codex) made it
    consistent: `d1` uses `r − q`; forward intrinsic, put-call parity, forward moneyness and the
    implied vol call ceiling use `S e^{−qT}` (4.5, 4.6); `implied_vol` takes `IvInputs` with
@@ -541,3 +595,51 @@ Milestone 2 (2026-10-29):
   the on-chain check does not reuse the program's encoder.
 - `DivDown` and `SqrtDown` rows were added to the benchmark beyond the planned `MulDown`, because
   the layout decision applies to every `U256` operation.
+
+Milestone 3 (2026-10-29):
+
+- **Representation: binary Q64.64.** Measured at commit `6adf034` (`make bench` and
+  `make precision` there reproduce it) on the same inputs and release profile, net median CU
+  with the `Noop` baseline subtracted, worst case in parentheses, and the maximum error over
+  1,000,000 samples per domain:
+
+  | Candidate | `exp` CU | `ln` CU | Sum | `exp` max error | `ln` max error |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | Q64.64 | 337 (352) | 460 (465) | 797 | 1.97 ulp `2^-64` (`1.1 × 10^-19`) | 1.51 ulp (`8.2 × 10^-20`) |
+  | Decimal, binary core | 462 (479) | 470 (529) | 932 | 0.59 ulp `10^-18` (`5.9 × 10^-19`) | 0.60 ulp (`6.0 × 10^-19`) |
+  | Decimal, native | 7,989 (8,122) | 9,051 (9,186) | 17,040 | 3.13 ulp `10^-18` | 3.03 ulp |
+
+  All three pass the `10^-15` gate of question 3 by four orders of magnitude. Decimal's best
+  form costs 17% more than Q64.64 (Q64.64 is 15% cheaper), outside the 10% band, so Q64.64
+  wins; it is also the more accurate in absolute terms. "Decimal, binary core" reduces `exp`
+  in decimal (Cody-Waite split of `ln2/64` at `10^-18`), converts the remainder with one
+  multiply, folds `ln(10^18)` into `ln`, and leaves each function with one multiply by `10^18`:
+  those multiplies are the whole difference. "Decimal, native" runs the same reduction and
+  polynomials as decimal `Fixed` multiplies (each a 256-bit product divided by `10^18`) and
+  shows why the binary core is used. The decimal candidates and the `Repr` trait are deleted.
+- **`Fixed` switched to Q64.64; milestone 1's tests pass on it.** `mul_*` is now a 256-bit
+  product and a shift: `MulDown` fell from 1,220 to 284 net CU. `div_*` still divides
+  (1,597 CU, about the same). `sqrt` rose from 7,880 to 10,703 CU; its operand `raw × 2^64`
+  has a few more bits than `raw × 10^18` for the same value, but the cause was not
+  investigated here: milestone 5 revisits `sqrt` if it dominates pricing. `MAX` drops from about `1.7 × 10^20` to
+  `9.2 × 10^18`, which still holds every value of the domain table (prices up to
+  `S × e^3 ≈ 2 × 10^10`). `to_scaled` accepts `decimals` up to 76 (the excess factor
+  `10^(decimals − 38)` must fit). Domain bounds that Q64.64 cannot hold exactly are rounded
+  outward.
+- **SBF costs that shaped the kernel** (sBPF v3, platform-tools v1.57, measured with a
+  throwaway loop program): a `u64` multiply or divide is about 1 CU; `u64 × u64 → u128` through
+  `__multi3` about 50 CU; `u128 / u64` through `__udivti3` about 580 CU; a variable `u128` shift
+  a libcall of about 20 instructions. So the kernel never divides, and multiplies 64-bit digits
+  from 32-bit halves (about 26 CU). LLVM recognizes the usual "ladder" form of that split and
+  folds it back into `__multi3`; the carry form (`overflowing_add`) is not folded. Checked
+  versus unchecked limb arithmetic made no difference, because LLVM removes checks it can prove
+  never fail.
+- **`ln`: table and polynomial, not atanh** (460 against 614 CU at equal precision, 4.3).
+- **Polynomials: Chebyshev interpolation, not Taylor.** At degree 6 the Taylor remainder of
+  `e^r` on `|r| <= ln2/128` is about `2^-65`, half an ulp; the interpolated coefficients make it
+  negligible at the same cost.
+- **Reference: Python `decimal`, not `mpmath`** (coordinator, 2026-10-29), and a 256-bit
+  `num-bigint` series reference in the property tests, so CI needs no Python.
+- **The same U256 findings apply to `div_*` and `sqrt`**, which still use `u128` division in
+  algorithm D; a 32-bit-digit division (as in the measured atanh variant, about 135 CU per
+  128/64 step) is a later optimization (Follow-ups), not part of this decision.

@@ -42,6 +42,10 @@ pub enum Instruction {
     DivDown = 2,
     /// `Fixed::sqrt_down`.
     SqrtDown = 3,
+    /// `optfix::exp`.
+    Exp = 4,
+    /// `optfix::ln`.
+    Ln = 5,
 }
 
 impl Instruction {
@@ -57,6 +61,8 @@ impl Instruction {
             1 => Ok(Self::MulDown),
             2 => Ok(Self::DivDown),
             3 => Ok(Self::SqrtDown),
+            4 => Ok(Self::Exp),
+            5 => Ok(Self::Ln),
             _ => Err(BenchError::UnknownInstruction),
         }
     }
@@ -121,6 +127,8 @@ pub fn process_instruction(
         Instruction::MulDown => binary(args, Fixed::mul_down)?,
         Instruction::DivDown => binary(args, Fixed::div_down)?,
         Instruction::SqrtDown => unary(args, Fixed::sqrt_down)?,
+        Instruction::Exp => unary(args, optfix::exp)?,
+        Instruction::Ln => unary(args, optfix::ln)?,
     };
     set_return_data(&encode_result(result));
     Ok(())
