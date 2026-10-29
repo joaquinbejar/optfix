@@ -358,6 +358,27 @@ Each milestone is one feature branch (`feat/m<N>-<name>`) and one PR.
 - OptionStratLib local workspace is 0.22.0 and is under a release hold; market-maker-rs pins
   `optionstratlib` 0.23. The oracle pin must be chosen with that in mind (question 6).
 
+## Dependencies (latest stable on crates.io, checked 2026-10-29)
+
+Rule from `rules/global_rules.md`: every dependency at the latest stable version, written
+`MAJOR.MINOR`, re-checked via `https://crates.io/api/v1/crates/<name>` (`max_stable_version`)
+whenever it is added or touched.
+
+| Crate | Latest stable | Requirement |
+| --- | --- | --- |
+| `pinocchio` | 0.12.0 | `0.12` |
+| `bytemuck` | 1.25.2 | `1.25` |
+| `proptest` (dev) | 1.12.0 | `1.12` |
+| `litesvm` (dev) | 0.18.1 | `0.18` |
+| `mollusk-svm` (dev, optional) | 0.16.4 | `0.16` |
+| `solana-address` | 2.9.0 | `2.9` |
+| `optionstratlib` (dev, oracle) | 0.23.0 | `0.23` |
+| `libm` (dev, reference) | 0.2.16 | `0.2` |
+
+optfix needs only `pinocchio` itself (in `bench-program/`), so it is unaffected by the
+`pinocchio-token` conflict recorded in the other three plans. OptionStratLib 0.23.0 is
+published on crates.io, so the oracle is a crates.io dev-dependency, not a git or path one.
+
 ## 6. Open questions
 
 1. Precision target: what is "good enough" for metalbook margin and marks? Proposal: price
@@ -370,8 +391,6 @@ Each milestone is one feature branch (`feat/m<N>-<name>`) and one PR.
    Black-Scholes-Merton `q` in v0.1 (cheap now, breaking later) or leave it to v0.2?
    OptionStratLib already has Garman-Kohlhagen greeks, which would serve as the oracle.
 5. Year basis: 365 days (proposed) or 365.25?
-6. Should OptionStratLib be a git or crates.io dev-dependency? A crates.io pin keeps the
-   oracle stable while you change OptionStratLib; note the 0.22 release hold.
-7. Pinocchio 0.12 came out today. Start `bench-program` on 0.12 (new repo, no migration
-   later) or on 0.11 to match matchbook? Proposal: 0.12.
+6. Decided (latest-stable rule): OptionStratLib 0.23 from crates.io as the oracle.
+7. Decided (latest-stable rule): Pinocchio 0.12.
 8. Proposal (from review, pending your approval): `Fixed::raw`/`from_raw` yes; newtypes only via `try_from_fixed`.
