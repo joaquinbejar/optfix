@@ -183,6 +183,54 @@ proptest! {
         check_point(bsm_sample(&mut Rng(seed)))?;
     }
 
+    /// Small `T` with near-the-money strikes, the region random sampling misses (#11 review):
+    /// `T` from one raw unit (`5.4 × 10^-20` years) to about 2^45 units (a day and a half), `K`
+    /// within `j × 2^-n` of `S`, including `K = S`.
+    #[test]
+    fn prop_small_t_near_the_money(
+        seed in any::<u64>(),
+        t_bits in 0u32..46,
+        n in 8u32..64,
+        j in -4i128..=4,
+    ) {
+        let mut p = bsm_sample(&mut Rng(seed));
+        let t = (1i128 << t_bits) | (Rng(seed ^ 1).wide() as i128 & ((1i128 << t_bits) - 1));
+        p.2 = t.max(1);
+        p.1 = (p.0 + (p.0 >> n) * j).clamp(Strike::MIN.get().raw(), Strike::MAX.get().raw());
+        check_point(p)?;
+    }
+
+    /// Continuity across the near-the-money switch `|S − K| × 256 = K`: dense strikes on both
+    /// sides of both boundaries are within their envelopes, and neighbouring strikes one raw
+    /// unit apart, across the switch, differ by no more than the reference does plus both
+    /// envelopes.
+    #[test]
+    fn prop_continuity_across_the_near_money_switch(seed in any::<u64>(), offset in -64i128..64) {
+        let p = bsm_sample(&mut Rng(seed));
+        let s = p.0;
+        // K below S with S − K = K / 256, and K above S with K − S = K / 256.
+        for boundary in [s * 256 / 257, s * 256 / 255] {
+            let k = (boundary + offset).clamp(Strike::MIN.get().raw(), Strike::MAX.get().raw() - 1);
+            let a = (p.0, k, p.2, p.3, p.4, p.5, p.6);
+            let b = (p.0, k + 1, p.2, p.3, p.4, p.5, p.6);
+            if !(check_point(a)? && check_point(b)?) {
+                continue;
+            }
+            let (oa, ma) = bsm_inputs(a);
+            let (ob, mb) = bsm_inputs(b);
+            let ga = price_and_greeks(&oa, &ma).unwrap();
+            let gb = price_and_greeks(&ob, &mb).unwrap();
+            let ra = bsm_ref(p.6, &to_ref(a.0), &to_ref(a.1), &to_ref(a.2), &to_ref(a.3), &to_ref(a.4), &to_ref(a.5));
+            let rb = bsm_ref(p.6, &to_ref(b.0), &to_ref(b.1), &to_ref(b.2), &to_ref(b.3), &to_ref(b.4), &to_ref(b.5));
+            // Delta: both values within DELTA_ERR of their references, so the jump between them
+            // is the reference's plus at most twice the envelope.
+            let jump = (r(ga.greeks.delta) - r(gb.greeks.delta)).magnitude().clone();
+            let allowed: BigInt = (&ra.delta - &rb.delta).magnitude().clone().into();
+            let allowed = allowed + r(DELTA_ERR) * 2;
+            prop_assert!(BigInt::from(jump) <= allowed, "delta jumps across the switch at {:?}", a);
+        }
+    }
+
     /// `C − P = S Dq − K Dr` within the sum of the two price envelopes.
     #[test]
     fn prop_put_call_parity(seed in any::<u64>()) {

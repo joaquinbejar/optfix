@@ -336,23 +336,44 @@ fn price_only(o: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingErr
     })
 }
 
-const BSM_ROWS: [(Ix, &str, BsmFn); 3] = [
-    (Ix::Price, "Price", price_only),
-    (Ix::PriceAndGreeks, "PriceAndGreeks", price_and_greeks),
+/// The Black-Scholes rows: instruction, name, host function, and whether the strikes are near
+/// the money (`|S − K| < K / 256`, the other form of `ln(S/K) / (σ√T)`).
+const BSM_ROWS: [(Ix, &str, BsmFn, bool); 5] = [
+    (Ix::Price, "Price", price_only, false),
+    (
+        Ix::PriceAndGreeks,
+        "PriceAndGreeks",
+        price_and_greeks,
+        false,
+    ),
     (
         Ix::Baseline,
         "Baseline (price, then each greek)",
         optfix::baseline::separately,
+        false,
+    ),
+    (Ix::Price, "Price, near the money", price_only, true),
+    (
+        Ix::PriceAndGreeks,
+        "PriceAndGreeks, near the money",
+        price_and_greeks,
+        true,
     ),
 ];
 
 /// One Black-Scholes input over the supported domain: `S` log-uniform in `[10^-6, 10^9]`,
 /// `S/K` log-uniform in `[0.05, 20]`, `T` uniform in `(0, 30]`, `σ` log-uniform in `[0.005, 5]`,
 /// `r` and `q` uniform in `[−0.1, 0.5]`, call or put.
-fn bsm_input(rng: &mut Rng) -> (EuropeanOption, MarketInputs) {
+fn bsm_input(rng: &mut Rng, near: bool) -> (EuropeanOption, MarketInputs) {
     let mut u = || (rng.next() >> 11) as f64 / (1u64 << 53) as f64;
     let s = 10f64.powf(-6.0 + 15.0 * u());
-    let k = (s * 10f64.powf((0.05f64).log10() + (400f64).log10() * u())).clamp(1.01e-6, 0.99e9);
+    let m = if near {
+        // |S − K| < K / 256: S/K within about ±0.39%.
+        1.0 + (u() - 0.5) * 0.0078
+    } else {
+        10f64.powf((0.05f64).log10() + (400f64).log10() * u())
+    };
+    let k = (s * m).clamp(1.01e-6, 0.99e9);
     let k = k.clamp(s / 19.9, s * 19.9);
     let t = 30.0 * u().max(1e-9);
     let sigma = 10f64.powf((0.005f64).log10() + 3.0 * u()).min(5.0);
@@ -466,11 +487,16 @@ fn measure() -> Measurement {
         })
         .collect();
     let mut rng = Rng(SEED ^ 0xB5);
-    let bsm_inputs: Vec<_> = (0..RANDOM_INPUTS).map(|_| bsm_input(&mut rng)).collect();
+    let far: Vec<_> = (0..RANDOM_INPUTS)
+        .map(|_| bsm_input(&mut rng, false))
+        .collect();
+    let near: Vec<_> = (0..RANDOM_INPUTS)
+        .map(|_| bsm_input(&mut rng, true))
+        .collect();
     let bsm = BSM_ROWS
         .iter()
-        .map(|&(ix, name, f)| {
-            bsm_inputs
+        .map(|&(ix, name, f, is_near)| {
+            if is_near { &near } else { &far }
                 .iter()
                 .map(|(o, m)| {
                     let (cu, out) = vm.run_raw(&bsm_data(ix, o, m));
@@ -534,7 +560,8 @@ fn table(m: &Measurement) -> String {
          with log-uniform magnitudes over the whole range; the Black-Scholes rows `S` \
          log-uniform in `[10^-6, 10^9]`, `S/K` log-uniform in `[0.05, 20]`, `T` uniform in \
          `(0, 30]`, `σ` log-uniform in `[0.005, 5]`, `r` and `q` uniform in `[−0.1, 0.5]`, \
-         calls and puts. Every on-chain result equals the host result bit for bit, and two runs in fresh VMs give identical \
+         calls and puts (the \"near the money\" rows take `S/K` within `±0.39%` instead: the \
+         other form of `d1`'s moneyness term). Every on-chain result equals the host result bit for bit, and two runs in fresh VMs give identical \
          numbers. Release profile: `lto = \"fat\"`, `codegen-units = 1`; a program built with \
          another profile will measure differently."
     )
@@ -559,7 +586,7 @@ fn table(m: &Measurement) -> String {
         let net = med.saturating_sub(noop_med);
         writeln!(s, "| `{}` | {lo} | {med} | {hi} | {net} |", row.name).unwrap();
     }
-    for ((_, name, _), cu) in BSM_ROWS.iter().zip(&m.bsm) {
+    for ((_, name, _, _), cu) in BSM_ROWS.iter().zip(&m.bsm) {
         let (lo, med, hi) = stats(cu);
         let net = med.saturating_sub(noop_med);
         writeln!(s, "| `{name}` | {lo} | {med} | {hi} | {net} |").unwrap();

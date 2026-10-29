@@ -13,6 +13,8 @@
 //! conservative side widens them with the envelope (`PLAN`, rounding contract).
 
 use crate::explog::{exp, ln};
+use crate::fixed::FRAC_BITS;
+use crate::kernel::ln1p_over;
 use crate::norm::{norm_cdf, norm_cdf_pdf};
 use crate::{Fixed, Price, PricingError, Rate, Spot, Strike, Volatility, Years};
 
@@ -82,7 +84,7 @@ pub const PRICE_ERR_REL: Fixed = Fixed::from_raw(1 << 16);
 /// Price envelope, absolute part: 64 ulps, about `3.5 × 10^-18`.
 pub const PRICE_ERR_ABS: Fixed = Fixed::from_raw(64);
 
-/// Delta envelope, absolute: `2^-49`, about `1.8 × 10^-15` (measured `6.4 × 10^-17`).
+/// Delta envelope, absolute: `2^-49`, about `1.8 × 10^-15` (measured `5.8 × 10^-18`).
 pub const DELTA_ERR: Fixed = Fixed::from_raw(1 << 15);
 
 /// Gamma envelope: `|error| <= GAMMA_ERR_REL × Dq / (S σ√T) + GREEK_ERR_ABS` (the scale is
@@ -217,15 +219,8 @@ fn evaluate(opt: &EuropeanOption, m: &MarketInputs, greeks: bool) -> Result<Pric
     // ln(σ√T)
     let ls = ln_sigma.checked_add(half_ln_t)?;
     let sst = exp(ls)?;
-    let inv_sst = exp(ls.checked_neg()?)?;
     let ln_s = ln(s)?;
-    let x = ln_s.checked_sub(ln(k)?)?;
-    // d1 = (ln(S/K) + (r − q) T + σ²T/2) / (σ√T)
-    let num = x
-        .checked_add(rt)?
-        .checked_sub(qt)?
-        .checked_add(half(sst.mul_down(sst)?))?;
-    let d1 = num.mul_down(inv_sst)?;
+    let d1 = d1_terms(s, k, r, q, ln_s, ln_sigma, half_ln_t, ls, sst)?;
     let d2 = d1.checked_sub(sst)?;
     // Price the forward out-of-the-money side directly (small values, tail-accurate N), the
     // other through parity. `nd1` is N(d1) and `nd2` N(d2); `pdf` is n(d1).
@@ -268,14 +263,12 @@ fn evaluate(opt: &EuropeanOption, m: &MarketInputs, greeks: bool) -> Result<Pric
         OptionKind::Put => dq.mul_down(nmd1)?.checked_neg()?,
     };
     // gamma = Dq n(d1) / (S σ√T), with 1 / (S σ√T) = exp(−(ln S + ln σ√T)).
-    let gamma = dq
-        .mul_down(pdf)?
-        .mul_down(exp(ln_s.checked_add(ls)?.checked_neg()?)?)?;
+    let gamma = mul_exp(dq.mul_down(pdf)?, ln_s.checked_add(ls)?.checked_neg()?)?;
     // vega = S Dq n(d1) √T
     let s_dq_pdf = s_dq.mul_down(pdf)?;
-    let vega = s_dq_pdf.mul_down(exp(half_ln_t)?)?;
+    let vega = mul_exp(s_dq_pdf, half_ln_t)?;
     // theta = −S Dq n(d1) σ / (2√T) ∓ r K Dr N(±d2) ± q S Dq N(±d1)
-    let decay = half(s_dq_pdf.mul_down(exp(ln_sigma.checked_sub(half_ln_t)?)?)?);
+    let decay = half(mul_exp(s_dq_pdf, ln_sigma.checked_sub(half_ln_t)?)?);
     let theta = match opt.kind {
         OptionKind::Call => decay
             .checked_neg()?
@@ -296,6 +289,94 @@ fn evaluate(opt: &EuropeanOption, m: &MarketInputs, greeks: bool) -> Result<Pric
         },
     })
 }
+
+/// `d1 = ln(S/K) / (σ√T) + (r − q) √T / σ + σ√T / 2`, each term rounded once at its own scale
+/// (`docs/PLAN.md` 4.5). Forming the numerator at absolute resolution and then multiplying by
+/// `1 / (σ√T)`, up to about `8.6 × 10^11`, would amplify its rounding near the money and near
+/// expiry. Here:
+///
+/// - `(r − q) √T / σ` takes the exact `r − q` and `√T / σ = exp(ln T / 2 − ln σ)`;
+/// - away from the money (`|S − K| × 256 >= K`, so `|ln(S/K)| >~ 2^-8`), `ln S − ln K` has a
+///   relative error below `2^-54` and is multiplied by `exp(−ln σ√T)`;
+/// - near the money, `(S − K) × W × ln(1 + u) / u` with the exact difference `S − K`,
+///   `W = 1 / (K σ√T) = exp(−(ln K + ln σ√T))` (relative precision, at most about `8.6 × 10^17`),
+///   `u = (S − K) / K` and `ln(1 + u) / u` on the `ln` kernel's polynomial: nothing tiny is
+///   divided by something tiny, and nothing cancels.
+#[allow(clippy::too_many_arguments)]
+fn d1_terms(
+    s: Fixed,
+    k: Fixed,
+    r: Fixed,
+    q: Fixed,
+    ln_s: Fixed,
+    ln_sigma: Fixed,
+    half_ln_t: Fixed,
+    ls: Fixed,
+    sst: Fixed,
+) -> Result<Fixed, PricingError> {
+    let ln_k = ln(k)?;
+    let diff = s.checked_sub(k)?;
+    let near = diff
+        .raw()
+        .unsigned_abs()
+        .checked_mul(NEAR_MONEY_FACTOR)
+        .ok_or(PricingError::Overflow)?
+        < k.raw().unsigned_abs();
+    let moneyness = if near {
+        // (S − K) / (K σ√T) and u = (S − K) / K, each relative-precise even when the factor
+        // is small (a large K): see `mul_exp`.
+        let scaled = mul_exp(diff, ln_k.checked_add(ls)?.checked_neg()?)?;
+        let u = mul_exp(diff, ln_k.checked_neg()?)?;
+        scaled.mul_down(Fixed::from_raw(ln1p_over(u.raw())?))?
+    } else {
+        ln_s.checked_sub(ln_k)?.mul_down(exp(ls.checked_neg()?)?)?
+    };
+    let drift = r
+        .checked_sub(q)?
+        .mul_down(exp(half_ln_t.checked_sub(ln_sigma)?)?)?;
+    moneyness.checked_add(drift)?.checked_add(half(sst))
+}
+
+/// `x × e^e` with the relative precision of `e^e` kept when it is small. A small `e^e` stored
+/// in Q64.64 has only absolute resolution (`2^-64`), so it is scaled first: with `a` doublings,
+/// `e^(e + a ln 2)` is in `[2^20, 2^21)`, the product is formed, and `a` shifts bring it back.
+/// When `e^e` is already at least `2^20`, the product is direct (shifting left would amplify
+/// the product's rounding). `|x| × 2^21` must fit, so `|x| < 4 × 10^12`: it holds for every
+/// caller (`|S − K| <= K / 256 < 4 × 10^6` near the money, `S Dq n(d1) < 8 × 10^9` in vega and
+/// theta, `Dq n(d1) < 8` in gamma).
+fn mul_exp(x: Fixed, e: Fixed) -> Result<Fixed, PricingError> {
+    if e >= SCALE_LN {
+        return x.mul_down(exp(e)?);
+    }
+    // a = 20 − floor(e / ln 2) >= 1.
+    let doublings = e.mul_down(INV_LN2)?.raw() >> FRAC_BITS;
+    let a = 20i128
+        .checked_sub(doublings)
+        .ok_or(PricingError::Overflow)?;
+    let shifted = e.checked_add(Fixed::from_raw(
+        LN2_RAW.checked_mul(a).ok_or(PricingError::Overflow)?,
+    ))?;
+    let p = x.mul_down(exp(shifted)?)?;
+    let a = u32::try_from(a).map_err(|_| PricingError::Overflow)?;
+    // Floor division by 2^a (arithmetic shift), consistent with mul_down.
+    Ok(Fixed::from_raw(
+        p.raw()
+            .checked_shr(a)
+            .unwrap_or(if p.raw() < 0 { -1 } else { 0 }),
+    ))
+}
+
+/// `20 ln 2`: the scale above which `mul_exp` multiplies directly.
+const SCALE_LN: Fixed = Fixed::from_raw(20 * LN2_RAW);
+
+/// `ln 2` as a raw Q64.64 value, rounded to nearest.
+const LN2_RAW: i128 = 12_786_308_645_202_655_660;
+
+/// `1 / ln 2` as a Q64.64 value, rounded to nearest.
+const INV_LN2: Fixed = Fixed::from_raw(26_613_026_195_688_644_983);
+
+/// `|S − K| × 256 < K` selects the near-the-money form of `ln(S/K) / (σ√T)` in [`d1_terms`].
+const NEAR_MONEY_FACTOR: u128 = 256;
 
 /// All-zero greeks, for `price` (which does not compute them).
 const ZERO_GREEKS: Greeks = Greeks {
@@ -387,7 +468,8 @@ fn non_negative(x: Fixed) -> Fixed {
 #[doc(hidden)]
 pub mod baseline {
     use super::{
-        check_moneyness, half, price, EuropeanOption, Greeks, MarketInputs, OptionKind, Priced,
+        check_moneyness, d1_terms, half, mul_exp, price, EuropeanOption, Greeks, MarketInputs,
+        OptionKind, Priced,
     };
     use crate::explog::{exp, ln};
     use crate::norm::{norm_cdf, norm_pdf};
@@ -419,7 +501,6 @@ pub mod baseline {
     ) -> Result<Option<(Fixed, Fixed, Fixed, Fixed, Fixed, Fixed, Fixed)>, PricingError> {
         let (s, k, t) = (m.spot.get(), opt.strike.get(), opt.expiry.get());
         check_moneyness(s, k)?;
-        let rt = m.rate.get().mul_down(t)?;
         let qt = m.carry.get().mul_down(t)?;
         let dq = exp(qt.checked_neg()?)?;
         if t == Fixed::ZERO {
@@ -430,12 +511,17 @@ pub mod baseline {
         let ls = ln_sigma.checked_add(half_ln_t)?;
         let sst = exp(ls)?;
         let ln_s = ln(s)?;
-        let num = ln_s
-            .checked_sub(ln(k)?)?
-            .checked_add(rt)?
-            .checked_sub(qt)?
-            .checked_add(half(sst.mul_down(sst)?))?;
-        let d1 = num.mul_down(exp(ls.checked_neg()?)?)?;
+        let d1 = d1_terms(
+            s,
+            k,
+            m.rate.get(),
+            m.carry.get(),
+            ln_s,
+            ln_sigma,
+            half_ln_t,
+            ls,
+            sst,
+        )?;
         Ok(Some((dq, ln_s, ln_sigma, half_ln_t, ls, d1, sst)))
     }
 
@@ -453,19 +539,20 @@ pub mod baseline {
         let Some((dq, ln_s, _, _, ls, d1, _)) = d1(opt, m)? else {
             return Ok(Fixed::ZERO);
         };
-        dq.mul_down(norm_pdf(d1)?)?
-            .mul_down(exp(ln_s.checked_add(ls)?.checked_neg()?)?)
+        mul_exp(
+            dq.mul_down(norm_pdf(d1)?)?,
+            ln_s.checked_add(ls)?.checked_neg()?,
+        )
     }
 
     fn vega(opt: &EuropeanOption, m: &MarketInputs) -> Result<Fixed, PricingError> {
         let Some((dq, _, _, half_ln_t, _, d1, _)) = d1(opt, m)? else {
             return Ok(Fixed::ZERO);
         };
-        m.spot
-            .get()
-            .mul_down(dq)?
-            .mul_down(norm_pdf(d1)?)?
-            .mul_down(exp(half_ln_t)?)
+        mul_exp(
+            m.spot.get().mul_down(dq)?.mul_down(norm_pdf(d1)?)?,
+            half_ln_t,
+        )
     }
 
     fn theta(opt: &EuropeanOption, m: &MarketInputs) -> Result<Fixed, PricingError> {
@@ -479,10 +566,10 @@ pub mod baseline {
             .get()
             .mul_down(exp(r.mul_down(t)?.checked_neg()?)?)?;
         let d2 = d1.checked_sub(sst)?;
-        let decay = half(
-            s_dq.mul_down(norm_pdf(d1)?)?
-                .mul_down(exp(ln_sigma.checked_sub(half_ln_t)?)?)?,
-        );
+        let decay = half(mul_exp(
+            s_dq.mul_down(norm_pdf(d1)?)?,
+            ln_sigma.checked_sub(half_ln_t)?,
+        )?);
         match opt.kind {
             OptionKind::Call => decay
                 .checked_neg()?
@@ -520,6 +607,21 @@ mod tests {
                 carry: Rate::try_new(Fixed::ZERO).unwrap(),
             },
         )
+    }
+
+    #[test]
+    fn test_constants() {
+        assert_eq!(LN2_RAW, crate::ln(Fixed::from_int(2)).unwrap().raw());
+        let inv = Fixed::ONE.div_down(Fixed::from_raw(LN2_RAW)).unwrap().raw();
+        assert!((inv - INV_LN2.raw()).abs() <= 2);
+    }
+
+    #[test]
+    fn test_mul_exp_keeps_relative_precision() {
+        // x e^e for e^e = 2^-40 exactly: x × 2^-40 with x = 3: exact 3 × 2^24 raw.
+        let e = Fixed::from_raw(-40 * LN2_RAW);
+        let v = mul_exp(Fixed::from_int(3), e).unwrap().raw();
+        assert!((v - 3 * (1i128 << 24)).abs() <= 1, "{v}");
     }
 
     #[test]

@@ -356,8 +356,18 @@ absolute, so the ITM formula's cancellation would not amplify them; parity is us
 reuses the OTM evaluation, which has small values and the tail-accurate `N`.
 
 As built (milestone 5): nothing divides or takes a square root. `√T`, `σ√T`, `1/(σ√T)`,
-`1/(S σ√T)` (gamma) and `σ/√T` (theta) are `exp` of sums of `ln σ`, `ln T / 2` and `ln S`;
-`ln(S/K) = ln S − ln K`; `S/K` in `[0.05, 20]` is checked exactly as `20 S >= K` and
+`1/(S σ√T)` (gamma) and `σ/√T` (theta) are `exp` of sums of `ln σ`, `ln T / 2`, `ln S` and
+`ln K`. `d1 = ln(S/K)/(σ√T) + (r − q)√T/σ + σ√T/2`, each term rounded once at its own scale:
+forming the numerator at absolute resolution and then multiplying by `1/(σ√T)` (up to about
+`8.6 × 10^11`) amplified its rounding near the money and near expiry (#11 review: delta off by
+up to `2 × 10^7` envelopes, down to about 300 s at `σ = 0.005`). Away from the money
+(`|S − K| × 256 >= K`) the first term is `(ln S − ln K) × exp(−ln σ√T)`, whose relative error
+is below `2^-54`; near it, `(S − K) × W × ln(1 + u)/u` with the exact `S − K`,
+`W = 1/(K σ√T)`, `u = (S − K)/K` and `ln(1 + u)/u` on the `ln` kernel's polynomial, so nothing
+cancels and nothing tiny is divided by something tiny. Factors that can be small in Q64.64
+(`W` at a large `K`, `√T` near expiry, `1/(S σ√T)` at a large `S`) go through `mul_exp`,
+which scales `e^x` by a power of two into `[2^20, 2^21)`, multiplies and shifts back, so their
+relative precision survives; `S/K` in `[0.05, 20]` is checked exactly as `20 S >= K` and
 `20 K >= S`. `N(d1)` and `n(d1)` share one `exp`. The only degenerate case is `T = 0`: the
 smallest positive `T` is `2^-64` years, so `σ√T >= 0.005 × 2^-32 ≈ 1.2 × 10^-12`, where every
 value fits (the largest are theta, about `4.3 × 10^18`, and gamma, about `3.4 × 10^17`), and
@@ -721,14 +731,17 @@ Milestone 4 (2026-10-29):
 Milestone 5 (2026-10-29):
 
 - **Pricer without `sqrt` or division** (4.5). Net median CU over the whole domain
-  (`docs/benchmarks.md`): `Price` 8,776, `PriceAndGreeks` 12,629, and the bench-only baseline
-  that computes the price and each greek separately 36,823, so `price_and_greeks` costs 34% of
-  it (the milestone's criterion).
-- **Profile of `price_and_greeks`** (component counts times the component rows): 4 `ln`
-  (about 1,810 CU), 7 `exp` (2,205), `N(d1)` with `n(d1)` and `N(d2)` (about 2,800), 19
-  `mul_down` (5,240), the rest decoding, checks and additions. `price` alone uses 4 of the 7
-  `exp`, 8 of the 19 `mul_down` and the same `ln` and `N`. Multiplication is now the largest
-  share (41%), the next optimization target.
+  (`docs/benchmarks.md`): `Price` 9,247, `PriceAndGreeks` 14,242, and the bench-only baseline
+  that computes the price and each greek separately 39,287, so `price_and_greeks` costs 36% of
+  it (the milestone's criterion); near the money `Price` 11,092 and `PriceAndGreeks` 16,097.
+  The `d1` restructure of the #11 review costs about 1,600 CU on `PriceAndGreeks` (12,629
+  before) and buys the greek envelopes near expiry.
+- **Profile of `price_and_greeks`** (calls executed on the path, times the component rows):
+  4 `ln` (about 1,830 CU), 8 `exp` (2,520), `N(d1)` with `n(d1)` and `N(d2)` (about 2,800), 18
+  `mul_down` (4,970), the rest decoding, checks, shifts and additions. Near the money
+  (`|S − K| < K/256`) the moneyness term takes 9 `exp`, 20 `mul_down` and `ln(1 + u)/u`.
+  `price` alone executes 4 `ln`, 5 `exp` (6 near the money) and 8 `mul_down` (10).
+  Multiplication is the largest share (35%), the next optimization target.
 - **The `sqrt` caveat** (milestone 3 review): pricing never calls `sqrt_down`. The five `exp`
   that replace `√T`, `σ√T` and the reciprocals cost about 1,600 CU; `sqrt_down` and three
   `div_down` would cost about 15,700. The binary `sqrt` being 36% dearer than the decimal one
@@ -740,14 +753,23 @@ Milestone 5 (2026-10-29):
   `σ√T` threshold and no approximation error.
 - **Envelopes** (`docs/precision.md`, 1,000,000-point survey; the properties pass at 1,000,000
   cases): price `2.4 × 10^-18 × max(S, K)` beyond 64 ulps against `PRICE_ERR_REL = 2^-48`;
-  delta `6.4 × 10^-17` against `2^-49`; gamma `1.5 × 10^-13`, vega `2.1 × 10^-14`, theta
+  delta `5.8 × 10^-18` against `2^-49`; gamma `1.5 × 10^-13`, vega `2.1 × 10^-14`, theta
   `2.3 × 10^-14` of their scales against `2^-40`, `2^-43` and `2^-42`. Question 4: `max(S, K)`.
 - **Oracle** (OptionStratLib 0.23, Garman-Kohlhagen with foreign rate `q`): on `q > 0`,
   `q < 0` and `q = 0` (the last also against plain `black_scholes`), every difference is at
   most 25% of the oracle tolerance (price `10^-9 × max(S, K)`, delta `10^-9`, other greeks
   `10^-9 × scale + 10^-18`, the last only where `|d1| <= 4.8`, 4.7).
 - **`q = 0` regression**: 64 committed results (`optfix/tests/data/bsm_q0.txt`) checked bit for
-  bit.
+  bit (regenerated with the `d1` restructure).
+- **#11 review fixture**: codex's sweep (`tools/bsm_fixture/gen_sweep.py`: `d1` from −9 to 9
+  at 26 expiries from `10^-12` s to a year, five volatilities, four spot scales, three
+  rate/carry sets, plus 3,000 broad points; 19,106 rows) with mpmath expected values at 100
+  digits (`expected.py`) is committed as `optfix/tests/data/bsm_fixture.csv`. `tests/bsm_fixture.rs`
+  checks the 256-bit reference against mpmath (within one raw unit) and `price_and_greeks`
+  against its envelopes on every row: zero violations, the worst at 15% of an envelope (theta),
+  and codex's independent checker (`check_mpmath.py`) agrees. New properties pair small `T` (one
+  raw unit to about 2^45) with near-the-money strikes and check continuity across the
+  `|S − K| × 256 = K` switch; all pass at 1,000,000 cases in release.
 - **Bench-only items** live behind the non-default `bench-internals` feature of `optfix`
   (`baseline::separately`), enabled only by `bench-program` and `bench`.
 
