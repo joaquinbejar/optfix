@@ -6,6 +6,7 @@
 #![allow(
     clippy::unwrap_used,
     clippy::panic,
+    clippy::panic_in_result_fn,
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
     clippy::float_arithmetic,
