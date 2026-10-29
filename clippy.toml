@@ -1,8 +1,9 @@
 # Shared by optfix, quotebook, varswap and metalbook; keep it identical (rules/global_rules.md).
 # The `clippy::panic`, `unreachable`, `todo` and `unimplemented` lints do not cover the assert
 # family, so these macros are banned here and `clippy::disallowed_macros` is denied in
-# [workspace.lints]. `core` paths also match the `std` re-exports; `panic!` and `unreachable!`
-# have distinct `std` definitions, listed too. Tests and benches allow the lint explicitly.
+# [workspace.lints]. `std` re-exports the `core` macros, so a `core` path also bans the `std`
+# name; the exception is `std::panic`, a separate definition, listed too. Tests and benches
+# allow the lint explicitly. `make lint-control` checks every entry.
 disallowed-macros = [
     { path = "core::assert", reason = "no panics outside tests: return a typed error" },
     { path = "core::assert_eq", reason = "no panics outside tests: return a typed error" },
@@ -13,5 +14,4 @@ disallowed-macros = [
     { path = "core::panic", reason = "no panics outside tests: return a typed error" },
     { path = "std::panic", reason = "no panics outside tests: return a typed error" },
     { path = "core::unreachable", reason = "no panics outside tests: return a typed error" },
-    { path = "std::unreachable", reason = "no panics outside tests: return a typed error" },
 ]

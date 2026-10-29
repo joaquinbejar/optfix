@@ -56,14 +56,17 @@ takes the decision away from the caller. Production code never panics.
   ```
 - The lints above do not catch `assert!`, `assert_eq!`, `assert_ne!` or the `debug_assert`
   family. `clippy.toml` at the workspace root, identical in the four repos, lists them in
-  `disallowed-macros` (with `panic!` and `unreachable!` under both `core` and `std`), and
+  `disallowed-macros` with `panic!` and `unreachable!`, by their `core` paths (which also
+  cover the `std` re-exports) plus `std::panic` (a separate definition), and
   `disallowed_macros` is denied. Pinocchio's `no_allocator!` expands to `assert!` (in
   `allocate_unchecked`'s offset helper), so the module that invokes the entrypoint macros
   allows `clippy::disallowed_macros` next to `unsafe_code`, with a comment.
 - `make lint-control` is the failing control, part of `make pre-push`: a `lint-control`
   workspace member (`publish = false`) whose library code, compiled only under
-  `--cfg lint_control`, calls every banned macro. Clippy must reject each one without
-  `-D warnings`, so the control fails if `clippy.toml` or the deny level is lost.
+  `--cfg lint_control`, calls every banned macro through its `core`, `std` and prelude names,
+  each probe line ending in `// expect: <path>`. `lint-control/check.sh` runs clippy without
+  `-D warnings` and requires, on each probe line, an error naming exactly that path, so
+  removing any `clippy.toml` entry or the deny level fails the control.
 
 ---
 
