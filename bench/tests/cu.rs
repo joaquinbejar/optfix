@@ -20,7 +20,6 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use litesvm::LiteSVM;
-use optfix::bench_internals as variant;
 use optfix::{Fixed, PricingError};
 use solana_address::Address;
 use solana_instruction::Instruction;
@@ -37,13 +36,6 @@ enum Ix {
     MulDown = 1,
     DivDown = 2,
     SqrtDown = 3,
-    MulU64Opaque = 4,
-    MulU128Opaque = 5,
-    MulU128WrappingOpaque = 6,
-    MulU64Const = 7,
-    MulU128Const = 8,
-    DivU128 = 9,
-    SqrtU128 = 10,
 }
 
 /// Status byte plus one 16-byte little-endian value.
@@ -109,78 +101,29 @@ enum Op {
     Binary(Binary),
 }
 
-/// One measured instruction: the kernel the program runs and the production function its
-/// result must equal.
+/// One measured instruction and the host function its result must equal.
 struct Row {
     ix: Ix,
     name: &'static str,
-    kernel: &'static str,
-    run: Op,
-    reference: Op,
+    op: Op,
 }
 
-const MUL: Op = Op::Binary(Fixed::mul_down);
-const DIV: Op = Op::Binary(Fixed::div_down);
-const SQRT: Op = Op::Unary(Fixed::sqrt_down);
-
-macro_rules! row {
-    ($ix:ident, $kernel:literal, $run:expr, $reference:expr) => {
-        Row {
-            ix: Ix::$ix,
-            name: stringify!($ix),
-            kernel: $kernel,
-            run: $run,
-            reference: $reference,
-        }
-    };
-}
-
-const ROWS: [Row; 10] = [
-    row!(MulDown, "production: 4 × u64 limbs, checked", MUL, MUL),
-    row!(DivDown, "production: 4 × u64 limbs, checked", DIV, DIV),
-    row!(SqrtDown, "production: 4 × u64 limbs, checked", SQRT, SQRT),
-    row!(
-        MulU64Opaque,
-        "4 × u64, checked, opaque divisor",
-        Op::Binary(variant::mul_down_u64_opaque),
-        MUL
-    ),
-    row!(
-        MulU128Opaque,
-        "2 × u128, checked, opaque divisor",
-        Op::Binary(variant::mul_down_u128_opaque),
-        MUL
-    ),
-    row!(
-        MulU128WrappingOpaque,
-        "2 × u128, wrapping, opaque divisor",
-        Op::Binary(variant::mul_down_u128_wrapping_opaque),
-        MUL
-    ),
-    row!(
-        MulU64Const,
-        "4 × u64, checked, constant divisor",
-        Op::Binary(variant::mul_down_u64_const),
-        MUL
-    ),
-    row!(
-        MulU128Const,
-        "2 × u128, checked, constant divisor",
-        Op::Binary(variant::mul_down_u128_const),
-        MUL
-    ),
-    row!(
-        DivU128,
-        "2 × u128, checked",
-        Op::Binary(variant::div_down_u128),
-        DIV
-    ),
-    row!(
-        SqrtU128,
-        "2 × u128, checked",
-        Op::Unary(variant::sqrt_down_u128),
-        SQRT
-    ),
+const ROWS: [Row; 3] = [
+    Row {
+        ix: Ix::MulDown,
+        name: "MulDown",
+        op: Op::Binary(Fixed::mul_down),
+    },
+    Row {
+        ix: Ix::DivDown,
+        name: "DivDown",
+        op: Op::Binary(Fixed::div_down),
+    },
+    Row {
+        ix: Ix::SqrtDown,
+        name: "SqrtDown",
+        op: Op::Unary(Fixed::sqrt_down),
+    },
 ];
 
 fn apply(op: Op, a: Fixed, b: Fixed) -> Result<Fixed, PricingError> {
@@ -193,7 +136,7 @@ fn apply(op: Op, a: Fixed, b: Fixed) -> Result<Fixed, PricingError> {
 fn data(row: &Row, a: Fixed, b: Fixed) -> Vec<u8> {
     let mut d = vec![row.ix as u8];
     d.extend_from_slice(&a.to_bytes().0);
-    if let Op::Binary(_) = row.run {
+    if let Op::Binary(_) = row.op {
         d.extend_from_slice(&b.to_bytes().0);
     }
     d
@@ -242,15 +185,9 @@ impl Vm {
         (meta.compute_units_consumed, out)
     }
 
-    /// Runs `row` on `(a, b)` and checks the result against the production function.
+    /// Runs `row` on `(a, b)` and checks the on-chain result against the host result.
     fn check(&mut self, row: &Row, a: Fixed, b: Fixed) -> u64 {
-        let expected = encode_result(apply(row.reference, a, b));
-        assert_eq!(
-            encode_result(apply(row.run, a, b)),
-            expected,
-            "{} host variant differs from production on ({a:?}, {b:?})",
-            row.name
-        );
+        let expected = encode_result(apply(row.op, a, b));
         let (cu, out) = self.run(&data(row, a, b));
         assert_eq!(
             out, expected,
@@ -294,7 +231,7 @@ fn measure() -> Measurement {
                 .iter()
                 .map(|&(a, b)| {
                     // sqrt is measured on |a|: a negative input is a cheap DomainError.
-                    let a = match row.run {
+                    let a = match row.op {
                         Op::Unary(_) => Fixed::from_raw(a.raw().abs()),
                         Op::Binary(_) => a,
                     };
@@ -325,7 +262,8 @@ fn table(m: &Measurement) -> String {
          {RANDOM_INPUTS} values or pairs from seed `{SEED:#x}`, magnitudes log-uniform in \
          `[10^-6, 10^9]`, random signs (`sqrt` takes the absolute value). Every on-chain \
          result equals the host result bit for bit, and two runs in fresh VMs give identical \
-         numbers."
+         numbers. Release profile: `lto = \"fat\"`, `codegen-units = 1`; a program built with \
+         another profile will measure differently."
     )
     .unwrap();
     writeln!(s).unwrap();
@@ -336,22 +274,13 @@ fn table(m: &Measurement) -> String {
     )
     .unwrap();
     writeln!(s).unwrap();
-    writeln!(s, "| Instruction | Kernel | Min | Median | Max | Net |").unwrap();
-    writeln!(s, "| --- | --- | ---: | ---: | ---: | ---: |").unwrap();
-    writeln!(
-        s,
-        "| `Noop` | baseline | {noop_lo} | {noop_med} | {noop_hi} | 0 |"
-    )
-    .unwrap();
+    writeln!(s, "| Instruction | Min | Median | Max | Net |").unwrap();
+    writeln!(s, "| --- | ---: | ---: | ---: | ---: |").unwrap();
+    writeln!(s, "| `Noop` | {noop_lo} | {noop_med} | {noop_hi} | 0 |").unwrap();
     for (row, cu) in ROWS.iter().zip(&m.rows) {
         let (lo, med, hi) = stats(cu);
         let net = med.saturating_sub(noop_med);
-        writeln!(
-            s,
-            "| `{}` | {} | {lo} | {med} | {hi} | {net} |",
-            row.name, row.kernel
-        )
-        .unwrap();
+        writeln!(s, "| `{}` | {lo} | {med} | {hi} | {net} |", row.name).unwrap();
     }
     s
 }

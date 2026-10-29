@@ -11,7 +11,6 @@
 #![no_std]
 
 use bytemuck::Pod;
-use optfix::bench_internals as variant;
 use optfix::{Fixed, FixedBytes, PricingError};
 use pinocchio::cpi::set_return_data;
 use pinocchio::error::ProgramError;
@@ -42,20 +41,6 @@ pub enum Instruction {
     DivDown = 2,
     /// `Fixed::sqrt_down`.
     SqrtDown = 3,
-    /// Milestone 2 comparison: `mul_down`, four `u64` limbs, opaque divisor.
-    MulU64Opaque = 4,
-    /// Milestone 2 comparison: `mul_down`, two `u128` limbs, opaque divisor.
-    MulU128Opaque = 5,
-    /// Milestone 2 comparison: `mul_down`, two `u128` limbs, wrapping, opaque divisor.
-    MulU128WrappingOpaque = 6,
-    /// Milestone 2 comparison: `mul_down`, four `u64` limbs, constant divisor.
-    MulU64Const = 7,
-    /// Milestone 2 comparison: `mul_down`, two `u128` limbs, constant divisor.
-    MulU128Const = 8,
-    /// Milestone 2 comparison: `div_down`, two `u128` limbs.
-    DivU128 = 9,
-    /// Milestone 2 comparison: `sqrt_down`, two `u128` limbs.
-    SqrtU128 = 10,
 }
 
 impl Instruction {
@@ -71,13 +56,6 @@ impl Instruction {
             1 => Ok(Self::MulDown),
             2 => Ok(Self::DivDown),
             3 => Ok(Self::SqrtDown),
-            4 => Ok(Self::MulU64Opaque),
-            5 => Ok(Self::MulU128Opaque),
-            6 => Ok(Self::MulU128WrappingOpaque),
-            7 => Ok(Self::MulU64Const),
-            8 => Ok(Self::MulU128Const),
-            9 => Ok(Self::DivU128),
-            10 => Ok(Self::SqrtU128),
             _ => Err(BenchError::UnknownInstruction),
         }
     }
@@ -142,13 +120,6 @@ pub fn process_instruction(
         Instruction::MulDown => binary(args, Fixed::mul_down)?,
         Instruction::DivDown => binary(args, Fixed::div_down)?,
         Instruction::SqrtDown => unary(args, Fixed::sqrt_down)?,
-        Instruction::MulU64Opaque => binary(args, variant::mul_down_u64_opaque)?,
-        Instruction::MulU128Opaque => binary(args, variant::mul_down_u128_opaque)?,
-        Instruction::MulU128WrappingOpaque => binary(args, variant::mul_down_u128_wrapping_opaque)?,
-        Instruction::MulU64Const => binary(args, variant::mul_down_u64_const)?,
-        Instruction::MulU128Const => binary(args, variant::mul_down_u128_const)?,
-        Instruction::DivU128 => binary(args, variant::div_down_u128)?,
-        Instruction::SqrtU128 => unary(args, variant::sqrt_down_u128)?,
     };
     set_return_data(&encode_result(result));
     Ok(())

@@ -10,11 +10,6 @@
 
 #![cfg_attr(not(test), no_std)]
 
-#[cfg(feature = "bench-internals")]
-#[doc(hidden)]
-pub mod bench_internals;
-#[cfg(feature = "bench-internals")]
-mod bench_u128;
 mod error;
 mod fixed;
 mod quantity;
