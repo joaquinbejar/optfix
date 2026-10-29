@@ -419,9 +419,8 @@ published on crates.io, so the oracle is a crates.io dev-dependency, not a git o
 5. Year basis: 365 days (proposed) or 365.25?
 6. Decided (latest-stable rule): OptionStratLib 0.23 from crates.io as the oracle.
 7. Decided: Pinocchio 0.11, like the other three repos (exception recorded above).
-8. Proposal (from review, pending your approval): `Fixed::raw`/`from_raw` yes; newtypes only via `try_from_fixed`.
-   Milestone 1 implements it that way, with the validating constructor named `try_new` as
-   `rules/global_rules.md` requires.
+8. Decided (2026-10-29): `Fixed::raw`/`from_raw` yes; newtypes only via their validating
+   constructor, named `try_new` as `rules/global_rules.md` requires (the plan's `try_from_fixed`).
 
 ## 7. Decision log
 
