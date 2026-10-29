@@ -18,6 +18,9 @@ pub enum PricingError {
     NoConvergence = 2,
     /// Target price outside the no-arbitrage bounds, so no implied volatility exists.
     ArbitrageBound = 3,
+    /// Implied volatility: vega at the root is too small for the target to determine it
+    /// (below `IV_VEGA_MIN_FACTOR` times the price envelope).
+    IllConditioned = 4,
 }
 
 impl fmt::Display for PricingError {
@@ -27,6 +30,9 @@ impl fmt::Display for PricingError {
             Self::DomainError => "input outside the function's domain",
             Self::NoConvergence => "implied volatility did not converge",
             Self::ArbitrageBound => "target price outside the no-arbitrage bounds",
+            Self::IllConditioned => {
+                "implied volatility is ill-conditioned: vega below the threshold"
+            }
         };
         f.write_str(text)
     }
@@ -53,6 +59,7 @@ mod tests {
         assert_eq!(PricingError::DomainError as u8, 1);
         assert_eq!(PricingError::NoConvergence as u8, 2);
         assert_eq!(PricingError::ArbitrageBound as u8, 3);
+        assert_eq!(PricingError::IllConditioned as u8, 4);
     }
 
     #[test]
@@ -62,6 +69,7 @@ mod tests {
             PricingError::DomainError,
             PricingError::NoConvergence,
             PricingError::ArbitrageBound,
+            PricingError::IllConditioned,
         ] {
             assert!(!e.to_string().is_empty());
         }

@@ -111,8 +111,12 @@ pub const GREEK_ERR_ABS: Fixed = Fixed::from_raw(64);
 /// `Overflow` only carries the checked arithmetic (`max(S, K) <= 10^9`).
 #[must_use = "the result carries a possible error"]
 pub fn price_error_bound(opt: &EuropeanOption, m: &MarketInputs) -> Result<Fixed, PricingError> {
-    let scale = m.spot.get().max(opt.strike.get());
-    PRICE_ERR_REL.mul_up(scale)?.checked_add(PRICE_ERR_ABS)
+    price_envelope(m.spot.get(), opt.strike.get())
+}
+
+/// `PRICE_ERR_REL × max(S, K) + PRICE_ERR_ABS`, rounded up.
+pub(crate) fn price_envelope(s: Fixed, k: Fixed) -> Result<Fixed, PricingError> {
+    PRICE_ERR_REL.mul_up(s.max(k))?.checked_add(PRICE_ERR_ABS)
 }
 
 impl Price {
@@ -220,7 +224,7 @@ fn evaluate(opt: &EuropeanOption, m: &MarketInputs, greeks: bool) -> Result<Pric
     let ls = ln_sigma.checked_add(half_ln_t)?;
     let sst = exp(ls)?;
     let ln_s = ln(s)?;
-    let d1 = d1_terms(s, k, r, q, ln_s, ln_sigma, half_ln_t, ls, sst)?;
+    let d1 = d1_terms(s, k, r, q, ln_s, ln(k)?, ln_sigma, half_ln_t, ls, sst)?;
     let d2 = d1.checked_sub(sst)?;
     // Price the forward out-of-the-money side directly (small values, tail-accurate N), the
     // other through parity. `nd1` is N(d1) and `nd2` N(d2); `pdf` is n(d1).
@@ -303,18 +307,18 @@ fn evaluate(opt: &EuropeanOption, m: &MarketInputs, greeks: bool) -> Result<Pric
 ///   `u = (S − K) / K` and `ln(1 + u) / u` on the `ln` kernel's polynomial: nothing tiny is
 ///   divided by something tiny, and nothing cancels.
 #[allow(clippy::too_many_arguments)]
-fn d1_terms(
+pub(crate) fn d1_terms(
     s: Fixed,
     k: Fixed,
     r: Fixed,
     q: Fixed,
     ln_s: Fixed,
+    ln_k: Fixed,
     ln_sigma: Fixed,
     half_ln_t: Fixed,
     ls: Fixed,
     sst: Fixed,
 ) -> Result<Fixed, PricingError> {
-    let ln_k = ln(k)?;
     let diff = s.checked_sub(k)?;
     let near = diff
         .raw()
@@ -370,7 +374,7 @@ fn mul_exp(x: Fixed, e: Fixed) -> Result<Fixed, PricingError> {
 const SCALE_LN: Fixed = Fixed::from_raw(20 * LN2_RAW);
 
 /// `ln 2` as a raw Q64.64 value, rounded to nearest.
-const LN2_RAW: i128 = 12_786_308_645_202_655_660;
+pub(crate) const LN2_RAW: i128 = 12_786_308_645_202_655_660;
 
 /// `1 / ln 2` as a Q64.64 value, rounded to nearest.
 const INV_LN2: Fixed = Fixed::from_raw(26_613_026_195_688_644_983);
@@ -431,7 +435,7 @@ fn degenerate(
 
 /// `DomainError` unless `S/K` is in `[0.05, 20]`, checked exactly as `20 S >= K` and
 /// `20 K >= S` (no division).
-fn check_moneyness(s: Fixed, k: Fixed) -> Result<(), PricingError> {
+pub(crate) fn check_moneyness(s: Fixed, k: Fixed) -> Result<(), PricingError> {
     let s20 = s
         .raw()
         .checked_mul(MONEYNESS_LIMIT)
@@ -448,12 +452,12 @@ fn check_moneyness(s: Fixed, k: Fixed) -> Result<(), PricingError> {
 }
 
 /// `x / 2`, rounded down.
-fn half(x: Fixed) -> Fixed {
+pub(crate) fn half(x: Fixed) -> Fixed {
     Fixed::from_raw(x.raw() >> 1)
 }
 
 /// `max(x, 0)`: an out-of-the-money price is positive, and rounding must not make it negative.
-fn non_negative(x: Fixed) -> Fixed {
+pub(crate) fn non_negative(x: Fixed) -> Fixed {
     if x < Fixed::ZERO {
         Fixed::ZERO
     } else {
@@ -517,6 +521,7 @@ pub mod baseline {
             m.rate.get(),
             m.carry.get(),
             ln_s,
+            ln(k)?,
             ln_sigma,
             half_ln_t,
             ls,

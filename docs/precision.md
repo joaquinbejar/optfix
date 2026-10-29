@@ -52,6 +52,31 @@ Garman-Kohlhagen with the foreign rate `q` (`common::oracle`), on 20000 exact de
 | `q < 0` | 7.188e-2 | 2.266e-1 | 4.041e-2 | 7.277e-4 | 2.138e-2 |  |
 | `q = 0` | 3.934e-2 | 2.467e-2 | 4.541e-2 | 7.979e-4 | 2.173e-2 | 3.934e-2 |
 
+## Implied volatility
+
+`implied_vol(price(σ))` on 1000000 points per carry set of the whole supported domain (`common::bsm_sample` with the carry of each set). With `E` the price envelope, `implied_vol` answers where vega at the root is at least `IV_VEGA_MIN_FACTOR` = 2.684e8 times `E`, within `IV_ERR_PRICE_FACTOR` = 4 times `E / vega` plus `IV_ERR_REL` = 9.095e-13 times `σ`; below the threshold it returns `IllConditioned`. "No time value" is a target equal to a bound (the out-of-the-money value rounds to zero), `ArbitrageBound`. The price column is `price(implied_vol(p))` against `p`, over `(IV_ERR_PRICE_FACTOR + 1) × E + IV_ERR_REL × σ × vega`. `NoConvergence` does not occur.
+
+| Carry | Points | `T = 0` | No time value | Answered | Worst σ error / envelope | Worst price error / envelope | Worst relative σ error | `IllConditioned` | `NoConvergence` | `DomainError` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `q > 0` | 1000000 | 100111 | 525903 | 253992 | 1.10e-2 | 6.15e-3 | 4.25e-9 | 119994 | 0 | 0 |
+| `q < 0` | 1000000 | 100231 | 542721 | 256992 | 1.04e-2 | 6.15e-3 | 6.14e-9 | 100056 | 0 | 0 |
+| `q = 0` | 1000000 | 100185 | 531902 | 265296 | 1.04e-2 | 6.15e-3 | 5.50e-9 | 102617 | 0 | 0 |
+
+Steps taken (at most `IV_MAX_ITERATIONS` = 3; a solve stops once a step is below `IV_TOLERANCE`, `2^-16` in `ln σ`), over the same 3000000 points by outcome:
+
+| Outcome | 1 step | 2 steps | 3 steps |
+| --- | ---: | ---: | ---: |
+| answered | 1869 | 766980 | 8472 |
+| `IllConditioned` | 8638 | 250184 | 63901 |
+
+Initial guess (`tools/gen_iv_tables.py`), largest `|ln σ0 − ln σ|` where `implied_vol` answers: 0.0384 from the near-the-money table (706468 points), 0.0086 from the deep out-of-the-money table (69177 points).
+
+Against the independent mpmath reference (`tests/data/iv_fixture.csv`, `tools/iv_fixture/gen_iv_fixture.py`: 20754 exact targets on a boundary set with `d1` from −9 to 9, near the money at ±1/4 and 0, `T` from `10^-12` s to a year): 8228 answered, the largest error 8.004e-3 of the envelope around the exact implied volatility of each rounded target; the other 12526 rejected (`IllConditioned`, or no root inside the bounds).
+
+At the conditioning threshold (`tests/data/iv_threshold.csv`, `tools/iv_fixture/gen_iv_threshold.py`: 5004 targets whose exact root's vega is the threshold times `1 + ε`, `ε` from `−2^-6` to `2^-6` down to `±2^-26` and 0): no target below the threshold is answered, every one at `1 + 2^-8` or above is; 1484 answered (worst 6.287e-3 of the envelope), 3520 rejected, of which 1105 answered and 998 rejected in `[thr, thr (1 + 2^-8))`, where `implied_vol` widens the threshold by its own `δ`.
+
+Codex's adversarial threshold set (`tests/data/iv_threshold_codex.csv`, `tools/iv_fixture/codex/`, 100 mpmath digits, the exact ratio of the root's vega to the threshold per target): 10005 targets, none with a ratio below 1 answered; 4749 answered (worst 3.377e-6 of the envelope), 5256 rejected.
+
 ## Representation comparison (milestone 3)
 
 Maximum error over every domain above, measured at commit `6adf034` (`make precision` there reproduces the full table), for each candidate of `docs/PLAN.md` 4.1. Decimal ulps are `10^-18`. Q64.64 won on compute units (`docs/benchmarks.md`) and is the only one kept.
