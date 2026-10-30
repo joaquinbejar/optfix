@@ -1,3 +1,5 @@
+[![Crates.io](https://img.shields.io/crates/v/optfix.svg)](https://crates.io/crates/optfix)
+[![Docs.rs](https://docs.rs/optfix/badge.svg)](https://docs.rs/optfix)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/joaquinbejar/optfix/blob/main/LICENSE)
 [![Stars](https://img.shields.io/github/stars/joaquinbejar/optfix.svg)](https://github.com/joaquinbejar/optfix/stargazers)
 [![Issues](https://img.shields.io/github/issues/joaquinbejar/optfix.svg)](https://github.com/joaquinbejar/optfix/issues)
@@ -17,7 +19,8 @@
 8. [Compute Units](#compute-units)
 9. [Testing and Benchmarks](#testing-and-benchmarks)
 10. [Documentation](#documentation)
-11. [Contribution and Contact](#contribution-and-contact)
+11. [Used by](#used-by)
+12. [Contribution and Contact](#contribution-and-contact)
 
 ### Introduction
 
@@ -103,13 +106,13 @@ Errors are a `PricingError` (`#[repr(u8)]`): `Overflow`, `DomainError`, `NoConve
 - Rust (the toolchain is pinned in `rust-toolchain.toml`).
 - For the benchmarks only: the Agave CLI with `cargo build-sbf`.
 
-#### Installation
+#### Install
 
-optfix is not published on crates.io. Add it as a git dependency:
+Add optfix from crates.io:
 
 ```toml
 [dependencies]
-optfix = { git = "https://github.com/joaquinbejar/optfix", rev = "ab710e9611b82de6d6087ba52726fedf86e9310c" }
+optfix = "0.1"
 ```
 
 #### Building from Source
@@ -243,7 +246,17 @@ tables are generated: `make test` fails while they are stale.
   references and against OptionStratLib.
 - [`docs/benchmarks.md`](https://github.com/joaquinbejar/optfix/blob/main/docs/benchmarks.md): every CU row, and how to reproduce it.
 - [`CHANGELOG.md`](https://github.com/joaquinbejar/optfix/blob/main/CHANGELOG.md).
-- API documentation: `cargo doc -p optfix --open`.
+- API documentation: [docs.rs/optfix](https://docs.rs/optfix).
+
+### Used by
+
+Programs on Solana devnet that price with optfix:
+
+| Program | Devnet program id |
+|---------|-------------------|
+| [quotebook](https://github.com/joaquinbejar/quotebook) | [`3Aq1AwFiK9ibNBLxvYQ18KLT9WbLwENQa3ZZViDW6mbo`](https://explorer.solana.com/address/3Aq1AwFiK9ibNBLxvYQ18KLT9WbLwENQa3ZZViDW6mbo?cluster=devnet) |
+| [varswap](https://github.com/joaquinbejar/varswap) | [`BWqsaXvASrbErApP1ovz7vSvBLYqXGaMaZANEYf1xrB9`](https://explorer.solana.com/address/BWqsaXvASrbErApP1ovz7vSvBLYqXGaMaZANEYf1xrB9?cluster=devnet) |
+| [metalbook](https://github.com/joaquinbejar/metalbook) | [`FPPuou5kgSp6tbwQRwKPBNhrMyf1Xb8n2ib3Yqpbsuwg`](https://explorer.solana.com/address/FPPuou5kgSp6tbwQRwKPBNhrMyf1Xb8n2ib3Yqpbsuwg?cluster=devnet) |
 
 ## Contribution and Contact
 

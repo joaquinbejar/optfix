@@ -537,7 +537,7 @@ Each milestone is one feature branch (`feat/m<N>-<name>`) and one PR.
    `q = 0`, `ArbitrageBound` and
    `NoConvergence` are each covered by tests, the `NoConvergence` rate over the milestone 5 grid is
    reported, and the worst-case CU (all iterations) is in the table.
-7. **README with error and CU tables, v0.1 on crates.io.** (Done except the publication, which waits for the go-ahead.) *Done when* README tables are
+7. **README with error and CU tables, v0.1 on crates.io.** (Done: tagged `v0.1.0` and published to crates.io.) *Done when* README tables are
    generated from the same constants and bench output, `cargo publish --dry-run` passes, a
    CHANGELOG entry and signed tag exist, and (after your go-ahead) `optfix 0.1.0` is published.
    The name is free on crates.io as of 2026-10-28.
@@ -861,6 +861,6 @@ Milestone 7 (2026-10-29), release preparation:
   `tools/` and about 10 MB of `tests/data/`. `make publish-dry-run` (`cargo publish -p optfix
   --dry-run`) packages and builds it.
 - **`CHANGELOG.md`** with the 0.1.0 entry, dated at release.
-- **Tag and publication**: the signed tag `v0.1.0` goes on the merge commit of this milestone's
-  PR, and `cargo publish` runs only on the explicit go-ahead (Joaquin's call, through the
+- **Tag and publication**: the signed tag `v0.1.0` goes on the merge commit of the PR that dates
+  the CHANGELOG, and `cargo publish` runs only on the explicit go-ahead (Joaquin's call, through the
   coordinator).
