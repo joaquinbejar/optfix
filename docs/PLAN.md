@@ -893,48 +893,70 @@ left open goes to the coordinator with both positions.
 | 2 | CU budget enforced by `make bench` | 0.2, milestone 8 |
 | 3 | GitHub Actions CI with a badge | 0.2, milestone 9 |
 | 4 | Batch API for a strip of strikes | 0.2, milestone 11 |
-| 5 | Black-76, cash-or-nothing and asset-or-nothing prices | 0.2, milestone 12 (prices only; binary greeks postponed) |
+| 5 | Black-76; cash-or-nothing and asset-or-nothing prices | 0.2: Black-76 in milestone 12; binary prices in milestone 13, deferrable (below); binary greeks postponed |
 | 6 | Implied vol: better initial guess or a tolerance parameter | postponed to 0.3 |
 | 7a | Year basis (open question 5) | closed in this PR: 365 days kept |
 | 7b | Kani proofs of no overflow | postponed to 0.3, as a time-boxed spike |
 
 The budget and CI come first, out of priority order, so that every later milestone is
 measured against the budget and checked by CI on its own PR. Each milestone is one branch
-(`feat/m<N>-<name>`), one PR, reviewed by codex before merging.
+(`feat/m<N>-<name>`), one PR, reviewed by codex before merging. Milestone 14 is the release.
+
+**Frozen 0.1 reference.** Milestones 10 to 12 change code under functions whose 0.1.0 results
+are published. Milestone 10 commits, before any kernel change, a fixture of 0.1.0 outputs
+(`div_*`, `from_ratio`, `from_scaled`, `sqrt_*`, `price`, `price_and_greeks`, `implied_vol`
+over a deterministic sample of the supported domain, including the 0.1 edge sets), generated
+from the `v0.1.0` tag. Every later milestone must reproduce it bit for bit, results and error
+variants alike, unless a milestone explicitly agrees a change.
 
 ### Milestone 8: CU budget in `make bench` (candidate 2, open question 2)
 
 - `bench/budget.md`: one row per bench row with a net median and a net max limit. The bench
-  fails when a row exceeds either limit, when a measured row has no budget, or when a budgeted
-  row is no longer measured.
-- Limits are set at the measured value plus 5%, rounded up to a multiple of 100. CU is
-  deterministic (the bench already runs twice in fresh VMs and requires equal results), so the
-  margin is not for noise: it absorbs codegen changes from a toolchain update without hiding a
-  real regression of the pricing path. A PR that legitimately costs more raises the limit in
-  the same diff, where the reviewer sees it.
-- A row more than 20% under its limit is reported (not a failure), so limits get tightened.
+  fails when a row exceeds either limit, when a measured row has no budget, when a budgeted
+  row is no longer measured, on a duplicate row, and on a malformed file.
+- Initial limits are the 0.1.0 measurement plus 5%, rounded up to a multiple of 100. They are
+  committed values: the bench never regenerates or rebases them. CU is deterministic (the bench
+  already runs twice in fresh VMs and requires equal results), so the margin is not for noise:
+  it absorbs codegen changes from a pinned toolchain update without hiding a real regression.
+  A PR that legitimately costs more raises the limit in the same diff, where the reviewer sees
+  it; a PR that makes a row cheaper tightens its limit to the new measurement plus 5% (same
+  rounding) in the same diff.
+- The bench reports each row's absolute and percentage delta against its committed limit
+  (rounding to 100 allows more than 5% on small rows such as `Exp`, so the delta is printed,
+  not inferred). A row more than 20% under its limit is reported (not a failure).
 - Open question 2 closes as "a per-row budget", not one absolute target; with the 5% rule
   `PriceAndGreeks` gets a max of 15,400 net.
-- *Done when* `make bench` enforces the file, a failing control (a budget lowered by one CU
-  below a measured value must fail) runs in `pre-push` like `tables-control`, and the README CU
-  table is unaffected.
+- *Done when* `make bench` enforces the file and a failing control in `pre-push` (like
+  `tables-control`) checks each failure kind on its own: a median one CU over its limit, a max
+  one CU over, a missing budget row, an extra budget row, a duplicate row and a malformed row.
 
 ### Milestone 9: GitHub Actions CI (candidate 3)
 
 - One workflow on `pull_request` and on pushes to `main`, `ubuntu-latest`:
-  - job `pre-push`: `make pre-push`, with the Agave CLI 4.4.0 installed from
-    `release.anza.xyz/v4.4.0` (the version the Makefile and `docs/benchmarks.md` record) and
-    cached, the Rust toolchain from `rust-toolchain.toml`, `python3` from the runner (the
-    table generators are standard library only);
+  - job `pre-push`: `make pre-push`;
   - job `bench`: `make bench` with the budget of milestone 8, then
-    `git diff --exit-code docs/benchmarks.md`, so a stale committed table fails too (same
-    toolchain, deterministic CU).
+    `git diff --exit-code docs/benchmarks.md`, so a stale committed table fails too.
+- **Pinned toolchains** (codex): the CU table depends on `cargo-build-sbf` and its
+  platform-tools, not on the Agave CLI version alone, and `rust-toolchain.toml` floats on
+  `stable`. CI installs the Agave CLI 4.4.0 release tarball, verifies its SHA-256 (recorded in
+  the workflow), and fails unless `cargo build-sbf --version` reports `cargo-build-sbf 4.5.0`,
+  platform-tools `v1.57` and Rust `1.95.0`, the values `docs/benchmarks.md` records. The host
+  toolchain (rustc, rustfmt, clippy) is pinned in CI to an exact release through
+  `RUSTUP_TOOLCHAIN` (1.99.1 today, recorded in the workflow and in `docs/benchmarks.md`);
+  `rust-toolchain.toml` stays `stable` for local work, as in matchbook. Bumping either pin is
+  its own PR, with the bench table regenerated and the budget re-agreed if a row moves.
+- Every cargo command in CI runs with `--locked` (a `CARGO_FLAGS` variable in the Makefile,
+  empty by default). SBF architecture and build profile are the Makefile's (`SBF_ARCH = v3`,
+  release with `overflow-checks`), shared by local and CI runs; the reproduction steps in
+  `docs/benchmarks.md` are the CI steps.
+- Cache keys include `Cargo.lock`, the Agave version and the host toolchain pin.
 - Third-party actions pinned to a commit SHA, no secrets, read-only `GITHUB_TOKEN`.
 - `make pre-push` takes more than 10 minutes on the local machine; if the runner takes more
-  than 30, the property-test case count is split across parallel jobs, not lowered.
+  than 30, the test targets are split across parallel jobs with the full case counts (the
+  union of the jobs runs exactly what `make pre-push` runs), never lowered.
 - Badge in the README. Making the checks required on `main` is the coordinator's call.
-- *Done when* both jobs pass on the milestone's own PR and a deliberately failing commit on a
-  scratch branch shows each job failing.
+- *Done when* both jobs pass on the milestone's own PR, a CI-built table equals the committed
+  one, and a deliberately failing commit on a scratch branch shows each job failing.
 
 ### Milestone 10: division on native `u64` digits (candidate 1)
 
@@ -946,17 +968,23 @@ measured against the budget and checked by CI on its own PR. Each milestone is o
 - `isqrt`: a seed from the top 64 bits (a native `u64` integer square root), then two
   full-width Newton steps on the new division, then a final correction checked with
   `mul_wide`, replacing the current power-of-two seed and up to `ISQRT_MAX_ITERATIONS`
-  steps.
+  steps. The PR states the proof that the seed's error and two steps reach `floor(sqrt)`
+  within the correction (codex).
 - **Bit-identical to 0.1.0.** Quotient, remainder and `floor(sqrt)` are unique integers, so
   there is no error bound to document: every `div_*`, `from_ratio`, `from_scaled` and
-  `sqrt_*` result must equal 0.1.0's. The 0.1.0 kernel moves to the tests as the reference.
-- *Done when* proptest shows equality with the 0.1.0 kernel on 1,000,000 random cases per
-  operation plus the edges (divisors of one to four 32-bit digits, quotients at the `u128`
-  limit, `Overflow` and `DomainError` paths, perfect squares and their neighbours, powers of
-  two), the on-chain results equal the host's (existing bench check), and the CU rows fall to
-  targets of `DivDown` at most 600 net max and `SqrtDown` at most 3,000 net max (from 1,991
-  and 13,980). If a target is missed, the measured numbers and the reason go here before
-  merging.
+  `sqrt_*` result and error must equal 0.1.0's.
+- *Done when*:
+  - the frozen 0.1 fixture passes, and proptest shows equality both with the 0.1.0 kernel
+    (kept in the tests as a differential reference) and with the exact `num-bigint` result,
+    on 1,000,000 random cases per operation;
+  - targeted cases cover each path of algorithm D: divisors of one to four 32-bit digits,
+    normalization shifts 0 and 31, the `qhat` refinement, the add-back correction, quotients
+    at the `u128` limit, the `Overflow` and `DomainError` paths, perfect squares and their
+    neighbours, and powers of two;
+  - the on-chain results equal the host's (existing bench check);
+  - the CU rows meet targets of `DivDown` at most 600 net max and `SqrtDown` at most 3,000 net
+    max (from 1,991 and 13,980). A missed target is not waived automatically: the measured
+    numbers and the reason are agreed again with codex (or escalated) before merging.
 
 ### Milestone 11: strip API (candidate 4)
 
@@ -968,38 +996,66 @@ pub fn price_and_greeks_strip(expiry: Years, m: &MarketInputs, legs: &[StripLeg]
     out: &mut [Priced]) -> Result<(), PricingError>;
 ```
 
-- No allocation: the caller owns `out`; `legs.len() != out.len()` is `DomainError`. On an
-  error no promise is made about `out` (documented).
+- No allocation: the caller owns `out`; `legs.len() != out.len()` is `DomainError` before any
+  output is written. An empty strip returns `Ok(())`.
+- **Partial-output contract**: legs are priced in order; on the first leg that fails, the
+  function returns that leg's error, `out[..i]` holds the results of the legs before it and
+  `out[i..]` is unchanged. Documented and tested.
 - Computed once per strip: `Dr`, `Dq`, `ln T`, `ln σ`, `σ√T`, `ln S` and the shared
-  exponentials. Per leg: `ln K`, `d1`, `d2`, `N`, and `n` with the greeks. Estimated from
-  the 0.1 profile: about a quarter of `Price` is shared, so an extra strike should cost about
-  6,500 to 7,000 net CU against 9,251; the milestone measures it.
-- **Bit-identical to the scalar functions**: `out[i]` equals `price` (or `price_and_greeks`)
-  on the same leg, so every envelope of 0.1 applies unchanged and no new bound is needed. The
-  scalar functions are rewritten on the same shared and per-leg steps, so the identity holds
-  by construction and is also tested.
+  exponentials. Per leg: `ln K`, `d1`, `d2`, `N`, and `n` with the greeks. Only values that
+  the scalar path computes from the same inputs in the same rounding order are hoisted.
+  Estimated from the 0.1 profile: about a quarter of `Price` is shared, so an extra strike
+  should cost about 6,500 to 7,000 net CU against 9,251; the milestone measures it.
+- **Bit-identical to 0.1.0 scalar results**: `out[i]` equals 0.1.0's `price` (or
+  `price_and_greeks`) on the same leg, results and errors, checked against the frozen 0.1
+  fixture and not only against the rewritten scalar path (codex). So every envelope of 0.1
+  applies unchanged and no new bound is needed.
+- Tests: empty strips, `T = 0` and tiny `T` (degenerate branch), legs across the
+  near-the-money switch of `d1_terms`, repeated, mixed-kind and unsorted legs, a per-leg
+  `S/K` out of range at the first, a middle and the last position, and length mismatch.
 - Bench rows: strips of 1, 2, 8 and 16 legs for both functions, reported as total and as CU
-  per extra leg. Return data is capped at 1,024 bytes, which holds 16 prices (256 bytes) but not 16
-  `Priced` (1,280 bytes), so the 16-leg greeks row returns a 32-byte digest of the outputs
-  and the host compares it with the digest of its own results.
-- *Done when* the identity proptest passes over the supported domain for strips of 1 to 16
-  legs with mixed kinds, length mismatch and per-leg `DomainError` (`S/K` out of range) are
-  tested, and the CU rows and per-extra-leg cost are in `docs/benchmarks.md` and the README.
+  per extra leg. Return data is capped at 1,024 bytes, which holds 16 prices (256 bytes) but
+  not 16 `Priced` (1,280 bytes), so the 16-leg greeks row returns a 32-byte digest of the
+  outputs and the host compares it with the digest of its own results. The digest's own cost
+  is measured in a separate row and subtracted, so it is not counted as pricing.
+- *Done when* the identity tests pass over the supported domain for strips of 1 to 16 legs and
+  the CU rows and per-extra-leg cost are in `docs/benchmarks.md` and the README.
 
-### Milestone 12: Black-76 and binary prices (candidate 5)
+### Milestone 12: Black-76 (candidate 5, first part)
 
-- **Black-76**: `price_black76` and `price_and_greeks_black76` take a forward `F` (as
-  `Spot`) and compute Black-Scholes-Merton with `S = F` and `q = r`. They are thin wrappers,
-  bit-identical to `price` with `carry = rate`, so the 0.1 envelopes apply. The greeks are with
-  respect to `F`. Checked against OptionStratLib's `black_76`.
-- **Cash-or-nothing** (`payout × Dr × N(±d2)`) and **asset-or-nothing** (`S Dq N(±d1)`):
-  prices only, on the same `d1`, `d2` as `price`. New published bounds, from the measured error
-  against the `num-bigint` reference (as for `price`) and checked against OptionStratLib's
-  `binary_black_scholes`. Their greeks are postponed: delta and gamma of a binary are
-  unbounded near expiry at the strike and need their own conditioning rules, as `implied_vol`
-  did.
-- *Done when* the bounds are published, tested over the supported domain table with
-  `q > 0`, `q < 0` and `q = 0`, and the CU rows are in the bench.
+- `price_black76` and `price_and_greeks_black76` take a forward `F` (as `Spot`) and compute
+  Black-Scholes-Merton with `S = F` and `q = r`. They are thin wrappers, bit-identical to
+  `price` and `price_and_greeks` with `carry = rate`, so the 0.1 envelopes apply.
+- Greek conventions documented on each field: delta and gamma with respect to `F`; vega with
+  respect to `σ`; theta is `∂V/∂t` holding `F`, `σ` and `r` fixed (which is what BSM theta
+  with `S = F`, `q = r` computes, since it holds `S` fixed).
+- Checked against OptionStratLib's `black_76` within its f64 grade, in addition to the
+  identity with `price`.
+- *Done when* the identity tests pass over the supported domain, the conventions are
+  documented, and the CU rows are in the bench (expected equal to `Price` and
+  `PriceAndGreeks` within a few CU).
+
+### Milestone 13: binary prices (candidate 5, second part; deferrable)
+
+Cash-or-nothing (`payout × Dr × N(±d2)`) and asset-or-nothing (`S Dq N(±d1)`), prices only,
+on the same `d1`, `d2` as `price`. The vanilla envelopes do not bound these: each term
+carries the absolute error of `N` and of `d1`/`d2`, unbounded relative to a small price in the
+tails and very sensitive at the strike when `T` is tiny. The PR must fix, before code:
+
+- the API and the payout range (`payout` as a `Price`, within the `Spot` range);
+- `T = 0` and the degenerate branch: strictly in the money pays (`S > K` for a call, `S < K`
+  for a put); `S = K` pays zero, and the same rule applies when `σ√T` is below the threshold;
+- identities, tested: cash-or-nothing call plus put equals `payout × Dr` exactly if `N`'s
+  complement is exact (milestone 4), else within the bound; asset-or-nothing call minus
+  `K ×` cash-or-nothing call (unit payout) equals the vanilla call within the summed bounds;
+- published bounds from an independent high-precision reference (mpmath at 100 digits, as in
+  milestones 4 to 6), covering tiny `T`, at the money, the tails and the `d1_terms` branch
+  seam. OptionStratLib alone is not enough: its normal CDF is f64 grade with weak tails.
+
+If those bounds cannot be established within the milestone's PR, binaries are deferred to 0.3
+and the release goes ahead without them. Binary greeks are postponed in any case: delta and
+gamma of a binary are unbounded near expiry at the strike and need their own conditioning
+rules, as `implied_vol` did.
 
 ### Postponed to 0.3
 
@@ -1029,11 +1085,12 @@ r)?)`, documented on `from_seconds` with a 365.25-day example.
 changes that do:
 
 - `PricingError` becomes `#[non_exhaustive]`, so later variants (for example for binary greeks
-  in 0.3) are not breaking. Programs that map it with `as u8` are unaffected; a `match` needs
+  in 0.3) are not breaking. The `#[repr(u8)]` discriminants of the existing variants are
+  kept. Programs that map it with `as u8` are unaffected; a `match` needs
   a wildcard arm.
 - The input structs (`EuropeanOption`, `MarketInputs`, `IvInputs`) stay exhaustive: callers
   build them with struct literals.
 
-With that change the release is 0.2.0 (milestone 13: CHANGELOG, README, tag, publication on
+With that change the release is 0.2.0 (milestone 14: CHANGELOG, README, tag, publication on
 the coordinator's go). Downstream repos move from `optfix = "0.1"` to `"0.2"`; varswap and
 metalbook need no code change beyond a wildcard arm where they `match` on `PricingError`.
