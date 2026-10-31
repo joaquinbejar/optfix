@@ -911,6 +911,15 @@ variants alike, unless a milestone explicitly agrees a change.
 
 ### Milestone 8: CU budget in `make bench` (candidate 2, open question 2)
 
+(Done.) As built: `bench/budget.md`, checked by `optfix_bench::check` after the CU test's
+measurement in both `make test` and `make bench`; the checker's unit tests are the per-kind
+controls and `make budget-control` (in `pre-push`) is the end-to-end one, with the
+`PriceAndGreeks` max limit one CU below its measurement. `docs/benchmarks.md` gains a Budget
+section with each row's limits and deltas. One refinement: a row is marked loose only when it is
+more than 20% under its limit *and* the rule would give a lower limit, since rounding to 100
+leaves `Noop`, `Exp`, `MulShr` and `MulDown`'s max more than 20% under limits the rule cannot
+lower.
+
 - `bench/budget.md`: one row per bench row with a net median and a net max limit. The bench
   fails when a row exceeds either limit, when a measured row has no budget, when a budgeted
   row is no longer measured, on a duplicate row, and on a malformed file.

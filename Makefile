@@ -122,6 +122,23 @@ tables-control:
 		echo "tables-control: tables-check accepted a changed iv_tables.rs"; exit 1; fi
 	@echo "tables-control: tables-check rejects a changed generated file"
 
+# Failing control for the CU budget, end to end: a copy of bench/budget.md with the
+# `PriceAndGreeks` max limit set one CU below its measured net max (from docs/benchmarks.md)
+# must make the CU test fail on the budget. Each violation kind is also a unit test of
+# bench/src/lib.rs. Needs `make program`.
+BUDGET_CONTROL_ROW ?= PriceAndGreeks
+.PHONY: budget-control
+budget-control:
+	@mkdir -p target
+	@python3 tools/budget_control.py $(BUDGET_CONTROL_ROW) bench/budget.md docs/benchmarks.md \
+		> target/budget.control.md
+	@if OPTFIX_BUDGET=$(CURDIR)/target/budget.control.md cargo test --workspace --all-features \
+		--test cu -- test_cu_table_is_deterministic_and_matches_host > target/budget.control.log 2>&1; then \
+		echo "budget-control: the CU test accepted a limit below a measured value"; exit 1; fi
+	@grep -q "\`$(BUDGET_CONTROL_ROW)\` max .* is over its limit" target/budget.control.log || \
+		{ echo "budget-control: the CU test failed for another reason (target/budget.control.log)"; exit 1; }
+	@echo "budget-control: a limit one CU below the measured max fails the CU test"
+
 # Rustdoc with every warning denied
 .PHONY: doc
 doc:
@@ -129,7 +146,7 @@ doc:
 
 # Pre-push checks: must pass with zero warnings
 .PHONY: pre-push
-pre-push: fmt-check lint lint-control tables-control tables-check program-control program test doc
+pre-push: fmt-check lint lint-control tables-control tables-check program-control program test budget-control doc
 
 .PHONY: clean
 clean:
