@@ -277,7 +277,8 @@ fn test_isqrt_edges() {
     );
 }
 
-/// The seed is within `2^-30` of the root, so `isqrt` takes at most four divisions (three
+/// The seed is within `2^-30` of the root above 64 bits and one above it below, so `isqrt`
+/// takes at most four divisions (three
 /// decreasing steps and the one that confirms). Counted per call (per-thread counter) on
 /// random sizes.
 #[test]

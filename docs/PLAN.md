@@ -996,11 +996,17 @@ lower.
 
 ### Milestone 10: division on native `u64` digits (candidate 1)
 
-(Done; `DivDown` max is 44 CU over its target, to be re-agreed with codex before merging.) As built: algorithm D on
+(Done. `DivDown` max is 644 against the 600 target: re-agreed with codex on 2026-10-31 as the
+maximum over the documented 1,000-input benchmark sample, with the budget at 600 / 700. It is
+not a bound over every legal operand: codex's sweep of 34,211 full-range signed divisions on
+SBF reached 728 net, at `a.raw = −142521520073724090701275243608064902494`,
+`b.raw = 19811960347594953697`. Codex also agreed to keep the Newton loop in `isqrt` instead of
+two steps and a `mul_wide` correction, below.) As built: algorithm D on
 32-bit digits in `u64` (`optfix/src/u256.rs`), specialized per divisor length so the digit
 loops unroll; a one-digit divisor takes four native divisions; `isqrt` seeds Newton with the
-root of the top 64 bits plus one and keeps the integer Newton loop, so its exactness never
-depends on the seed's precision (at most four divisions, tested). Net CU, median and max:
+root of the top 64 bits plus one (within `2^-30` above the root for inputs above 64 bits,
+one above it below) and keeps the integer Newton loop, so its exactness never depends on the
+seed's precision (at most four divisions, tested). Net CU, median and max:
 
 | Row | 0.1.0 | 0.2 | Target (max) |
 | --- | ---: | ---: | ---: |
@@ -1011,8 +1017,12 @@ What it took: the first version on 32-bit digits cost more than 0.1.0 (1,849 med
 an overflow-checked `u64` multiply of operands the compiler cannot bound lowers to `__multi3`
 (about 50 CU); bounding the digit products (983), one instance per divisor length (784) and
 forced inlining of the digit step (570) brought it down, and a zero estimated digit skips the
-multiply-subtract (546). No libcall is left in `div_rem`; what remains is about 100
-instructions per quotient digit. `DivDown`'s max misses the 600 target by 44 CU.
+multiply-subtract (546). No `u128` divide or multiply libcall is left in `div_rem` (two
+variable `u128` shift helpers remain, `__ashlti3` and `__lshrti3`, for the normalization and
+the remainder; replacing them by digit-wise shifts measured no gain); what remains is about
+100 instructions per quotient digit. `DivDown`'s max misses the 600 target by 44 CU. `MulShr`,
+whose code is unchanged, moves from 317 / 333 to 340 / 355 net in the same program
+(codegen and layout of the shared `U256` helpers); its limit, 400, holds.
 
 Verification: the 0.1.0 kernel is kept test-only (`u256/v01.rs`) and `u256/frozen.rs` checks
 the new one against it and against `num-bigint` (quotient, remainder, `floor(sqrt)`) on
@@ -1021,7 +1031,9 @@ boundary, powers of two and squares with neighbours; counters prove the D3 refin
 D6 add-back run. The frozen 0.1 fixture (`tests/data/frozen_0_1.csv`, 14,901 rows from
 `tools/frozen_0_1`, which depends on the published `optfix = "=0.1.0"` outside the workspace)
 holds `div_*`, `from_ratio`, `from_scaled`, `sqrt_*`, `price`, `price_and_greeks` and
-`implied_vol` results and error variants; `tests/frozen_0_1.rs` reproduces every row.
+`implied_vol` results and errors (`Overflow`, `DomainError`, `ArbitrageBound` and
+`IllConditioned`; no sampled input gives `NoConvergence`, which `iv_internals.rs` produces by
+lowering the step cap); `tests/frozen_0_1.rs` reproduces every row.
 
 - On SBF, `u128 / u128` lowers to `__udivti3` (about 580 CU per call, measured in milestone
   3), while a `u64` divide is about 1 CU. Algorithm D today uses 64-bit digits, so each

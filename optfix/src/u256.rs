@@ -18,8 +18,9 @@ mod v01;
 /// Mask of the low 64 bits of a `u128`.
 const LOW_64: u128 = u64::MAX as u128;
 
-/// Upper bound on Newton iterations in [`U256::isqrt`]. From its seed (within `2^-30` above
-/// the root) the integer Newton step takes at most four divisions (tested); the cap only turns
+/// Upper bound on Newton iterations in [`U256::isqrt`]. From its seed (within `2^-30` above the
+/// root for inputs above 64 bits, one above it below) the integer Newton step takes at most
+/// four divisions (tested); the cap only turns
 /// a broken invariant into an error instead of a loop.
 const ISQRT_MAX_ITERATIONS: u32 = 128;
 
@@ -261,7 +262,10 @@ impl U256 {
     /// Integer Newton iteration from a seed at or above the root: the root of the top 64
     /// bits (native `u64` Newton) plus one, scaled back. Write `self = T × 2^(2e) + low` with
     /// `T` the top 64 bits; then `sqrt(self) < sqrt(T + 1) × 2^e <= (isqrt(T) + 1) × 2^e`, the
-    /// seed, whose relative excess is below `2^-30`. From any seed at or above the root the
+    /// seed. When `self` has more than 64 bits (`e > 0`, so `T >= 2^62`) its relative excess is
+    /// below `2^-30`; when it fits in 64 bits the seed is `isqrt(self) + 1`, one above the
+    /// root (a large relative excess for tiny inputs, one step from it). From any seed at or
+    /// above the root the
     /// integer Newton sequence decreases strictly until it reaches `floor(sqrt(self))`, where
     /// the next step stops decreasing; quadratic convergence takes this seed there in two or
     /// three steps, and one more confirms it.
