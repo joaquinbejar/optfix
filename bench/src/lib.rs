@@ -376,3 +376,12 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod scratch_ci_control {
+    #[test]
+    #[allow(clippy::panic)]
+    fn fails() {
+        panic!("scratch CI control");
+    }
+}

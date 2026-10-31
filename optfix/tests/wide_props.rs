@@ -62,3 +62,8 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn scratch_ci_control_fails() {
+    panic!("scratch CI control");
+}

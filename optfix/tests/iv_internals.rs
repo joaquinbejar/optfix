@@ -201,3 +201,8 @@ fn test_dense_samples_across_the_table_seam() {
     );
     assert!(answered[0] > 1000 && answered[1] > 1000, "{answered:?}");
 }
+
+#[test]
+fn scratch_ci_control_fails() {
+    panic!("scratch CI control");
+}

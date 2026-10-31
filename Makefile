@@ -145,7 +145,7 @@ tables-control:
 # `PriceAndGreeks` max limit set one CU below its measured net max (from docs/benchmarks.md)
 # must make the CU test fail on the budget. Each violation kind is also a unit test of
 # bench/src/lib.rs. Needs `make program`.
-BUDGET_CONTROL_ROW ?= PriceAndGreeks
+BUDGET_CONTROL_ROW ?= NoSuchRow
 .PHONY: budget-control
 budget-control:
 	@mkdir -p target
