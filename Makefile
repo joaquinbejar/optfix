@@ -81,6 +81,16 @@ publish-dry-run:
 test:
 	cargo test $(CARGO_FLAGS) --workspace --all-features
 
+# One CI shard of `make test` (tools/test_shards.py): SHARDS parallel jobs, each running its
+# targets with full case counts; shard 0 also runs the unit tests and doctests. The union of
+# the shards is exactly `make test`.
+SHARDS ?= 3
+SHARD ?= 0
+.PHONY: test-shard
+test-shard:
+	cargo test $(CARGO_FLAGS) --workspace --all-features $$(python3 tools/test_shards.py $(SHARDS) $(SHARD))
+	@if [ "$(SHARD)" = 0 ]; then cargo test $(CARGO_FLAGS) --workspace --all-features --doc; fi
+
 # Format the code
 .PHONY: fmt
 fmt:
