@@ -240,7 +240,7 @@ bound for a wider accepted domain). Accepted 2026-10-29:
 | `Spot`, `Strike` | `[10^-6, 10^9]` each, `S/K` in `[0.05, 20]` |
 | `Volatility` | `[0.005, 5]` |
 | `Rate` | `[-0.1, 0.5]`, for both `rate` (`r`) and `carry` (`q`); so `e^{−qT}` is in `[e^{−15}, e^{3}]` and the forward factor `e^{(r−q)T}` in `[e^{−18}, e^{18}]` |
-| `Years` | `[0, 30]`; the degenerate branch of 4.5 applies when `σ√T` is below its threshold (which covers `T = 0` and very small `T`) |
+| `Years` | `[0, 30]`; the degenerate branch of 4.5 applies at `T = 0` only (4.5; corrected 2026-10-31, the earlier `σ√T` threshold wording predates the milestone 5 implementation) |
 
 Range: `Fixed::MAX` is about `9.2 × 10^18` (Q64.64). The largest values the table produces
 fit with room to spare: `S` and `K` up to `10^9`, the forward `S e^{(r−q)T}` up to
@@ -1017,7 +1017,7 @@ pub fn price_and_greeks_strip(expiry: Years, m: &MarketInputs, legs: &[StripLeg]
   `price_and_greeks`) on the same leg, results and errors, checked against the frozen 0.1
   fixture and not only against the rewritten scalar path (codex). So every envelope of 0.1
   applies unchanged and no new bound is needed.
-- Tests: empty strips, `T = 0` and tiny `T` (degenerate branch), legs across the
+- Tests: empty strips, `T = 0` (degenerate branch) and tiny `T`, legs across the
   near-the-money switch of `d1_terms`, repeated, mixed-kind and unsorted legs, a per-leg
   `S/K` out of range at the first, a middle and the last position, and length mismatch.
 - Bench rows: strips of 1, 2, 8 and 16 legs for both functions, reported as total and as CU
