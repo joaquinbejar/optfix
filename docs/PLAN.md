@@ -1,6 +1,7 @@
 # optfix: plan
 
-Status: approved by Joaquin on 2026-10-29. Changes after approval are recorded as decisions.
+Status: approved by Joaquin on 2026-10-29. Changes after approval are recorded as decisions. Section 8
+(version 0.2.0) was agreed with codex on 2026-10-31 (review of #16 at b64b318).
 
 ## 1. Goal and non-goals
 
@@ -239,7 +240,7 @@ bound for a wider accepted domain). Accepted 2026-10-29:
 | `Spot`, `Strike` | `[10^-6, 10^9]` each, `S/K` in `[0.05, 20]` |
 | `Volatility` | `[0.005, 5]` |
 | `Rate` | `[-0.1, 0.5]`, for both `rate` (`r`) and `carry` (`q`); so `e^{−qT}` is in `[e^{−15}, e^{3}]` and the forward factor `e^{(r−q)T}` in `[e^{−18}, e^{18}]` |
-| `Years` | `[0, 30]`; the degenerate branch of 4.5 applies when `σ√T` is below its threshold (which covers `T = 0` and very small `T`) |
+| `Years` | `[0, 30]`; the degenerate branch of 4.5 applies at `T = 0` only (4.5; corrected 2026-10-31, the earlier `σ√T` threshold wording predates the milestone 5 implementation) |
 
 Range: `Fixed::MAX` is about `9.2 × 10^18` (Q64.64). The largest values the table produces
 fit with room to spare: `S` and `K` up to `10^9`, the forward `S e^{(r−q)T}` up to
@@ -611,7 +612,7 @@ against Agave 4.4.
 1. Decided (2026-10-29): price error `<= 10^-9 × max(S, K) + ERR_ABS`, delta below `10^-9`;
    supported domain table accepted as proposed.
 2. CU budget: is there a target for `price_and_greeks` (for example 15,000 CU) that should
-   fail the bench if exceeded?
+   fail the bench if exceeded? Decided 2026-10-31 (section 8, milestone 8): a per-row budget.
 3. Decided (2026-10-29, coordinator): a gate first, then CU. Each representation must reach
    `exp` relative error and `ln` absolute error of at most `10^-15` over the supported range
    (errors reported in ulps of both formats); among those that pass, the lower median CU of
@@ -628,7 +629,7 @@ against Agave 4.4.
    range: beyond 64 ulps the error is at most `2.4 × 10^-18 × max(S, K)`, while measured
    against `max(S Dq, K Dr)` it reaches `2.9 × 10^-14` (where `S Dq` falls to `e^{−15} S`), so
    `max(S, K)` stays the scale (decided 2026-10-29, `docs/precision.md`).
-5. Year basis: 365 days (proposed) or 365.25?
+5. Year basis: 365 days (proposed) or 365.25? Decided 2026-10-31 (section 8): 365 kept.
 6. Decided (latest-stable rule): OptionStratLib 0.23 from crates.io as the oracle.
 7. Decided: Pinocchio 0.11, like the other three repos (exception recorded above).
 8. Decided (2026-10-29): `Fixed::raw`/`from_raw` yes; newtypes only via their validating
@@ -864,3 +865,243 @@ Milestone 7 (2026-10-29), release preparation:
 - **Tag and publication**: the signed tag `v0.1.0` goes on the merge commit of the PR that dates
   the CHANGELOG, and `cargo publish` runs only on the explicit go-ahead (Joaquin's call, through the
   coordinator).
+
+## 8. Version 0.2.0 (agreed with codex 2026-10-31)
+
+Candidates from Joaquin, in his priority order, with the proposed decision for each. Codex
+reviewed this section in two rounds (#16); every point below is agreed, with no disagreement
+escalated.
+
+### Context measured on 0.1.0
+
+- Net CU (`docs/benchmarks.md`, median / max): `DivDown` 1,597 / 1,991, `SqrtDown` 10,927 /
+  13,980, `Price` 9,251 / 9,577, `PriceAndGreeks` 14,240 / 14,641, `ImpliedVol` 27,121 /
+  34,706, worst case (all iterations, near the money) 41,882 / 42,828.
+- The pricing path (`price`, `price_and_greeks`, `implied_vol`) never divides and never calls
+  `sqrt` (4.5, 4.6). Division and `sqrt` cost only callers of `div_*`, `sqrt_*`, `from_ratio`
+  and `from_scaled`.
+- Downstream use of 0.1.0 (grep of the three repos, 2026-10-31): varswap calls `ln` and
+  `wide::mul_shr` on-chain; metalbook calls `price_and_greeks`, `from_scaled`, `to_scaled` and
+  `sqrt_down` in its off-chain maker; quotebook does not use optfix yet. No on-chain caller
+  divides today, but token conversions (`from_scaled`) are the obvious next one.
+
+### Proposed scope
+
+| # | Candidate | Proposal |
+| --- | --- | --- |
+| 1 | Division on native `u64` digits | 0.2, milestone 10 |
+| 2 | CU budget enforced by `make bench` | 0.2, milestone 8 |
+| 3 | GitHub Actions CI with a badge | 0.2, milestone 9 |
+| 4 | Batch API for a strip of strikes | 0.2, milestone 11 |
+| 5 | Black-76; cash-or-nothing and asset-or-nothing prices | 0.2: Black-76 in milestone 12; binary prices in milestone 13, deferrable (below); binary greeks postponed |
+| 6 | Implied vol: better initial guess or a tolerance parameter | postponed to 0.3 |
+| 7a | Year basis (open question 5) | closed in this PR: 365 days kept |
+| 7b | Kani proofs of no overflow | postponed to 0.3, as a time-boxed spike |
+
+The budget and CI come first, out of priority order, so that every later milestone is
+measured against the budget and checked by CI on its own PR. Each milestone is one branch
+(`feat/m<N>-<name>`), one PR, reviewed by codex before merging. Milestone 14 is the release.
+
+**Frozen 0.1 reference.** Milestones 10 to 12 change code under functions whose 0.1.0 results
+are published. Milestone 10 commits, before any kernel change, a fixture of 0.1.0 outputs
+(`div_*`, `from_ratio`, `from_scaled`, `sqrt_*`, `price`, `price_and_greeks`, `implied_vol`
+over a deterministic sample of the supported domain, including the 0.1 edge sets), generated
+from the `v0.1.0` tag. Every later milestone must reproduce it bit for bit, results and error
+variants alike, unless a milestone explicitly agrees a change.
+
+### Milestone 8: CU budget in `make bench` (candidate 2, open question 2)
+
+- `bench/budget.md`: one row per bench row with a net median and a net max limit. The bench
+  fails when a row exceeds either limit, when a measured row has no budget, when a budgeted
+  row is no longer measured, on a duplicate row, and on a malformed file.
+- Initial limits are the 0.1.0 measurement plus 5%, rounded up to a multiple of 100. They are
+  committed values: the bench never regenerates or rebases them. CU is deterministic (the bench
+  already runs twice in fresh VMs and requires equal results), so the margin is not for noise:
+  it absorbs codegen changes from a pinned toolchain update without hiding a real regression.
+  A PR that legitimately costs more raises the limit in the same diff, where the reviewer sees
+  it; a PR that makes a row cheaper tightens its limit to the new measurement plus 5% (same
+  rounding) in the same diff.
+- The bench reports each row's absolute and percentage delta against its committed limit
+  (rounding to 100 allows more than 5% on small rows such as `Exp`, so the delta is printed,
+  not inferred). A row more than 20% under its limit is reported (not a failure).
+- Open question 2 closes as "a per-row budget", not one absolute target; with the 5% rule
+  `PriceAndGreeks` gets a max of 15,400 net.
+- *Done when* `make bench` enforces the file and a failing control in `pre-push` (like
+  `tables-control`) checks each failure kind on its own: a median one CU over its limit, a max
+  one CU over, a missing budget row, an extra budget row, a duplicate row and a malformed row.
+
+### Milestone 9: GitHub Actions CI (candidate 3)
+
+- One workflow on `pull_request` and on pushes to `main`, `ubuntu-latest`:
+  - job `pre-push`: `make pre-push`;
+  - job `bench`: `make bench` with the budget of milestone 8, then
+    `git diff --exit-code docs/benchmarks.md`, so a stale committed table fails too.
+- **Pinned toolchains** (codex): the CU table depends on `cargo-build-sbf` and its
+  platform-tools, not on the Agave CLI version alone, and `rust-toolchain.toml` floats on
+  `stable`. CI installs the Agave CLI 4.4.0 release tarball and verifies its SHA-256
+  (recorded in the workflow). It does not assume what the tarball bundles: if it lacks
+  `cargo-build-sbf` 4.5.0, that is installed on its own (`cargo install --locked
+  cargo-build-sbf --version 4.5.0`), and the platform-tools v1.57 archive is checked against a
+  recorded SHA-256 too. Before any check runs, a step fails unless `cargo build-sbf --version`
+  reports `cargo-build-sbf 4.5.0`, platform-tools `v1.57` and Rust `1.95.0`, the values
+  `docs/benchmarks.md` records. The host toolchain (rustc, rustfmt, clippy) is pinned in CI to
+  an exact release (1.99.1 today, recorded in the workflow and in `docs/benchmarks.md`), and
+  the same step asserts `rustc`, `rustfmt` and `clippy` report it. Every CI subcommand must run
+  on that pin: the Makefile's explicit `+stable` (`fmt`, `fmt-check`, the rustfmt call in
+  `tables-check`) becomes a `RUST_TOOLCHAIN` variable, `stable` by default and the exact pin in
+  CI, since `RUSTUP_TOOLCHAIN` does not override an explicit `+stable`.
+  `rust-toolchain.toml` stays `stable` for local work, as in matchbook. Bumping either pin is
+  its own PR, with the bench table regenerated and the budget re-agreed if a row moves.
+- Every cargo command in CI runs with `--locked` (a `CARGO_FLAGS` variable in the Makefile,
+  empty by default). SBF architecture and build profile are the Makefile's (`SBF_ARCH = v3`,
+  release with `overflow-checks`), shared by local and CI runs; the reproduction steps in
+  `docs/benchmarks.md` are the CI steps.
+- Cache keys include `Cargo.lock`, the Agave version and the host toolchain pin.
+- Third-party actions pinned to a commit SHA, no secrets, read-only `GITHUB_TOKEN`.
+- `make pre-push` takes more than 10 minutes on the local machine; if the runner takes more
+  than 30, the test targets are split across parallel jobs with the full case counts (the
+  union of the jobs runs exactly what `make pre-push` runs), never lowered.
+- Badge in the README. Making the checks required on `main` is the coordinator's call.
+- *Done when* both jobs pass on the milestone's own PR, a CI-built table equals the committed
+  one, and a deliberately failing commit on a scratch branch shows each job failing.
+
+### Milestone 10: division on native `u64` digits (candidate 1)
+
+- On SBF, `u128 / u128` lowers to `__udivti3` (about 580 CU per call, measured in milestone
+  3), while a `u64` divide is about 1 CU. Algorithm D today uses 64-bit digits, so each
+  quotient digit is a `u128` division. The new kernel uses 32-bit digits held in `u64`: the
+  dividend is up to 8 digits, the divisor up to 4, the quotient up to 4, and every estimate,
+  product and remainder is a native `u64` operation (Knuth, TAOCP vol. 2, 4.3.1).
+- `isqrt`: a seed from the top 64 bits (a native `u64` integer square root), then two
+  full-width Newton steps on the new division, then a final correction checked with
+  `mul_wide`, replacing the current power-of-two seed and up to `ISQRT_MAX_ITERATIONS`
+  steps. The PR states the proof that the seed's error and two steps reach `floor(sqrt)`
+  within the correction (codex).
+- **Bit-identical to 0.1.0.** Quotient, remainder and `floor(sqrt)` are unique integers, so
+  there is no error bound to document: every `div_*`, `from_ratio`, `from_scaled` and
+  `sqrt_*` result and error must equal 0.1.0's.
+- *Done when*:
+  - the frozen 0.1 fixture passes, and proptest shows equality both with the 0.1.0 kernel
+    (kept in the tests as a differential reference) and with the exact `num-bigint` result,
+    on 1,000,000 random cases per operation;
+  - targeted cases cover each path of algorithm D: divisors of one to four 32-bit digits,
+    normalization shifts 0 and 31, the `qhat` refinement, the add-back correction, quotients
+    at the `u128` limit, the `Overflow` and `DomainError` paths, perfect squares and their
+    neighbours, and powers of two;
+  - the on-chain results equal the host's (existing bench check);
+  - the CU rows meet targets of `DivDown` at most 600 net max and `SqrtDown` at most 3,000 net
+    max (from 1,991 and 13,980). A missed target is not waived automatically: the measured
+    numbers and the reason are agreed again with codex (or escalated) before merging.
+
+### Milestone 11: strip API (candidate 4)
+
+```rust
+pub struct StripLeg { pub kind: OptionKind, pub strike: Strike }
+pub fn price_strip(expiry: Years, m: &MarketInputs, legs: &[StripLeg], out: &mut [Price])
+    -> Result<(), PricingError>;
+pub fn price_and_greeks_strip(expiry: Years, m: &MarketInputs, legs: &[StripLeg],
+    out: &mut [Priced]) -> Result<(), PricingError>;
+```
+
+- No allocation: the caller owns `out`; `legs.len() != out.len()` is `DomainError` before any
+  output is written. An empty strip returns `Ok(())`.
+- **Partial-output contract**: legs are priced in order; on the first leg that fails, the
+  function returns that leg's error, `out[..i]` holds the results of the legs before it and
+  `out[i..]` is unchanged. Documented and tested.
+- Computed once per strip: `Dr`, `Dq`, `ln T`, `ln σ`, `σ√T`, `ln S` and the shared
+  exponentials. Per leg: `ln K`, `d1`, `d2`, `N`, and `n` with the greeks. Only values that
+  the scalar path computes from the same inputs in the same rounding order are hoisted.
+  Estimated from the 0.1 profile: about a quarter of `Price` is shared, so an extra strike
+  should cost about 6,500 to 7,000 net CU against 9,251; the milestone measures it.
+- **Bit-identical to 0.1.0 scalar results**: `out[i]` equals 0.1.0's `price` (or
+  `price_and_greeks`) on the same leg, results and errors, checked against the frozen 0.1
+  fixture and not only against the rewritten scalar path (codex). So every envelope of 0.1
+  applies unchanged and no new bound is needed.
+- Tests: empty strips, `T = 0` (degenerate branch) and tiny `T`, legs across the
+  near-the-money switch of `d1_terms`, repeated, mixed-kind and unsorted legs, a per-leg
+  `S/K` out of range at the first, a middle and the last position, and length mismatch.
+- Bench rows: strips of 1, 2, 8 and 16 legs for both functions, reported as total and as CU
+  per extra leg. Return data is capped at 1,024 bytes, which holds 16 prices (256 bytes) but
+  not 16 `Priced` (1,280 bytes), so the 16-leg greeks row returns a 32-byte digest of the
+  outputs and the host compares it with the digest of its own results. The digest's own cost
+  is measured in a separate row and subtracted, so it is not counted as pricing.
+- *Done when* the identity tests pass over the supported domain for strips of 1 to 16 legs and
+  the CU rows and per-extra-leg cost are in `docs/benchmarks.md` and the README.
+
+### Milestone 12: Black-76 (candidate 5, first part)
+
+- `price_black76` and `price_and_greeks_black76` take a forward `F` (as `Spot`) and compute
+  Black-Scholes-Merton with `S = F` and `q = r`. They are thin wrappers, bit-identical to
+  `price` and `price_and_greeks` with `carry = rate`, so the 0.1 envelopes apply.
+- Greek conventions documented on each field: delta and gamma with respect to `F`; vega with
+  respect to `σ`; theta is `∂V/∂t` holding `F`, `σ` and `r` fixed (which is what BSM theta
+  with `S = F`, `q = r` computes, since it holds `S` fixed).
+- Checked against OptionStratLib's `black_76` within its f64 grade, in addition to the
+  identity with `price`.
+- *Done when* the identity tests pass over the supported domain, the conventions are
+  documented, and the CU rows are in the bench (expected equal to `Price` and
+  `PriceAndGreeks` within a few CU).
+
+### Milestone 13: binary prices (candidate 5, second part; deferrable)
+
+Cash-or-nothing (`payout × Dr × N(±d2)`) and asset-or-nothing (`S Dq N(±d1)`), prices only,
+on the same `d1`, `d2` as `price`. The vanilla envelopes do not bound these: each term
+carries the absolute error of `N` and of `d1`/`d2`, unbounded relative to a small price in the
+tails and very sensitive at the strike when `T` is tiny. The PR must fix, before code:
+
+- the API and the payout range (`payout` as a `Price`, within the `Spot` range);
+- `T = 0`, the only degenerate case of the vanilla pricer (`evaluate` branches on `T = 0`
+  alone; positive `T` is at least `2^-64` years and stays representable): strictly in the
+  money pays (`S > K` for a call, `S < K` for a put) and `S = K` pays zero. No `σ√T` threshold
+  is added unless the PR defines it and proves its error bound;
+- identities, tested, for `T > 0` only: cash-or-nothing call plus put equals `payout × Dr`
+  within an explicit rounding bound (even with an exact `N` complement, each side is a separate
+  rounded `Fixed` product); asset-or-nothing call minus `K ×` cash-or-nothing call (unit
+  payout) equals the vanilla call within the summed bounds. At `T = 0` the zero rule applies
+  instead (call plus put is zero at `S = K`, not `payout × Dr`);
+- published bounds from an independent high-precision reference (mpmath at 100 digits, as in
+  milestones 4 to 6), covering tiny `T`, at the money, the tails and the `d1_terms` branch
+  seam. OptionStratLib alone is not enough: its normal CDF is f64 grade with weak tails.
+
+If those bounds cannot be established within the milestone's PR, binaries are deferred to 0.3
+and the release goes ahead without them. Binary greeks are postponed in any case: delta and
+gamma of a binary are unbounded near expiry at the strike and need their own conditioning
+rules, as `implied_vol` did.
+
+### Postponed to 0.3
+
+- **Implied vol speed (candidate 6).** 0.1's solve answers within 1.1% of its envelope after
+  at most 3 steps (1,869 answers after 1 step, 766,980 after 2 and 8,472 after 3, over 3,000,000
+  grid points); each step is about 5,200 CU. A Jäckel-style rational guess could drop most
+  solves to one step (about −5,000 to −10,000 CU), but it replaces the tables that the codex
+  fixtures verified, and the conditioning judgment is tied to the final evaluation. A
+  tolerance parameter has the same coupling. Both deserve their own plan section with a
+  prototype measurement first, rather than sharing a release with four other milestones.
+- **Kani (candidate 7b).** A time-boxed spike (one day) on `mul_wide`, `mul_shr` and the new
+  division kernel: whether Kani 0.x proves absence of overflow on `u128` arithmetic with
+  bounded loops in acceptable time. The result, positive or not, is recorded here; full proofs
+  only if the spike says they are tractable. It does not block 0.2 because every one of those
+  paths is already checked arithmetic returning `Overflow`, never a panic.
+
+### Year basis (candidate 7a, closes open question 5)
+
+`Years::from_seconds` keeps the 365-day year (31,536,000 s, ACT/365 fixed). Changing it would
+silently change every price of an existing caller for the same timestamps. A caller with
+another convention builds `Years` with `Years::try_new(Fixed::from_ratio(seconds, basis,
+r)?)`, documented on `from_seconds` with a 365.25-day example.
+
+### Version
+
+0.x semver lets 0.1.1 add functions, so additions alone do not force 0.2.0. Proposed breaking
+changes that do:
+
+- `PricingError` becomes `#[non_exhaustive]`, so later variants (for example for binary greeks
+  in 0.3) are not breaking. The `#[repr(u8)]` discriminants of the existing variants are
+  kept. Programs that map it with `as u8` are unaffected; a `match` needs
+  a wildcard arm.
+- The input structs (`EuropeanOption`, `MarketInputs`, `IvInputs`) stay exhaustive: callers
+  build them with struct literals.
+
+With that change the release is 0.2.0 (milestone 14: CHANGELOG, README, tag, publication on
+the coordinator's go). Downstream repos move from `optfix = "0.1"` to `"0.2"`; varswap and
+metalbook need no code change beyond a wildcard arm where they `match` on `PricingError`.
