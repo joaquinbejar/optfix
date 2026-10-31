@@ -59,6 +59,8 @@ enum Ix {
     Digest = 16,
     PriceBlack76 = 17,
     PriceAndGreeksBlack76 = 18,
+    CashOrNothing = 19,
+    AssetOrNothing = 20,
 }
 
 /// Status byte plus one 16-byte little-endian value.
@@ -352,7 +354,7 @@ fn price_only(o: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingErr
 
 /// The Black-Scholes rows: instruction, name, host function, and whether the strikes are near
 /// the money (`|S − K| < K / 256`, the other form of `ln(S/K) / (σ√T)`).
-const BSM_ROWS: [(Ix, &str, BsmFn, bool); 7] = [
+const BSM_ROWS: [(Ix, &str, BsmFn, bool); 9] = [
     (Ix::Price, "Price", price_only, false),
     (
         Ix::PriceAndGreeks,
@@ -381,7 +383,31 @@ const BSM_ROWS: [(Ix, &str, BsmFn, bool); 7] = [
         black76_greeks,
         false,
     ),
+    // Binary prices (milestone 13); the cash-or-nothing payout is the strike.
+    (Ix::CashOrNothing, "CashOrNothing", cash_only, false),
+    (Ix::AssetOrNothing, "AssetOrNothing", asset_only, false),
 ];
+
+fn zero_greeks(price: Price) -> Priced {
+    Priced {
+        price,
+        greeks: Greeks {
+            delta: Fixed::ZERO,
+            gamma: Fixed::ZERO,
+            vega: Fixed::ZERO,
+            theta: Fixed::ZERO,
+        },
+    }
+}
+
+fn cash_only(o: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingError> {
+    let payout = Price::try_new(o.strike.get()).unwrap();
+    optfix::price_cash_or_nothing(o, m, payout).map(zero_greeks)
+}
+
+fn asset_only(o: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingError> {
+    optfix::price_asset_or_nothing(o, m).map(zero_greeks)
+}
 
 /// The Black-76 inputs of a Black-Scholes input: `F = S`, `σ`, `r` (its carry is not used).
 fn futures_of(m: &MarketInputs) -> optfix::FuturesInputs {
@@ -462,6 +488,11 @@ fn bsm_data(ix: Ix, o: &EuropeanOption, m: &MarketInputs) -> Vec<u8> {
         }
         return d;
     }
+    let payout = if let Ix::CashOrNothing = ix {
+        Some(o.strike.get())
+    } else {
+        None
+    };
     for v in [
         m.spot.get(),
         o.strike.get(),
@@ -472,12 +503,15 @@ fn bsm_data(ix: Ix, o: &EuropeanOption, m: &MarketInputs) -> Vec<u8> {
     ] {
         d.extend_from_slice(&v.to_bytes().0);
     }
+    if let Some(p) = payout {
+        d.extend_from_slice(&p.to_bytes().0);
+    }
     d
 }
 
 /// Expected return data: `Price` as one value, the others as status plus five values.
 fn bsm_expected(ix: Ix, r: Result<Priced, PricingError>) -> Vec<u8> {
-    if let Ix::Price | Ix::PriceBlack76 = ix {
+    if let Ix::Price | Ix::PriceBlack76 | Ix::CashOrNothing | Ix::AssetOrNothing = ix {
         return encode_result(r.map(|p| p.price.get())).to_vec();
     }
     let mut out = vec![0u8; 81];

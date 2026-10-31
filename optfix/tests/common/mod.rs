@@ -249,6 +249,9 @@ pub struct BsmRef {
     pub k_dr: BigInt,
     pub sst: BigInt,
     pub sqrt_t: BigInt,
+    /// `N(d1)` and `N(d2)` (zero at `T = 0`), for the binary prices.
+    pub nd1: BigInt,
+    pub nd2: BigInt,
 }
 
 /// `N(x)`, saturated beyond `|x| = 12`, where the tail is below `2^-108`.
@@ -299,6 +302,8 @@ pub fn bsm_ref(
         k_dr: k_dr.clone(),
         sst: BigInt::from(0),
         sqrt_t: BigInt::from(0),
+        nd1: BigInt::from(0),
+        nd2: BigInt::from(0),
     };
     if t == &zero {
         let fwd = &s_dq - &k_dr;
@@ -350,6 +355,8 @@ pub fn bsm_ref(
         k_dr,
         sst,
         sqrt_t,
+        nd1,
+        nd2,
     }
 }
 

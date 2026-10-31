@@ -25,6 +25,8 @@ multiple of 100, in the same diff; a cheaper row is tightened the same way.
 | `Price, near the money` | 11700 | 12100 |
 | `PriceBlack76` | 9800 | 10000 |
 | `PriceAndGreeksBlack76` | 15000 | 15300 |
+| `CashOrNothing` | 7700 | 8000 |
+| `AssetOrNothing` | 7300 | 7600 |
 | `PriceAndGreeks, near the money` | 16900 | 17400 |
 | `ImpliedVol` | 28500 | 36500 |
 | `ImpliedVol, all iterations` | 36200 | 44300 |

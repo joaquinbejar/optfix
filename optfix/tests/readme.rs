@@ -19,10 +19,10 @@
 use std::fmt::Write as _;
 
 use optfix::{
-    DELTA_ERR, EXP_MAX_ERROR_ULPS, GAMMA_ERR_REL, GREEK_ERR_ABS, IV_ERR_PRICE_FACTOR, IV_ERR_REL,
-    IV_MAX_ITERATIONS, IV_VEGA_MIN_FACTOR, LN_MAX_ERROR_ULPS, NORM_CDF_MAX_ERROR_ULPS,
-    NORM_CDF_TAIL_REL_ERROR, NORM_PDF_MAX_ERROR_ULPS, PRICE_ERR_ABS, PRICE_ERR_REL, THETA_ERR_REL,
-    VEGA_ERR_REL,
+    BINARY_ERR_ABS, BINARY_ERR_REL, DELTA_ERR, EXP_MAX_ERROR_ULPS, GAMMA_ERR_REL, GREEK_ERR_ABS,
+    IV_ERR_PRICE_FACTOR, IV_ERR_REL, IV_MAX_ITERATIONS, IV_VEGA_MIN_FACTOR, LN_MAX_ERROR_ULPS,
+    NORM_CDF_MAX_ERROR_ULPS, NORM_CDF_TAIL_REL_ERROR, NORM_PDF_MAX_ERROR_ULPS, PRICE_ERR_ABS,
+    PRICE_ERR_REL, THETA_ERR_REL, VEGA_ERR_REL,
 };
 
 const README: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../README.md");
@@ -126,6 +126,17 @@ fn errors_table() -> String {
     .unwrap();
     writeln!(
         s,
+        "| `price_black76`, `price_and_greeks_black76` | as `price` and `price_and_greeks`, with `F` for `S` |\n\
+         | `price_cash_or_nothing` | {} × `payout` + {} ulps |\n\
+         | `price_asset_or_nothing` | {} × `S` + {} ulps |",
+        pow2(BINARY_ERR_REL),
+        BINARY_ERR_ABS.raw(),
+        pow2(BINARY_ERR_REL),
+        BINARY_ERR_ABS.raw()
+    )
+    .unwrap();
+    writeln!(
+        s,
         "| `implied_vol` | {} × `E / vega` + {} × `σ`, where vega at the root is at least {} × `E` \
          (`E` the price bound); `IllConditioned` below that |",
         v(IV_ERR_PRICE_FACTOR),
@@ -182,6 +193,8 @@ fn cu_table(bench: &str) -> String {
             "ImpliedVol, all iterations, near the money",
         ),
         ("`price_black76`", "PriceBlack76"),
+        ("`price_cash_or_nothing`", "CashOrNothing"),
+        ("`price_asset_or_nothing`", "AssetOrNothing"),
         ("`price_and_greeks_black76`", "PriceAndGreeksBlack76"),
         ("`price_strip`, 1 leg", "PriceStrip, 1 leg"),
         ("`price_strip`, 16 legs", "PriceStrip, 16 legs"),

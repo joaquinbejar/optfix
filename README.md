@@ -192,6 +192,9 @@ Generated from the crate's constants (the tests assert each one; measured maxima
 | gamma | `2^-40` × `Dq / (S σ√T)` + 64 ulps |
 | vega | `2^-43` × `S Dq √T` + 64 ulps |
 | theta | `2^-42` × `(S Dq σ / √T + abs(r) K Dr + abs(q) S Dq)` + 64 ulps |
+| `price_black76`, `price_and_greeks_black76` | as `price` and `price_and_greeks`, with `F` for `S` |
+| `price_cash_or_nothing` | `2^-48` × `payout` + 64 ulps |
+| `price_asset_or_nothing` | `2^-48` × `S` + 64 ulps |
 | `implied_vol` | 4 × `E / vega` + `2^-40` × `σ`, where vega at the root is at least `2^28` × `E` (`E` the price bound); `IllConditioned` below that |
 <!-- /generated:errors -->
 
@@ -209,20 +212,22 @@ the Black-Scholes and implied-volatility rows still include decoding six argumen
 | `Fixed::sqrt_down` | 2281 | 2383 |
 | `exp` | 315 | 336 |
 | `ln` | 456 | 462 |
-| `norm_cdf` | 1322 | 1382 |
+| `norm_cdf` | 1321 | 1381 |
 | `norm_pdf` | 574 | 597 |
 | `wide::mul_shr` | 340 | 355 |
-| `price` | 9227 | 9547 |
-| `price`, near the money | 11095 | 11470 |
+| `price` | 9233 | 9553 |
+| `price`, near the money | 11100 | 11476 |
 | `price_and_greeks` | 14203 | 14597 |
 | `price_and_greeks`, near the money | 16079 | 16521 |
-| `implied_vol` | 27131 | 34723 |
-| `implied_vol`, near the money | 32764 | 42079 |
+| `implied_vol` | 27132 | 34724 |
+| `implied_vol`, near the money | 32765 | 42080 |
 | `implied_vol`, worst case (every step taken) | 42003 | 42951 |
-| `price_black76` | 9243 | 9515 |
-| `price_and_greeks_black76` | 14222 | 14555 |
-| `price_strip`, 1 leg | 9462 | 9791 |
-| `price_strip`, 16 legs | 80899 | 87930 |
+| `price_black76` | 9242 | 9514 |
+| `price_cash_or_nothing` | 7266 | 7538 |
+| `price_asset_or_nothing` | 6889 | 7158 |
+| `price_and_greeks_black76` | 14224 | 14557 |
+| `price_strip`, 1 leg | 9465 | 9794 |
+| `price_strip`, 16 legs | 80902 | 87933 |
 | `price_and_greeks_strip`, 1 leg | 14488 | 14888 |
 | `price_and_greeks_strip`, 16 legs | 161005 | 168788 |
 

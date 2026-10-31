@@ -26,7 +26,8 @@ use common::{
 };
 use num_bigint::BigInt;
 use optfix::{
-    exp, ln, norm_cdf, norm_pdf, price_and_greeks, Fixed, PricingError, DELTA_ERR,
+    exp, ln, norm_cdf, norm_pdf, price_and_greeks, price_asset_or_nothing, price_cash_or_nothing,
+    Fixed, Price, PricingError, Spot, BINARY_ERR_ABS, BINARY_ERR_REL, DELTA_ERR,
     EXP_MAX_ERROR_ULPS, GAMMA_ERR_REL, GREEK_ERR_ABS, IV_ERR_PRICE_FACTOR, IV_ERR_REL,
     IV_VEGA_MIN_FACTOR, LN_MAX_ERROR_ULPS, NORM_CDF_MAX_ERROR_ULPS, NORM_CDF_TAIL_REL_ERROR,
     NORM_PDF_MAX_ERROR_ULPS, PRICE_ERR_ABS, PRICE_ERR_REL, THETA_ERR_REL, VEGA_ERR_REL,
@@ -289,6 +290,97 @@ fn bsm_errors(n: usize) -> ([f64; 6], usize) {
     (worst, overflow)
 }
 
+/// Largest `(|error| − BINARY_ERR_ABS) / scale` of the cash-or-nothing (`scale = payout`) and
+/// asset-or-nothing (`scale = S`) prices against the 256-bit reference, on `n` points of
+/// `bsm_sample` with a log-uniform payout in `[10^-6, 10^9]`; also the same error over the
+/// discounted scale (`payout × Dr`, `S Dq`), which shows why the notional is the scale.
+fn binary_errors(n: usize) -> [f64; 4] {
+    let mut g = Rng(0x0F7F_1C5E_B1A2_0003);
+    let mut worst = [0f64; 4];
+    let f = |x: &BigInt| ratio(x).abs();
+    for _ in 0..n {
+        let p = bsm_sample(&mut g);
+        let (opt, m) = bsm_inputs(p);
+        let (s, k, t, sigma, r, q, call) = p;
+        let pay_f = 10f64.powf(-6.0 + 15.0 * common::uniform(&mut g));
+        let pay = ((pay_f * (1u128 << 64) as f64) as i128)
+            .clamp(Spot::MIN.get().raw(), Spot::MAX.get().raw());
+        let rf = bsm_ref(
+            call,
+            &to_ref(s),
+            &to_ref(k),
+            &to_ref(t),
+            &to_ref(sigma),
+            &to_ref(r),
+            &to_ref(q),
+        );
+        let (cash_exact, asset_exact) = if t == 0 {
+            let itm = if call { s > k } else { s < k };
+            if itm {
+                (to_ref(pay), to_ref(s))
+            } else {
+                (BigInt::from(0), BigInt::from(0))
+            }
+        } else if call {
+            (
+                mul(&mul(&to_ref(pay), &rf.dr), &rf.nd2),
+                mul(&rf.s_dq, &rf.nd1),
+            )
+        } else {
+            (
+                mul(&mul(&to_ref(pay), &rf.dr), &(one() - &rf.nd2)),
+                mul(&rf.s_dq, &(one() - &rf.nd1)),
+            )
+        };
+        let cash =
+            price_cash_or_nothing(&opt, &m, Price::try_new(Fixed::from_raw(pay)).unwrap()).unwrap();
+        let asset = price_asset_or_nothing(&opt, &m).unwrap();
+        let beyond = |got: Fixed, want: &BigInt| {
+            (f(&(to_ref(got.raw()) - want)) - ratio(&to_ref(BINARY_ERR_ABS.raw()))).max(0.0)
+        };
+        let (ec, ea) = (
+            beyond(cash.get(), &cash_exact),
+            beyond(asset.get(), &asset_exact),
+        );
+        worst[0] = worst[0].max(ec / f(&to_ref(pay)));
+        worst[1] = worst[1].max(ea / f(&to_ref(s)));
+        worst[2] = worst[2].max(ec / f(&mul(&to_ref(pay), &rf.dr)));
+        worst[3] = worst[3].max(ea / f(&rf.s_dq));
+    }
+    worst
+}
+
+fn binary_section(n: usize) -> String {
+    let w = binary_errors(n);
+    format!(
+        "\n## Binary prices\n\n\
+         `price_cash_or_nothing` and `price_asset_or_nothing` against the 256-bit reference \
+         (`common::bsm_ref`'s `N(d1)`, `N(d2)` and discount factors) on {n} points of the whole \
+         supported domain (`common::bsm_sample`), with a log-uniform payout in `[10^-6, 10^9]`. \
+         The envelope is `BINARY_ERR_REL × scale + BINARY_ERR_ABS`; the table gives the largest \
+         `(|error| − ABS) / scale`.\n\n\
+         | Price | Scale | Max | Envelope `REL` | `ABS` |\n\
+         | --- | --- | ---: | ---: | ---: |\n\
+         | cash-or-nothing | `payout` | {:.3e} | {:.3e} | {} ulps |\n\
+         | asset-or-nothing | `S` | {:.3e} | {:.3e} | {} ulps |\n\n\
+         The scale is the undiscounted notional, as `max(S, K)` is for the price: over the \
+         discounted scale (`payout × Dr`, `S Dq`) the same errors reach {:.3e} and {:.3e}, \
+         because a discount factor down to `e^{{−15}}` holds only absolute precision in Q64.64. \
+         The mpmath fixture (`tests/data/binary_fixture.csv`, \
+         `tools/binary_fixture/gen_binary_fixture.py`: `d2` or `d1` from −9 to 9 at 26 expiries \
+         from `10^-12` s to 30 years, at the money, both sides of the `d1` switch and `T = 0`) \
+         is checked by `tests/binary_fixture.rs`.\n",
+        w[0],
+        ratio(&to_ref(BINARY_ERR_REL.raw())),
+        BINARY_ERR_ABS.raw(),
+        w[1],
+        ratio(&to_ref(BINARY_ERR_REL.raw())),
+        BINARY_ERR_ABS.raw(),
+        w[2],
+        w[3],
+    )
+}
+
 /// Milestone 3 record, measured at commit `6adf034` with 1,000,000 samples per domain
 /// (`make precision` there reproduces it); the decimal candidates no longer exist.
 const COMPARISON: &str = "
@@ -429,6 +521,7 @@ fn test_precision_report() {
         )
         .unwrap();
     }
+    s.push_str(&binary_section(n));
     s.push_str(&implied_vol_section(n));
     s.push_str(COMPARISON);
     s.push_str("\nRun `make precision` to regenerate this file.\n");

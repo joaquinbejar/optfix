@@ -52,6 +52,17 @@ Garman-Kohlhagen with the foreign rate `q` (`common::oracle`), on 20000 exact de
 | `q < 0` | 7.188e-2 | 2.266e-1 | 4.041e-2 | 7.277e-4 | 2.138e-2 |  |
 | `q = 0` | 3.934e-2 | 2.467e-2 | 4.541e-2 | 7.979e-4 | 2.173e-2 | 3.934e-2 |
 
+## Binary prices
+
+`price_cash_or_nothing` and `price_asset_or_nothing` against the 256-bit reference (`common::bsm_ref`'s `N(d1)`, `N(d2)` and discount factors) on 1000000 points of the whole supported domain (`common::bsm_sample`), with a log-uniform payout in `[10^-6, 10^9]`. The envelope is `BINARY_ERR_REL × scale + BINARY_ERR_ABS`; the table gives the largest `(|error| − ABS) / scale`.
+
+| Price | Scale | Max | Envelope `REL` | `ABS` |
+| --- | --- | ---: | ---: | ---: |
+| cash-or-nothing | `payout` | 1.267e-17 | 3.553e-15 | 64 ulps |
+| asset-or-nothing | `S` | 7.389e-18 | 3.553e-15 | 64 ulps |
+
+The scale is the undiscounted notional, as `max(S, K)` is for the price: over the discounted scale (`payout × Dr`, `S Dq`) the same errors reach 6.833e-14 and 6.540e-14, because a discount factor down to `e^{−15}` holds only absolute precision in Q64.64. The mpmath fixture (`tests/data/binary_fixture.csv`, `tools/binary_fixture/gen_binary_fixture.py`: `d2` or `d1` from −9 to 9 at 26 expiries from `10^-12` s to 30 years, at the money, both sides of the `d1` switch and `T = 0`) is checked by `tests/binary_fixture.rs`.
+
 ## Implied volatility
 
 `implied_vol(price(σ))` on 1000000 points per carry set of the whole supported domain (`common::bsm_sample` with the carry of each set). With `E` the price envelope, `implied_vol` answers where vega at the root is at least `IV_VEGA_MIN_FACTOR` = 2.684e8 times `E`, within `IV_ERR_PRICE_FACTOR` = 4 times `E / vega` plus `IV_ERR_REL` = 9.095e-13 times `σ`; below the threshold it returns `IllConditioned`. "No time value" is a target equal to a bound (the out-of-the-money value rounds to zero), `ArbitrageBound`. The price column is `price(implied_vol(p))` against `p`, over `(IV_ERR_PRICE_FACTOR + 1) × E + IV_ERR_REL × σ × vega`. `NoConvergence` does not occur.
