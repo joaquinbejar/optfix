@@ -1150,7 +1150,11 @@ the money (`S > K` for a call, `S < K` for a put), nothing at `S = K`; no `σ√
   with the undiscounted notional as the scale: `payout` for cash-or-nothing, `S` for
   asset-or-nothing. Not `payout × Dr` or `S Dq`, the first proposal: a discount factor down to
   `e^{−15}` holds only absolute precision in Q64.64, and the error over the discounted scale
-  reaches 6.8e-14 (the same reason `max(S, K)` is the price scale, open question 4). Measured
+  reaches 6.8e-14 (the same reason `max(S, K)` is the price scale, open question 4). Codex
+  agreed to this scale on 2026-10-31 after its own 100-digit check of the 35,676 fixture rows
+  and 17,982 adversarial rows (worst 3.1% of the bound; at `S = K = payout = 10^9`, `T = 30`,
+  `r = q = 0.5`, `σ = 5` the error is 2.73 times the discarded discounted bound and 8.35e-7 of
+  the agreed one). Measured
   against the 256-bit reference (`docs/precision.md`, 1,000,000 points): 1.3e-17 and 7.4e-18.
 - **Independent reference**: `tests/data/binary_fixture.csv`, 35,676 rows of exact prices at
   100 mpmath digits (`tools/binary_fixture/gen_binary_fixture.py`): `d2` (cash) or `d1`
