@@ -200,6 +200,9 @@ pub const fn error_status(e: PricingError) -> u8 {
         PricingError::NoConvergence => 3,
         PricingError::ArbitrageBound => 4,
         PricingError::IllConditioned => 5,
+        // `PricingError` is `#[non_exhaustive]`: a later variant keeps the `1 +` discriminant
+        // rule.
+        _ => (e as u8).saturating_add(1),
     }
 }
 

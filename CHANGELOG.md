@@ -4,6 +4,33 @@ All notable changes to `optfix` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the crate follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-10-31
+
+Milestones 8 to 14 of `docs/PLAN.md` (section 8).
+
+### Added
+
+- `price_strip` and `price_and_greeks_strip` with `StripLeg`: one expiry and market shared
+  by a strip of strikes; each leg is bit-identical to `price` / `price_and_greeks`, and each
+  extra leg costs about half a `price` call (two thirds of a `price_and_greeks` call). On an error, the earlier legs are written and the rest untouched.
+- Black-76: `FuturesInputs` (`as_market()`: `S = F`, `q = r`), `price_black76` and
+  `price_and_greeks_black76`, bit-identical to the Black-Scholes-Merton functions with `q = r`.
+- `price_cash_or_nothing` and `price_asset_or_nothing`, within
+  `BINARY_ERR_REL × notional + BINARY_ERR_ABS` (`2^-48`, 64 ulps; the notional is the payout or
+  `S`). `T = 0` pays strictly in the money.
+- CI on GitHub Actions with pinned toolchains, and a CU budget per bench row (`bench/budget.md`)
+  enforced by `make test` and `make bench`.
+
+### Changed
+
+- `PricingError` is `#[non_exhaustive]` (the reason for 0.2.0): a `match` needs a wildcard arm.
+  The `#[repr(u8)]` discriminants are unchanged, so `e as u8` mappings keep working.
+- Division and square root run on native 64-bit digits: `div_down` about 3 times and `sqrt_down`
+  about 4.8 times cheaper on SBF, with results bit-identical to 0.1.0 (checked against the
+  published 0.1.0 kernel and outputs).
+- Every 0.1.0 result is reproduced bit for bit (`tests/data/frozen_0_1.csv`); `price` and
+  `price_and_greeks` cost slightly less than in 0.1.0.
+
 ## [0.1.0] - 2026-10-30
 
 First release: milestones 1 to 6 of `docs/PLAN.md`.

@@ -5,9 +5,11 @@ use core::fmt;
 /// Why an optfix operation failed.
 ///
 /// `#[repr(u8)]` with stable discriminants, so an on-chain program can map it into its own
-/// error codes.
+/// error codes (`e as u8`). `#[non_exhaustive]` since 0.2.0: a later variant is not a breaking
+/// change, and a `match` on it needs a wildcard arm; the existing discriminants never change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum PricingError {
     /// An intermediate or final result does not fit the representation.
     Overflow = 0,

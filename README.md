@@ -7,7 +7,7 @@
 [![PRs](https://img.shields.io/github/issues-pr/joaquinbejar/optfix.svg)](https://github.com/joaquinbejar/optfix/pulls)
 [![no_std](https://img.shields.io/badge/no__std-yes-green.svg)](https://github.com/joaquinbejar/optfix/blob/main/docs/PLAN.md)
 
-## optfix v0.1.0: Fixed-Point Option Pricing for Solana
+## optfix v0.2.0: Fixed-Point Option Pricing for Solana
 
 ### Table of Contents
 1. [Introduction](#introduction)
@@ -52,6 +52,11 @@ measured in LiteSVM.
 #### 3. **Black-Scholes-Merton**
 - European calls and puts with a risk-free rate `r` and a continuous carry `q`.
 - `intrinsic`, `price`, and `price_and_greeks` (delta, gamma, vega, theta from one evaluation).
+- `price_strip` and `price_and_greeks_strip`: a strip of strikes sharing one expiry and market,
+  each leg bit-identical to the scalar call; an extra leg costs about half a `price` call.
+- Black-76 (`price_black76`, `price_and_greeks_black76`) for options on futures and forwards.
+- Cash-or-nothing and asset-or-nothing prices (`price_cash_or_nothing`,
+  `price_asset_or_nothing`) within `BINARY_ERR_REL`.
 - `price_error_bound`, `Price::upper` and `Price::lower` to widen a result to a safe side.
 - Published envelopes: `PRICE_ERR_REL`, `DELTA_ERR`, `GAMMA_ERR_REL`, `VEGA_ERR_REL`,
   `THETA_ERR_REL` and the absolute parts.
@@ -64,8 +69,8 @@ measured in LiteSVM.
 #### 5. **Type safety**
 - Range-checked quantity newtypes `Spot`, `Strike`, `Volatility`, `Rate`, `Years` (with
   `Years::from_seconds`, 365-day years) and `Price`.
-- `PricingError` (`#[repr(u8)]`): `Overflow`, `DomainError`, `NoConvergence`,
-  `ArbitrageBound`, `IllConditioned`.
+- `PricingError` (`#[repr(u8)]`, `#[non_exhaustive]`): `Overflow`, `DomainError`,
+  `NoConvergence`, `ArbitrageBound`, `IllConditioned`.
 
 ### Workspace Crates
 
@@ -113,7 +118,7 @@ Add optfix from crates.io:
 
 ```toml
 [dependencies]
-optfix = "0.1"
+optfix = "0.2"
 ```
 
 #### Building from Source
