@@ -205,13 +205,13 @@ the Black-Scholes and implied-volatility rows still include decoding six argumen
 | Function | Median CU | Max CU |
 | --- | ---: | ---: |
 | `Fixed::mul_down` | 277 | 290 |
-| `Fixed::div_down` | 1597 | 1993 |
-| `Fixed::sqrt_down` | 10929 | 13980 |
+| `Fixed::div_down` | 546 | 644 |
+| `Fixed::sqrt_down` | 2281 | 2383 |
 | `exp` | 316 | 337 |
 | `ln` | 457 | 463 |
 | `norm_cdf` | 1324 | 1384 |
 | `norm_pdf` | 573 | 596 |
-| `wide::mul_shr` | 317 | 333 |
+| `wide::mul_shr` | 340 | 355 |
 | `price` | 9252 | 9577 |
 | `price`, near the money | 11094 | 11475 |
 | `price_and_greeks` | 14241 | 14641 |
