@@ -19,7 +19,7 @@ multiple of 100, in the same diff; a cheaper row is tightened the same way.
 | `NormCdf` | 1400 | 1500 |
 | `NormPdf` | 700 | 700 |
 | `MulShr` | 400 | 400 |
-| `Price` | 9800 | 10100 |
+| `Price` | 9700 | 10100 |
 | `PriceAndGreeks` | 15000 | 15400 |
 | `Baseline (price, then each greek)` | 41300 | 42700 |
 | `Price, near the money` | 11700 | 12100 |
@@ -28,3 +28,15 @@ multiple of 100, in the same diff; a cheaper row is tightened the same way.
 | `ImpliedVol, all iterations` | 36200 | 44300 |
 | `ImpliedVol, near the money` | 34400 | 44100 |
 | `ImpliedVol, all iterations, near the money` | 44000 | 45000 |
+| `PriceStrip, 1 leg` | 10000 | 10300 |
+| `PriceStrip, 2 legs` | 15200 | 15600 |
+| `PriceStrip, 8 legs` | 45500 | 50000 |
+| `PriceStrip, 16 legs` | 85000 | 92400 |
+| `PriceAndGreeksStrip, 1 leg` | 15400 | 15800 |
+| `PriceAndGreeksStrip, 2 legs` | 26000 | 26600 |
+| `PriceAndGreeksStrip, 8 legs` | 88100 | 93400 |
+| `PriceAndGreeksStrip, 16 legs` | 171200 | 179300 |
+| `Digest, 1 leg` | 200 | 200 |
+| `Digest, 2 legs` | 300 | 300 |
+| `Digest, 8 legs` | 1100 | 1100 |
+| `Digest, 16 legs` | 2100 | 2100 |

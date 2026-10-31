@@ -1063,6 +1063,24 @@ lowering the step cap); `tests/frozen_0_1.rs` reproduces every row.
 
 ### Milestone 11: strip API (candidate 4)
 
+(Done.) As built: `bsm.rs` splits an evaluation into `Shared` (everything that does not
+depend on the strike: `Dr`, `Dq`, `S Dq`, and for `T > 0` `ln T / 2`, `ln σ`, `ln σ√T`, `σ√T`,
+`ln S`, the drift term of `d1`, and `1 / (σ√T)` filled at the first leg away from the money)
+and `Shared::leg` (the strike's `K Dr`, `ln K`, `d1`, `N`, `n` and greeks). `price` and
+`price_and_greeks` are one `Shared` and one leg; a strip is one `Shared` and a leg per strike,
+the moneyness check first for each leg as in the scalar functions. The frozen 0.1 fixture
+passes unchanged, and `tests/strip.rs` checks each strip leg against it directly, inside
+strips of random other legs.
+
+Measured (net CU, median): each extra leg costs about 4,760 in `price_strip` against 9,228 for
+a `price` call, and about 9,700 in `price_and_greeks_strip` (net of the bench's output digest)
+against 14,201: better than the estimate of 6,500 to 7,000 above, because `ln S`, `σ√T`, both
+discount factors and the drift exponential are all shared. Forced inlining of the shared and
+per-leg steps keeps the scalar rows at or below 0.1.0 (`Price` 9,228, `PriceAndGreeks` 14,201;
+without it the split cost them about 110 CU). The strip rows, the `Digest` rows (the 32-byte
+fold that checks the 16-leg greeks output against the host) and their budget limits are in
+`docs/benchmarks.md`; the README table has the 1- and 16-leg rows and the per-leg cost.
+
 ```rust
 pub struct StripLeg { pub kind: OptionKind, pub strike: Strike }
 pub fn price_strip(expiry: Years, m: &MarketInputs, legs: &[StripLeg], out: &mut [Price])

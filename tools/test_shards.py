@@ -31,6 +31,7 @@ MINUTES = {
     "iv_round_trip": 0.5,
     "bsm_oracle": 0.4,
     "bsm_fixture": 0.3,
+    "strip": 3.0,
 }
 
 

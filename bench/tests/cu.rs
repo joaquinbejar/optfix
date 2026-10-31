@@ -24,8 +24,9 @@ use std::path::PathBuf;
 
 use litesvm::LiteSVM;
 use optfix::{
-    implied_vol, price_and_greeks, EuropeanOption, Fixed, Greeks, IvInputs, MarketInputs,
-    OptionKind, Price, Priced, PricingError, Rate, Rounding, Spot, Strike, Volatility, Years,
+    implied_vol, price_and_greeks, price_and_greeks_strip, price_strip, EuropeanOption, Fixed,
+    Greeks, IvInputs, MarketInputs, OptionKind, Price, Priced, PricingError, Rate, Rounding, Spot,
+    Strike, StripLeg, Volatility, Years,
 };
 use optfix_bench::{check, Measured};
 use solana_address::Address;
@@ -53,6 +54,9 @@ enum Ix {
     Baseline = 11,
     ImpliedVol = 12,
     ImpliedVolAllIterations = 13,
+    PriceStrip = 14,
+    PriceAndGreeksStrip = 15,
+    Digest = 16,
 }
 
 /// Status byte plus one 16-byte little-endian value.
@@ -325,6 +329,8 @@ struct Measurement {
     rows: Vec<Vec<u64>>,
     bsm: Vec<Vec<u64>>,
     iv: Vec<Vec<u64>>,
+    /// One row per entry of [`strip_rows`].
+    strip: Vec<Vec<u64>>,
 }
 
 /// The Black-Scholes rows: instruction, name, host function.
@@ -508,6 +514,139 @@ fn iv_data(ix: Ix, o: &EuropeanOption, m: &IvInputs, target: Price) -> Vec<u8> {
     d
 }
 
+/// Strip lengths measured (milestone 11).
+const STRIP_LENGTHS: [usize; 4] = [1, 2, 8, 16];
+
+/// The strip rows: instruction and length, named like `PriceStrip, 8 legs`.
+fn strip_rows() -> Vec<(Ix, usize, String)> {
+    let mut v = Vec::new();
+    for (ix, name) in [
+        (Ix::PriceStrip, "PriceStrip"),
+        (Ix::PriceAndGreeksStrip, "PriceAndGreeksStrip"),
+        (Ix::Digest, "Digest"),
+    ] {
+        for n in STRIP_LENGTHS {
+            let legs = if n == 1 { "leg" } else { "legs" };
+            v.push((ix, n, format!("{name}, {n} {legs}")));
+        }
+    }
+    v
+}
+
+/// A strip over the supported domain: market inputs and expiry as `bsm_input`, then 16 legs
+/// of random kind with `S/K` log-uniform in `[0.05, 20]` (a row of `n` legs takes the first
+/// `n`).
+fn strip_input(rng: &mut Rng) -> (Years, MarketInputs, Vec<StripLeg>) {
+    let (o, m) = bsm_input(rng, false);
+    let s = m.spot.get().raw() as f64 / ONE;
+    let legs = (0..16)
+        .map(|_| {
+            let u = (rng.next() >> 11) as f64 / (1u64 << 53) as f64;
+            let ratio = libm::pow(10.0, libm::log10(0.05) + libm::log10(400.0) * u);
+            let k = (s * ratio).clamp(1.01e-6, 0.99e9).clamp(s / 19.9, s * 19.9);
+            StripLeg {
+                kind: if rng.next() & 1 == 0 {
+                    OptionKind::Call
+                } else {
+                    OptionKind::Put
+                },
+                strike: Strike::try_new(Fixed::from_raw((k * ONE) as i128)).unwrap(),
+            }
+        })
+        .collect();
+    (o.expiry, m, legs)
+}
+
+/// Instruction data of a strip row: tag, `T, S, σ, r, q`, then kind byte and strike per leg.
+fn strip_data(ix: Ix, t: Years, m: &MarketInputs, legs: &[StripLeg]) -> Vec<u8> {
+    let mut d = vec![ix as u8];
+    for v in [
+        t.get(),
+        m.spot.get(),
+        m.vol.get(),
+        m.rate.get(),
+        m.carry.get(),
+    ] {
+        d.extend_from_slice(&v.to_bytes().0);
+    }
+    for l in legs {
+        d.push(l.kind as u8);
+        d.extend_from_slice(&l.strike.get().to_bytes().0);
+    }
+    d
+}
+
+/// The program's digest (`bench-program/src/lib.rs`), restated.
+fn digest(values: &[Priced]) -> [u8; 32] {
+    const K: u64 = 0x9E37_79B9_7F4A_7C15;
+    let (mut a, mut b, mut c, mut d) = (K, K.rotate_left(16), K.rotate_left(32), K.rotate_left(48));
+    for p in values {
+        for v in [
+            p.price.get(),
+            p.greeks.delta,
+            p.greeks.gamma,
+            p.greeks.vega,
+            p.greeks.theta,
+        ] {
+            let x = v.raw() as u128;
+            let (lo, hi) = (x as u64, (x >> 64) as u64);
+            a = (a ^ lo).wrapping_mul(K);
+            b = (b ^ hi).wrapping_mul(K).rotate_left(27);
+            c = c.wrapping_add(lo).rotate_left(13) ^ hi;
+            d ^= a ^ b;
+        }
+    }
+    let mut out = [0u8; 32];
+    for (i, lane) in [a, b, c, d].iter().enumerate() {
+        out[8 * i..8 * i + 8].copy_from_slice(&lane.to_le_bytes());
+    }
+    out
+}
+
+/// Expected return data of a strip row, from the host's strip functions.
+fn strip_expected(ix: Ix, t: Years, m: &MarketInputs, legs: &[StripLeg]) -> Vec<u8> {
+    let zero = Priced {
+        price: Price::MIN,
+        greeks: Greeks {
+            delta: Fixed::ZERO,
+            gamma: Fixed::ZERO,
+            vega: Fixed::ZERO,
+            theta: Fixed::ZERO,
+        },
+    };
+    match ix {
+        Ix::PriceStrip => {
+            let mut out = vec![Price::MIN; legs.len()];
+            match price_strip(t, m, legs, &mut out) {
+                Ok(()) => {
+                    let mut d = vec![0u8];
+                    for p in out {
+                        d.extend_from_slice(&p.get().raw().to_le_bytes());
+                    }
+                    d
+                }
+                Err(e) => vec![1 + e as u8],
+            }
+        }
+        Ix::PriceAndGreeksStrip => {
+            let mut out = vec![zero; legs.len()];
+            match price_and_greeks_strip(t, m, legs, &mut out) {
+                Ok(()) => {
+                    let mut d = vec![0u8];
+                    d.extend_from_slice(&digest(&out));
+                    d
+                }
+                Err(e) => vec![1 + e as u8],
+            }
+        }
+        _ => {
+            let mut d = vec![0u8];
+            d.extend_from_slice(&digest(&vec![zero; legs.len()]));
+            d
+        }
+    }
+}
+
 fn measure() -> Measurement {
     let mut vm = Vm::new();
     let mut rng = Rng(SEED);
@@ -597,11 +736,37 @@ fn measure() -> Measurement {
                 .collect()
         })
         .collect();
+    let mut rng = Rng(SEED ^ 0x57);
+    let strips: Vec<_> = (0..RANDOM_INPUTS).map(|_| strip_input(&mut rng)).collect();
+    let strip = strip_rows()
+        .iter()
+        .map(|(ix, n, name)| {
+            strips
+                .iter()
+                .map(|(t, m, legs)| {
+                    let legs = &legs[..*n];
+                    let data = if let Ix::Digest = ix {
+                        vec![Ix::Digest as u8, *n as u8]
+                    } else {
+                        strip_data(*ix, *t, m, legs)
+                    };
+                    let (cu, out) = vm.run_raw(&data);
+                    assert_eq!(
+                        out,
+                        strip_expected(*ix, *t, m, legs),
+                        "{name} on-chain differs from host at {t:?} {m:?} {legs:?}"
+                    );
+                    cu
+                })
+                .collect()
+        })
+        .collect();
     Measurement {
         noop,
         rows,
         bsm,
         iv,
+        strip,
     }
 }
 
@@ -643,12 +808,15 @@ fn budget_rows(m: &Measurement) -> Vec<Measured> {
         median: noop_med,
         max: noop_hi,
     }];
+    let strip_names: Vec<String> = strip_rows().into_iter().map(|r| r.2).collect();
     let names = ROWS
         .iter()
         .map(|r| r.name)
         .chain(BSM_ROWS.iter().map(|r| r.1))
-        .chain(IV_ROWS.iter().map(|r| r.1));
-    for (name, cu) in names.zip(m.rows.iter().chain(&m.bsm).chain(&m.iv)) {
+        .chain(IV_ROWS.iter().map(|r| r.1))
+        .chain(strip_names.iter().map(String::as_str));
+    let all = m.rows.iter().chain(&m.bsm).chain(&m.iv).chain(&m.strip);
+    for (name, cu) in names.zip(all) {
         let (_, med, hi) = stats(cu);
         out.push(Measured {
             name: name.into(),
@@ -664,6 +832,36 @@ fn budget_path() -> PathBuf {
     std::env::var("OPTFIX_BUDGET").map_or_else(
         |_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("budget.md"),
         PathBuf::from,
+    )
+}
+
+/// Median CU of the strip row `name`.
+fn strip_median(m: &Measurement, name: &str) -> u64 {
+    let i = strip_rows().iter().position(|r| r.2 == name).unwrap();
+    stats(&m.strip[i]).1
+}
+
+/// The cost of each extra leg, from the 1-leg and 16-leg medians (the greeks strip net of
+/// its digest), next to the scalar functions.
+fn per_leg(m: &Measurement) -> String {
+    let price1 = strip_median(m, "PriceStrip, 1 leg");
+    let price16 = strip_median(m, "PriceStrip, 16 legs");
+    let greeks = |n: &str| {
+        strip_median(m, &format!("PriceAndGreeksStrip, {n}"))
+            - strip_median(m, &format!("Digest, {n}"))
+    };
+    let (g1, g16) = (greeks("1 leg"), greeks("16 legs"));
+    let price = stats(&m.bsm[0]).1 - stats(&m.noop).1;
+    let pag = stats(&m.bsm[1]).1 - stats(&m.noop).1;
+    format!(
+        "Strips (`price_strip`, `price_and_greeks_strip`) share one expiry and market and take \
+         legs of random kind with `S/K` log-uniform in `[0.05, 20]`; the 16-leg greeks output \
+         is checked through a 32-byte digest, whose cost the `Digest` rows measure. Each extra \
+         leg costs {} CU in `price_strip` (median, from 1 to 16 legs) against {price} for a \
+         `price` call, and {} CU in `price_and_greeks_strip` (net of the digest) against {pag} \
+         for a `price_and_greeks` call.\n",
+        (price16 - price1) / 15,
+        (g16 - g1) / 15,
     )
 }
 
@@ -724,6 +922,13 @@ fn table(m: &Measurement, budget: &str) -> String {
         let net = med.saturating_sub(noop_med);
         writeln!(s, "| `{name}` | {lo} | {med} | {hi} | {net} |").unwrap();
     }
+    for ((_, _, name), cu) in strip_rows().iter().zip(&m.strip) {
+        let (lo, med, hi) = stats(cu);
+        let net = med.saturating_sub(noop_med);
+        writeln!(s, "| `{name}` | {lo} | {med} | {hi} | {net} |").unwrap();
+    }
+    writeln!(s).unwrap();
+    s.push_str(&per_leg(m));
     let agave = std::env::var("OPTFIX_AGAVE").unwrap_or_else(|_| "unknown".into());
     writeln!(s).unwrap();
     writeln!(s, "## Budget").unwrap();
@@ -776,6 +981,7 @@ fn test_cu_table_is_deterministic_and_matches_host() {
         first.iv, second.iv,
         "implied-volatility CU differs between runs"
     );
+    assert_eq!(first.strip, second.strip, "strip CU differs between runs");
     let path = budget_path();
     let text = std::fs::read_to_string(&path).unwrap();
     let report = check(&text, &budget_rows(&first));
