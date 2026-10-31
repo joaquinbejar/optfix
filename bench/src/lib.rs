@@ -158,7 +158,7 @@ fn delta(measured: u64, limit: u64) -> String {
 
 /// The limit the budget rule gives a measurement: plus 5%, rounded up to a multiple of 100.
 #[must_use]
-pub fn rule_limit(measured: u64) -> u64 {
+pub fn rule_limit(  measured: u64) -> u64 {
     let hundredths = u128::from(measured).saturating_mul(105);
     let hundreds = hundredths.div_ceil(10_000);
     u64::try_from(hundreds.saturating_mul(100)).unwrap_or(u64::MAX)
