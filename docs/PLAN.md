@@ -1199,9 +1199,9 @@ rules, as `implied_vol` did.
 `e as u8` still compiles from another crate (checked), so the downstream repos need no code
 change: varswap maps it with `as u8`, metalbook formats it, and quotebook has its own error
 type. The bench program's `error_status` gains the wildcard arm a `match` now needs. Workspace
-version 0.2.0, `CHANGELOG.md` 0.2.0 (unreleased until the tag), README install `optfix = "0.2"`
-and features. Tag `v0.2.0`, crates.io and the GitHub release on the coordinator's go after
-codex's review.
+version 0.2.0, `CHANGELOG.md` 0.2.0 dated 2026-10-31 in this PR (so the tag goes on its
+merge commit), README install `optfix = "0.2"` and features. Tag `v0.2.0`, crates.io and the
+GitHub release after codex's review (coordinator's go, 2026-10-31).
 
 ### Postponed to 0.3
 
