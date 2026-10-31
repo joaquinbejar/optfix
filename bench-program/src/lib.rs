@@ -7,6 +7,12 @@
 //! [`PricingError`] discriminant) and the result as `FixedBytes` (zero on error). An error is
 //! reported in the return data rather than by failing the transaction, so its cost is measured
 //! too.
+//!
+//! The strip instructions (milestone 11) take `[T, S, σ, r, q]` and up to [`MAX_LEGS`] legs of
+//! a kind byte and a strike. `PriceStrip` returns the status byte and every price;
+//! `PriceAndGreeksStrip` returns the status byte and a 32-byte [`digest`] of every `Priced`
+//! (16 of them would not fit the 1,024 bytes of return data), and `Digest` measures that
+//! digest alone over as many zero values, so its cost can be subtracted.
 
 #![no_std]
 
@@ -71,6 +77,12 @@ pub enum Instruction {
     /// `implied_vol` taking all `IV_MAX_ITERATIONS` steps (`optfix::iv_bench::all_iterations`,
     /// bench-only): its worst-case cost. Same arguments and return data as `ImpliedVol`.
     ImpliedVolAllIterations = 13,
+    /// `optfix::price_strip` (milestone 11).
+    PriceStrip = 14,
+    /// `optfix::price_and_greeks_strip`, returning a [`digest`] of the outputs.
+    PriceAndGreeksStrip = 15,
+    /// The [`digest`] alone, over `n` zero values (bench-only, subtracted from the row above).
+    Digest = 16,
 }
 
 impl Instruction {
@@ -96,6 +108,9 @@ impl Instruction {
             11 => Ok(Self::Baseline),
             12 => Ok(Self::ImpliedVol),
             13 => Ok(Self::ImpliedVolAllIterations),
+            14 => Ok(Self::PriceStrip),
+            15 => Ok(Self::PriceAndGreeksStrip),
+            16 => Ok(Self::Digest),
             _ => Err(BenchError::UnknownInstruction),
         }
     }
@@ -187,6 +202,12 @@ pub fn process_instruction(
 ) -> ProgramResult {
     let (&tag, args) = data.split_first().ok_or(BenchError::UnknownInstruction)?;
     let ix = Instruction::from_tag(tag)?;
+    match ix {
+        Instruction::PriceStrip => return price_strip(args),
+        Instruction::PriceAndGreeksStrip => return greeks_strip(args),
+        Instruction::Digest => return digest_only(args),
+        _ => {}
+    }
     if let Instruction::PriceAndGreeks | Instruction::Baseline = ix {
         let f = if ix == Instruction::Baseline {
             optfix::baseline::separately
@@ -209,9 +230,11 @@ pub fn process_instruction(
         Instruction::Price => bsm(args, price_only)?.map(|p| p.price.get()),
         Instruction::ImpliedVol => iv(args, optfix::implied_vol)?,
         Instruction::ImpliedVolAllIterations => iv(args, optfix::iv_bench::all_iterations)?,
-        Instruction::PriceAndGreeks | Instruction::Baseline => {
-            return Err(BenchError::InvalidArguments.into())
-        }
+        Instruction::PriceAndGreeks
+        | Instruction::Baseline
+        | Instruction::PriceStrip
+        | Instruction::PriceAndGreeksStrip
+        | Instruction::Digest => return Err(BenchError::InvalidArguments.into()),
     };
     set_return_data(&encode_result(result));
     Ok(())
@@ -344,4 +367,170 @@ fn iv(
         f(&opt, &m, Price::try_new(target.get())?).map(Volatility::get)
     };
     Ok(solve())
+}
+
+/// Most legs a strip instruction takes.
+pub const MAX_LEGS: usize = 16;
+
+/// Bytes of one strip leg: a kind byte and a `FixedBytes` strike.
+const LEG_LEN: usize = 17;
+
+/// A 32-byte fold of `Priced` values (price and the four greeks, each as two 64-bit halves)
+/// into four 64-bit lanes with native multiplies: not cryptographic, only a compact equality
+/// check of the outputs against the host's.
+#[must_use]
+pub fn digest<'a>(values: impl Iterator<Item = &'a Priced>) -> [u8; 32] {
+    const K: u64 = 0x9E37_79B9_7F4A_7C15;
+    let (mut a, mut b, mut c, mut d) = (K, K.rotate_left(16), K.rotate_left(32), K.rotate_left(48));
+    for p in values {
+        for v in [
+            p.price.get(),
+            p.greeks.delta,
+            p.greeks.gamma,
+            p.greeks.vega,
+            p.greeks.theta,
+        ] {
+            let x = v.raw().to_le_bytes();
+            let (lo_bytes, hi_bytes) = x.split_at(8);
+            let lo = u64::from_le_bytes(lo_bytes.try_into().unwrap_or([0; 8]));
+            let hi = u64::from_le_bytes(hi_bytes.try_into().unwrap_or([0; 8]));
+            a = (a ^ lo).wrapping_mul(K);
+            b = (b ^ hi).wrapping_mul(K).rotate_left(27);
+            c = c.wrapping_add(lo).rotate_left(13) ^ hi;
+            d ^= a ^ b;
+        }
+    }
+    let mut out = [0u8; 32];
+    for (chunk, lane) in out.as_chunks_mut::<8>().0.iter_mut().zip([a, b, c, d]) {
+        chunk.copy_from_slice(&lane.to_le_bytes());
+    }
+    out
+}
+
+/// Decodes a strip: `[T, S, σ, r, q]` and the legs into `legs`; returns the leg count. An
+/// argument outside its newtype's range is a `DomainError` result.
+fn decode_strip(
+    args: &[u8],
+    legs: &mut [optfix::StripLeg; MAX_LEGS],
+) -> Result<Result<(Years, MarketInputs, usize), PricingError>, BenchError> {
+    let head = args.get(..80).ok_or(BenchError::InvalidArguments)?;
+    let rest = args.get(80..).ok_or(BenchError::InvalidArguments)?;
+    let [t, s, sigma, r, q]: [FixedBytes; 5] = decode(head)?;
+    let (chunks, tail) = rest.as_chunks::<LEG_LEN>();
+    if !tail.is_empty() || chunks.len() > MAX_LEGS {
+        return Err(BenchError::InvalidArguments);
+    }
+    let n = chunks.len();
+    for (slot, raw) in legs.iter_mut().zip(chunks) {
+        let (&kind, strike) = raw.split_first().ok_or(BenchError::InvalidArguments)?;
+        let kind = match kind {
+            0 => OptionKind::Call,
+            1 => OptionKind::Put,
+            _ => return Err(BenchError::InvalidArguments),
+        };
+        let strike: FixedBytes = decode(strike)?;
+        match Strike::try_new(strike.get()) {
+            Ok(strike) => *slot = optfix::StripLeg { kind, strike },
+            Err(e) => return Ok(Err(e)),
+        }
+    }
+    let inputs = || -> Result<(Years, MarketInputs), PricingError> {
+        Ok((
+            Years::try_new(t.get())?,
+            MarketInputs {
+                spot: Spot::try_new(s.get())?,
+                vol: Volatility::try_new(sigma.get())?,
+                rate: Rate::try_new(r.get())?,
+                carry: Rate::try_new(q.get())?,
+            },
+        ))
+    };
+    Ok(inputs().map(|(t, m)| (t, m, n)))
+}
+
+const EMPTY_LEG: optfix::StripLeg = optfix::StripLeg {
+    kind: OptionKind::Call,
+    strike: Strike::MIN,
+};
+
+const EMPTY_PRICED: Priced = Priced {
+    price: Price::MIN,
+    greeks: Greeks {
+        delta: Fixed::ZERO,
+        gamma: Fixed::ZERO,
+        vega: Fixed::ZERO,
+        theta: Fixed::ZERO,
+    },
+};
+
+#[inline(never)]
+fn price_strip(args: &[u8]) -> ProgramResult {
+    let mut legs = [EMPTY_LEG; MAX_LEGS];
+    let mut prices = [Price::MIN; MAX_LEGS];
+    let mut out = [0u8; 1 + 16 * MAX_LEGS];
+    let result = decode_strip(args, &mut legs)?.and_then(|(t, m, n)| {
+        let legs = legs.get(..n).ok_or(PricingError::DomainError)?;
+        let prices = prices.get_mut(..n).ok_or(PricingError::DomainError)?;
+        optfix::price_strip(t, &m, legs, prices)?;
+        Ok(n)
+    });
+    match result {
+        Ok(n) => {
+            for (chunk, p) in out
+                .get_mut(1..)
+                .unwrap_or(&mut [])
+                .as_chunks_mut::<16>()
+                .0
+                .iter_mut()
+                .zip(prices.iter())
+            {
+                chunk.copy_from_slice(&p.get().to_bytes().0);
+            }
+            let len = n
+                .checked_mul(16)
+                .and_then(|b| b.checked_add(1))
+                .ok_or(BenchError::InvalidArguments)?;
+            set_return_data(out.get(..len).ok_or(BenchError::InvalidArguments)?);
+        }
+        Err(e) => set_return_data(&[error_status(e)]),
+    }
+    Ok(())
+}
+
+#[inline(never)]
+fn greeks_strip(args: &[u8]) -> ProgramResult {
+    let mut legs = [EMPTY_LEG; MAX_LEGS];
+    let mut priced = [EMPTY_PRICED; MAX_LEGS];
+    let result = decode_strip(args, &mut legs)?.and_then(|(t, m, n)| {
+        let legs = legs.get(..n).ok_or(PricingError::DomainError)?;
+        let out = priced.get_mut(..n).ok_or(PricingError::DomainError)?;
+        optfix::price_and_greeks_strip(t, &m, legs, out)?;
+        Ok(n)
+    });
+    match result {
+        Ok(n) => {
+            let mut out = [0u8; 33];
+            let (_, tail) = out.split_at_mut(1);
+            tail.copy_from_slice(&digest(priced.iter().take(n)));
+            set_return_data(&out);
+        }
+        Err(e) => set_return_data(&[error_status(e)]),
+    }
+    Ok(())
+}
+
+/// The digest of `n` zero `Priced` values (instruction data: one byte `n`), the cost that
+/// `PriceAndGreeksStrip` adds to pricing.
+#[inline(never)]
+fn digest_only(args: &[u8]) -> ProgramResult {
+    let n = usize::from(*args.first().ok_or(BenchError::InvalidArguments)?);
+    if n > MAX_LEGS {
+        return Err(BenchError::InvalidArguments.into());
+    }
+    let priced = [EMPTY_PRICED; MAX_LEGS];
+    let mut out = [0u8; 33];
+    let (_, tail) = out.split_at_mut(1);
+    tail.copy_from_slice(&digest(priced.iter().take(n)));
+    set_return_data(&out);
+    Ok(())
 }

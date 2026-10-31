@@ -9,6 +9,7 @@
     clippy::panic_in_result_fn,
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
+    clippy::integer_division,
     clippy::float_arithmetic,
     clippy::cast_precision_loss,
     clippy::disallowed_macros,
@@ -180,13 +181,33 @@ fn cu_table(bench: &str) -> String {
             "`implied_vol`, worst case (every step taken)",
             "ImpliedVol, all iterations, near the money",
         ),
+        ("`price_strip`, 1 leg", "PriceStrip, 1 leg"),
+        ("`price_strip`, 16 legs", "PriceStrip, 16 legs"),
     ] {
         let (median, max) = cu(bench, row);
         writeln!(s, "| {name} | {median} | {max} |").unwrap();
     }
+    // The greeks strip rows include the bench's output digest, measured on its own.
+    for n in ["1 leg", "16 legs"] {
+        let (median, max) = cu(bench, &format!("PriceAndGreeksStrip, {n}"));
+        let (digest, _) = cu(bench, &format!("Digest, {n}"));
+        writeln!(
+            s,
+            "| `price_and_greeks_strip`, {n} | {} | {} |",
+            median - digest,
+            max - digest
+        )
+        .unwrap();
+    }
     writeln!(
         s,
-        "\n`implied_vol` takes at most {IV_MAX_ITERATIONS} steps."
+        "\n`implied_vol` takes at most {IV_MAX_ITERATIONS} steps. A strip shares one expiry and \
+         market: each extra leg costs about {} CU in `price_strip` and {} in \
+         `price_and_greeks_strip` (medians, from 1 to 16 legs).",
+        (cu(bench, "PriceStrip, 16 legs").0 - cu(bench, "PriceStrip, 1 leg").0) / 15,
+        ((cu(bench, "PriceAndGreeksStrip, 16 legs").0 - cu(bench, "Digest, 16 legs").0)
+            - (cu(bench, "PriceAndGreeksStrip, 1 leg").0 - cu(bench, "Digest, 1 leg").0))
+            / 15,
     )
     .unwrap();
     s

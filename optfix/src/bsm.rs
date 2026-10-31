@@ -198,100 +198,256 @@ pub fn price_and_greeks(opt: &EuropeanOption, m: &MarketInputs) -> Result<Priced
     evaluate(opt, m, true)
 }
 
+/// One leg of a strip: the option kind and strike; expiry and market inputs are the strip's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StripLeg {
+    /// Call or put.
+    pub kind: OptionKind,
+    /// Strike, in the unit of the spot.
+    pub strike: Strike,
+}
+
+/// [`price`] for every leg of a strip sharing `T`, `S`, `σ`, `r` and `q`: `out[i]` is
+/// `price` of leg `i`, bit for bit. What does not depend on the strike (`Dr`, `Dq`, `S Dq`,
+/// `ln T`, `ln σ`, `σ√T`, `ln S`, the drift term of `d1`) is computed once, in the same
+/// rounding order as `price`, so each extra leg costs only its own `ln K`, `d1` and `N`
+/// (`docs/benchmarks.md`).
+///
+/// Legs are priced in order. On the first leg that fails, its error is returned,
+/// `out[..i]` holds the prices of the legs before it, and `out[i..]` is unchanged. An empty
+/// strip returns `Ok(())`.
+///
+/// # Errors
+///
+/// `DomainError` if `legs.len() != out.len()` (checked before anything is written), or the
+/// first failing leg's error, as [`price`] would return it for that leg.
+#[must_use = "the result carries a possible error"]
+pub fn price_strip(
+    expiry: Years,
+    m: &MarketInputs,
+    legs: &[StripLeg],
+    out: &mut [Price],
+) -> Result<(), PricingError> {
+    if legs.len() != out.len() {
+        return Err(PricingError::DomainError);
+    }
+    let mut shared = None;
+    for (leg, slot) in legs.iter().zip(out.iter_mut()) {
+        *slot = strip_leg(&mut shared, expiry, m, leg, false)?.price;
+    }
+    Ok(())
+}
+
+/// [`price_and_greeks`] for every leg of a strip, as [`price_strip`] does for [`price`]:
+/// `out[i]` is `price_and_greeks` of leg `i`, bit for bit, with the same partial-output
+/// contract.
+///
+/// # Errors
+///
+/// `DomainError` if `legs.len() != out.len()` (checked before anything is written), or the
+/// first failing leg's error, as [`price_and_greeks`] would return it for that leg.
+#[must_use = "the result carries a possible error"]
+pub fn price_and_greeks_strip(
+    expiry: Years,
+    m: &MarketInputs,
+    legs: &[StripLeg],
+    out: &mut [Priced],
+) -> Result<(), PricingError> {
+    if legs.len() != out.len() {
+        return Err(PricingError::DomainError);
+    }
+    let mut shared = None;
+    for (leg, slot) in legs.iter().zip(out.iter_mut()) {
+        *slot = strip_leg(&mut shared, expiry, m, leg, true)?;
+    }
+    Ok(())
+}
+
+/// One strip leg: the moneyness check first, as in [`evaluate`], then the shared values
+/// (computed at the first leg that needs them) and the leg's own.
+fn strip_leg(
+    shared: &mut Option<Shared>,
+    expiry: Years,
+    m: &MarketInputs,
+    leg: &StripLeg,
+    greeks: bool,
+) -> Result<Priced, PricingError> {
+    check_moneyness(m.spot.get(), leg.strike.get())?;
+    let sh = match shared {
+        Some(sh) => sh,
+        None => shared.insert(Shared::new(expiry, m)?),
+    };
+    sh.leg(leg.kind, leg.strike.get(), greeks)
+}
+
 /// Shared evaluation; `greeks = false` stops after the price (the greeks are then zero).
 fn evaluate(opt: &EuropeanOption, m: &MarketInputs, greeks: bool) -> Result<Priced, PricingError> {
-    let (s, k, t) = (m.spot.get(), opt.strike.get(), opt.expiry.get());
-    let (sigma, r, q) = (m.vol.get(), m.rate.get(), m.carry.get());
-    check_moneyness(s, k)?;
-    let rt = r.mul_down(t)?;
-    let qt = q.mul_down(t)?;
-    let dr = exp(rt.checked_neg()?)?;
-    // q = 0 gives qT = 0 and Dq = exp(0) = 1 exactly, so plain Black-Scholes takes no extra
-    // rounding.
-    let dq = exp(qt.checked_neg()?)?;
-    let s_dq = s.mul_down(dq)?;
-    let k_dr = k.mul_down(dr)?;
-    // The only degenerate case is T = 0: the smallest positive T is 2^-64 years, so σ√T is at
-    // least 0.005 × 2^-32 ≈ 1.2 × 10^-12, where d1 stays below about 2 × 10^13 and gamma below
-    // about 6.9 × 10^18, inside the representation.
-    if t == Fixed::ZERO {
-        return degenerate(opt.kind, r, q, dq, s_dq, k_dr);
+    check_moneyness(m.spot.get(), opt.strike.get())?;
+    Shared::new(opt.expiry, m)?.leg(opt.kind, opt.strike.get(), greeks)
+}
+
+/// Everything an evaluation needs that does not depend on the strike or the kind. A strip
+/// computes it once; a scalar call once per call. Either way the values and their rounding
+/// order are the same, which is what makes a strip leg equal the scalar result bit for bit.
+struct Shared {
+    s: Fixed,
+    r: Fixed,
+    q: Fixed,
+    dr: Fixed,
+    dq: Fixed,
+    s_dq: Fixed,
+    /// The `T > 0` part; `None` at `T = 0`, the only degenerate case.
+    live: Option<Live>,
+}
+
+/// The shared values of a `T > 0` evaluation.
+struct Live {
+    half_ln_t: Fixed,
+    ln_sigma: Fixed,
+    /// `ln(σ√T)`.
+    ls: Fixed,
+    /// `σ√T`.
+    sst: Fixed,
+    ln_s: Fixed,
+    /// `(r − q) √T / σ`, the drift term of `d1`.
+    drift: Fixed,
+    /// `exp(−ln σ√T) = 1 / (σ√T)`, computed at the first leg away from the money (a scalar
+    /// call near the money never needs it).
+    inv_sst: Option<Fixed>,
+}
+
+impl Shared {
+    #[inline(always)]
+    fn new(expiry: Years, m: &MarketInputs) -> Result<Self, PricingError> {
+        let (s, t) = (m.spot.get(), expiry.get());
+        let (sigma, r, q) = (m.vol.get(), m.rate.get(), m.carry.get());
+        let rt = r.mul_down(t)?;
+        let qt = q.mul_down(t)?;
+        let dr = exp(rt.checked_neg()?)?;
+        // q = 0 gives qT = 0 and Dq = exp(0) = 1 exactly, so plain Black-Scholes takes no
+        // extra rounding.
+        let dq = exp(qt.checked_neg()?)?;
+        let s_dq = s.mul_down(dq)?;
+        // The only degenerate case is T = 0: the smallest positive T is 2^-64 years, so σ√T
+        // is at least 0.005 × 2^-32 ≈ 1.2 × 10^-12, where d1 stays below about 2 × 10^13 and
+        // gamma below about 6.9 × 10^18, inside the representation.
+        let live = if t == Fixed::ZERO {
+            None
+        } else {
+            let half_ln_t = half(ln(t)?);
+            let ln_sigma = ln(sigma)?;
+            let ls = ln_sigma.checked_add(half_ln_t)?;
+            let sst = exp(ls)?;
+            let ln_s = ln(s)?;
+            let drift = drift(r, q, ln_sigma, half_ln_t)?;
+            Some(Live {
+                half_ln_t,
+                ln_sigma,
+                ls,
+                sst,
+                ln_s,
+                drift,
+                inv_sst: None,
+            })
+        };
+        Ok(Self {
+            s,
+            r,
+            q,
+            dr,
+            dq,
+            s_dq,
+            live,
+        })
     }
-    let ln_t = ln(t)?;
-    let half_ln_t = half(ln_t);
-    let ln_sigma = ln(sigma)?;
-    // ln(σ√T)
-    let ls = ln_sigma.checked_add(half_ln_t)?;
-    let sst = exp(ls)?;
-    let ln_s = ln(s)?;
-    let d1 = d1_terms(s, k, r, q, ln_s, ln(k)?, ln_sigma, half_ln_t, ls, sst)?;
-    let d2 = d1.checked_sub(sst)?;
-    // Price the forward out-of-the-money side directly (small values, tail-accurate N), the
-    // other through parity. `nd1` is N(d1) and `nd2` N(d2); `pdf` is n(d1).
-    let call_otm = s_dq <= k_dr;
-    let (nd1, nd2, pdf, call, put) = if call_otm {
-        let (nd1, pdf) = norm_cdf_pdf(d1)?;
-        let nd2 = norm_cdf(d2)?;
-        let call = non_negative(s_dq.mul_down(nd1)?.checked_sub(k_dr.mul_down(nd2)?)?);
-        let put = call.checked_add(k_dr.checked_sub(s_dq)?)?;
-        (nd1, nd2, pdf, call, put)
-    } else {
-        let (nmd1, pdf) = norm_cdf_pdf(d1.checked_neg()?)?;
-        let nmd2 = norm_cdf(d2.checked_neg()?)?;
-        let put = non_negative(k_dr.mul_down(nmd2)?.checked_sub(s_dq.mul_down(nmd1)?)?);
-        let call = put.checked_add(s_dq.checked_sub(k_dr)?)?;
-        (
-            Fixed::ONE.checked_sub(nmd1)?,
-            Fixed::ONE.checked_sub(nmd2)?,
-            pdf,
-            call,
-            put,
-        )
-    };
-    let premium = match opt.kind {
-        OptionKind::Call => call,
-        OptionKind::Put => put,
-    };
-    let price = Price::try_new(premium)?;
-    if !greeks {
-        return Ok(Priced {
+
+    /// The premium (and with `greeks`, its greeks) of one strike and kind; the moneyness
+    /// check has already passed.
+    #[inline(always)]
+    fn leg(&mut self, kind: OptionKind, k: Fixed, greeks: bool) -> Result<Priced, PricingError> {
+        let (s, r, q, dq, s_dq) = (self.s, self.r, self.q, self.dq, self.s_dq);
+        let k_dr = k.mul_down(self.dr)?;
+        let Some(live) = self.live.as_mut() else {
+            return degenerate(kind, r, q, dq, s_dq, k_dr);
+        };
+        let (half_ln_t, ln_sigma, ls, sst, ln_s) =
+            (live.half_ln_t, live.ln_sigma, live.ls, live.sst, live.ln_s);
+        let d1 = d1_from(s, k, ln_s, ln(k)?, ls, sst, live.drift, &mut live.inv_sst)?;
+        let d2 = d1.checked_sub(sst)?;
+        // Price the forward out-of-the-money side directly (small values, tail-accurate N),
+        // the other through parity. `nd1` is N(d1) and `nd2` N(d2); `pdf` is n(d1).
+        let call_otm = s_dq <= k_dr;
+        let (nd1, nd2, pdf, call, put) = if call_otm {
+            let (nd1, pdf) = norm_cdf_pdf(d1)?;
+            let nd2 = norm_cdf(d2)?;
+            let call = non_negative(s_dq.mul_down(nd1)?.checked_sub(k_dr.mul_down(nd2)?)?);
+            let put = call.checked_add(k_dr.checked_sub(s_dq)?)?;
+            (nd1, nd2, pdf, call, put)
+        } else {
+            let (nmd1, pdf) = norm_cdf_pdf(d1.checked_neg()?)?;
+            let nmd2 = norm_cdf(d2.checked_neg()?)?;
+            let put = non_negative(k_dr.mul_down(nmd2)?.checked_sub(s_dq.mul_down(nmd1)?)?);
+            let call = put.checked_add(s_dq.checked_sub(k_dr)?)?;
+            (
+                Fixed::ONE.checked_sub(nmd1)?,
+                Fixed::ONE.checked_sub(nmd2)?,
+                pdf,
+                call,
+                put,
+            )
+        };
+        let premium = match kind {
+            OptionKind::Call => call,
+            OptionKind::Put => put,
+        };
+        let price = Price::try_new(premium)?;
+        if !greeks {
+            return Ok(Priced {
+                price,
+                greeks: ZERO_GREEKS,
+            });
+        }
+        // N(−d1) = 1 − N(d1) and N(−d2) = 1 − N(d2), exactly.
+        let nmd1 = Fixed::ONE.checked_sub(nd1)?;
+        let nmd2 = Fixed::ONE.checked_sub(nd2)?;
+        let delta = match kind {
+            OptionKind::Call => dq.mul_down(nd1)?,
+            OptionKind::Put => dq.mul_down(nmd1)?.checked_neg()?,
+        };
+        // gamma = Dq n(d1) / (S σ√T), with 1 / (S σ√T) = exp(−(ln S + ln σ√T)).
+        let gamma = mul_exp(dq.mul_down(pdf)?, ln_s.checked_add(ls)?.checked_neg()?)?;
+        // vega = S Dq n(d1) √T
+        let s_dq_pdf = s_dq.mul_down(pdf)?;
+        let vega = mul_exp(s_dq_pdf, half_ln_t)?;
+        // theta = −S Dq n(d1) σ / (2√T) ∓ r K Dr N(±d2) ± q S Dq N(±d1)
+        let decay = half(mul_exp(s_dq_pdf, ln_sigma.checked_sub(half_ln_t)?)?);
+        let theta = match kind {
+            OptionKind::Call => decay
+                .checked_neg()?
+                .checked_sub(r.mul_down(k_dr.mul_down(nd2)?)?)?
+                .checked_add(q.mul_down(s_dq.mul_down(nd1)?)?)?,
+            OptionKind::Put => decay
+                .checked_neg()?
+                .checked_add(r.mul_down(k_dr.mul_down(nmd2)?)?)?
+                .checked_sub(q.mul_down(s_dq.mul_down(nmd1)?)?)?,
+        };
+        Ok(Priced {
             price,
-            greeks: ZERO_GREEKS,
-        });
+            greeks: Greeks {
+                delta,
+                gamma,
+                vega,
+                theta,
+            },
+        })
     }
-    // N(−d1) = 1 − N(d1) and N(−d2) = 1 − N(d2), exactly.
-    let nmd1 = Fixed::ONE.checked_sub(nd1)?;
-    let nmd2 = Fixed::ONE.checked_sub(nd2)?;
-    let delta = match opt.kind {
-        OptionKind::Call => dq.mul_down(nd1)?,
-        OptionKind::Put => dq.mul_down(nmd1)?.checked_neg()?,
-    };
-    // gamma = Dq n(d1) / (S σ√T), with 1 / (S σ√T) = exp(−(ln S + ln σ√T)).
-    let gamma = mul_exp(dq.mul_down(pdf)?, ln_s.checked_add(ls)?.checked_neg()?)?;
-    // vega = S Dq n(d1) √T
-    let s_dq_pdf = s_dq.mul_down(pdf)?;
-    let vega = mul_exp(s_dq_pdf, half_ln_t)?;
-    // theta = −S Dq n(d1) σ / (2√T) ∓ r K Dr N(±d2) ± q S Dq N(±d1)
-    let decay = half(mul_exp(s_dq_pdf, ln_sigma.checked_sub(half_ln_t)?)?);
-    let theta = match opt.kind {
-        OptionKind::Call => decay
-            .checked_neg()?
-            .checked_sub(r.mul_down(k_dr.mul_down(nd2)?)?)?
-            .checked_add(q.mul_down(s_dq.mul_down(nd1)?)?)?,
-        OptionKind::Put => decay
-            .checked_neg()?
-            .checked_add(r.mul_down(k_dr.mul_down(nmd2)?)?)?
-            .checked_sub(q.mul_down(s_dq.mul_down(nmd1)?)?)?,
-    };
-    Ok(Priced {
-        price,
-        greeks: Greeks {
-            delta,
-            gamma,
-            vega,
-            theta,
-        },
-    })
+}
+
+/// `(r − q) √T / σ` from the exact `r − q` and `√T / σ = exp(ln T / 2 − ln σ)`.
+#[inline(always)]
+fn drift(r: Fixed, q: Fixed, ln_sigma: Fixed, half_ln_t: Fixed) -> Result<Fixed, PricingError> {
+    r.checked_sub(q)?
+        .mul_down(exp(half_ln_t.checked_sub(ln_sigma)?)?)
 }
 
 /// `d1 = ln(S/K) / (σ√T) + (r − q) √T / σ + σ√T / 2`, each term rounded once at its own scale
@@ -319,6 +475,24 @@ pub(crate) fn d1_terms(
     ls: Fixed,
     sst: Fixed,
 ) -> Result<Fixed, PricingError> {
+    let drift = drift(r, q, ln_sigma, half_ln_t)?;
+    d1_from(s, k, ln_s, ln_k, ls, sst, drift, &mut None)
+}
+
+/// [`d1_terms`] with the strike-free parts given: the drift term, and `1 / (σ√T)` in
+/// `inv_sst`, filled on first use away from the money.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn d1_from(
+    s: Fixed,
+    k: Fixed,
+    ln_s: Fixed,
+    ln_k: Fixed,
+    ls: Fixed,
+    sst: Fixed,
+    drift: Fixed,
+    inv_sst: &mut Option<Fixed>,
+) -> Result<Fixed, PricingError> {
     let diff = s.checked_sub(k)?;
     let near = diff
         .raw()
@@ -333,11 +507,12 @@ pub(crate) fn d1_terms(
         let u = mul_exp(diff, ln_k.checked_neg()?)?;
         scaled.mul_down(Fixed::from_raw(ln1p_over(u.raw())?))?
     } else {
-        ln_s.checked_sub(ln_k)?.mul_down(exp(ls.checked_neg()?)?)?
+        let inv = match *inv_sst {
+            Some(v) => v,
+            None => *inv_sst.insert(exp(ls.checked_neg()?)?),
+        };
+        ln_s.checked_sub(ln_k)?.mul_down(inv)?
     };
-    let drift = r
-        .checked_sub(q)?
-        .mul_down(exp(half_ln_t.checked_sub(ln_sigma)?)?)?;
     moneyness.checked_add(drift)?.checked_add(half(sst))
 }
 
