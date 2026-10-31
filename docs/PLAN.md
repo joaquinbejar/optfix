@@ -1,7 +1,7 @@
 # optfix: plan
 
 Status: approved by Joaquin on 2026-10-29. Changes after approval are recorded as decisions. Section 8
-(version 0.2.0) is a proposal under review.
+(version 0.2.0) was agreed with codex on 2026-10-31 (review of #16 at b64b318).
 
 ## 1. Goal and non-goals
 
@@ -612,7 +612,7 @@ against Agave 4.4.
 1. Decided (2026-10-29): price error `<= 10^-9 × max(S, K) + ERR_ABS`, delta below `10^-9`;
    supported domain table accepted as proposed.
 2. CU budget: is there a target for `price_and_greeks` (for example 15,000 CU) that should
-   fail the bench if exceeded? Proposed in section 8 (milestone 8): a per-row budget.
+   fail the bench if exceeded? Decided 2026-10-31 (section 8, milestone 8): a per-row budget.
 3. Decided (2026-10-29, coordinator): a gate first, then CU. Each representation must reach
    `exp` relative error and `ln` absolute error of at most `10^-15` over the supported range
    (errors reported in ulps of both formats); among those that pass, the lower median CU of
@@ -629,7 +629,7 @@ against Agave 4.4.
    range: beyond 64 ulps the error is at most `2.4 × 10^-18 × max(S, K)`, while measured
    against `max(S Dq, K Dr)` it reaches `2.9 × 10^-14` (where `S Dq` falls to `e^{−15} S`), so
    `max(S, K)` stays the scale (decided 2026-10-29, `docs/precision.md`).
-5. Year basis: 365 days (proposed) or 365.25? Proposed closed in section 8: 365 kept.
+5. Year basis: 365 days (proposed) or 365.25? Decided 2026-10-31 (section 8): 365 kept.
 6. Decided (latest-stable rule): OptionStratLib 0.23 from crates.io as the oracle.
 7. Decided: Pinocchio 0.11, like the other three repos (exception recorded above).
 8. Decided (2026-10-29): `Fixed::raw`/`from_raw` yes; newtypes only via their validating
@@ -866,11 +866,11 @@ Milestone 7 (2026-10-29), release preparation:
   the CHANGELOG, and `cargo publish` runs only on the explicit go-ahead (Joaquin's call, through the
   coordinator).
 
-## 8. Version 0.2.0 (proposed 2026-10-31, under review)
+## 8. Version 0.2.0 (agreed with codex 2026-10-31)
 
 Candidates from Joaquin, in his priority order, with the proposed decision for each. Codex
-reviews this section; agreed points become decisions here with their numbers, and anything
-left open goes to the coordinator with both positions.
+reviewed this section in two rounds (#16); every point below is agreed, with no disagreement
+escalated.
 
 ### Context measured on 0.1.0
 
