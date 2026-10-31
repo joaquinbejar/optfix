@@ -863,7 +863,7 @@ Milestone 7 (2026-10-29), release preparation:
   the CHANGELOG, and `cargo publish` runs only on the explicit go-ahead (Joaquin's call, through the
   coordinator).
 
-## 8. Version 0.2.0 (agreed with codex 2026-10-31)
+## 8. Version 0.2.0 (agreed with codex 2026-10-31; milestones 8 to 13 done)
 
 Candidates from Joaquin, in his priority order, with the proposed decision for each. Codex
 reviewed this section in two rounds (#16); every point below is agreed, with no disagreement
@@ -1188,6 +1188,16 @@ If those bounds cannot be established within the milestone's PR, binaries are de
 and the release goes ahead without them. Binary greeks are postponed in any case: delta and
 gamma of a binary are unbounded near expiry at the strike and need their own conditioning
 rules, as `implied_vol` did.
+
+### Milestone 14: release 0.2.0
+
+(Prepared.) `PricingError` is `#[non_exhaustive]` with its `#[repr(u8)]` discriminants kept;
+`e as u8` still compiles from another crate (checked), so the downstream repos need no code
+change: varswap maps it with `as u8`, metalbook formats it, and quotebook has its own error
+type. The bench program's `error_status` gains the wildcard arm a `match` now needs. Workspace
+version 0.2.0, `CHANGELOG.md` 0.2.0 (unreleased until the tag), README install `optfix = "0.2"`
+and features. Tag `v0.2.0`, crates.io and the GitHub release on the coordinator's go after
+codex's review.
 
 ### Postponed to 0.3
 

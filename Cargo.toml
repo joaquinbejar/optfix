@@ -3,7 +3,7 @@ members = ["optfix", "bench-program", "bench", "lint-control"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Joaquin Bejar <jb@taunais.com>"]
 license = "MIT"
@@ -21,7 +21,7 @@ rust_decimal = "1.43"
 # bench/ input draws: pure-Rust libm (0.2.16, checked 2026-10-31) gives the same f64 on every
 # platform, so CI reproduces the committed CU table; dev-dependency only.
 libm = "0.2"
-optfix = { path = "optfix", version = "0.1" }
+optfix = { path = "optfix", version = "0.2" }
 # Pinocchio 0.11 generation: decided exception to the latest-stable rule (docs/PLAN.md).
 pinocchio = { version = "0.11", default-features = false, features = ["cpi"] }
 # bench/ only: LiteSVM 0.18.1 (latest) pins these generations of the Solana client crates;
