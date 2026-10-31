@@ -938,11 +938,18 @@ variants alike, unless a milestone explicitly agrees a change.
     `git diff --exit-code docs/benchmarks.md`, so a stale committed table fails too.
 - **Pinned toolchains** (codex): the CU table depends on `cargo-build-sbf` and its
   platform-tools, not on the Agave CLI version alone, and `rust-toolchain.toml` floats on
-  `stable`. CI installs the Agave CLI 4.4.0 release tarball, verifies its SHA-256 (recorded in
-  the workflow), and fails unless `cargo build-sbf --version` reports `cargo-build-sbf 4.5.0`,
-  platform-tools `v1.57` and Rust `1.95.0`, the values `docs/benchmarks.md` records. The host
-  toolchain (rustc, rustfmt, clippy) is pinned in CI to an exact release through
-  `RUSTUP_TOOLCHAIN` (1.99.1 today, recorded in the workflow and in `docs/benchmarks.md`);
+  `stable`. CI installs the Agave CLI 4.4.0 release tarball and verifies its SHA-256
+  (recorded in the workflow). It does not assume what the tarball bundles: if it lacks
+  `cargo-build-sbf` 4.5.0, that is installed on its own (`cargo install --locked
+  cargo-build-sbf --version 4.5.0`), and the platform-tools v1.57 archive is checked against a
+  recorded SHA-256 too. Before any check runs, a step fails unless `cargo build-sbf --version`
+  reports `cargo-build-sbf 4.5.0`, platform-tools `v1.57` and Rust `1.95.0`, the values
+  `docs/benchmarks.md` records. The host toolchain (rustc, rustfmt, clippy) is pinned in CI to
+  an exact release (1.99.1 today, recorded in the workflow and in `docs/benchmarks.md`), and
+  the same step asserts `rustc`, `rustfmt` and `clippy` report it. Every CI subcommand must run
+  on that pin: the Makefile's explicit `+stable` (`fmt`, `fmt-check`, the rustfmt call in
+  `tables-check`) becomes a `RUST_TOOLCHAIN` variable, `stable` by default and the exact pin in
+  CI, since `RUSTUP_TOOLCHAIN` does not override an explicit `+stable`.
   `rust-toolchain.toml` stays `stable` for local work, as in matchbook. Bumping either pin is
   its own PR, with the bench table regenerated and the budget re-agreed if a row moves.
 - Every cargo command in CI runs with `--locked` (a `CARGO_FLAGS` variable in the Makefile,
@@ -1043,11 +1050,15 @@ carries the absolute error of `N` and of `d1`/`d2`, unbounded relative to a smal
 tails and very sensitive at the strike when `T` is tiny. The PR must fix, before code:
 
 - the API and the payout range (`payout` as a `Price`, within the `Spot` range);
-- `T = 0` and the degenerate branch: strictly in the money pays (`S > K` for a call, `S < K`
-  for a put); `S = K` pays zero, and the same rule applies when `σ√T` is below the threshold;
-- identities, tested: cash-or-nothing call plus put equals `payout × Dr` exactly if `N`'s
-  complement is exact (milestone 4), else within the bound; asset-or-nothing call minus
-  `K ×` cash-or-nothing call (unit payout) equals the vanilla call within the summed bounds;
+- `T = 0`, the only degenerate case of the vanilla pricer (`evaluate` branches on `T = 0`
+  alone; positive `T` is at least `2^-64` years and stays representable): strictly in the
+  money pays (`S > K` for a call, `S < K` for a put) and `S = K` pays zero. No `σ√T` threshold
+  is added unless the PR defines it and proves its error bound;
+- identities, tested, for `T > 0` only: cash-or-nothing call plus put equals `payout × Dr`
+  within an explicit rounding bound (even with an exact `N` complement, each side is a separate
+  rounded `Fixed` product); asset-or-nothing call minus `K ×` cash-or-nothing call (unit
+  payout) equals the vanilla call within the summed bounds. At `T = 0` the zero rule applies
+  instead (call plus put is zero at `S = K`, not `payout × Dr`);
 - published bounds from an independent high-precision reference (mpmath at 100 digits, as in
   milestones 4 to 6), covering tiny `T`, at the money, the tails and the `d1_terms` branch
   seam. OptionStratLib alone is not enough: its normal CDF is f64 grade with weak tails.
