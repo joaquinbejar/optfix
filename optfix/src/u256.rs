@@ -3,16 +3,24 @@
 //! Only the operations `Fixed` needs: a full `u128 × u128` product, division of a 256-bit
 //! value by a `u128` whose quotient fits in a `u128`, and an integer square root. The value is
 //! four `u64` limbs: milestone 2 measured this layout against two `u128` limbs on SBF and kept
-//! it (`docs/PLAN.md`, decision log). Every limb operation is checked.
+//! it (`docs/PLAN.md`, decision log). Division runs on 32-bit digits held in `u64` (milestone
+//! 10), so no step lowers to a `u128` divide; results are bit-identical to 0.1.0's kernel,
+//! which the tests keep as their reference (`u256/v01.rs`, `u256/frozen.rs`). Every limb
+//! operation is checked.
 
 use crate::PricingError;
+
+#[cfg(test)]
+mod frozen;
+#[cfg(test)]
+mod v01;
 
 /// Mask of the low 64 bits of a `u128`.
 const LOW_64: u128 = u64::MAX as u128;
 
-/// Upper bound on Newton iterations in [`U256::isqrt`]. Starting from a power of two above the
-/// root, the integer Newton step converges in well under 16 iterations for every input below
-/// `2^254`; the cap only turns a broken invariant into an error instead of a loop.
+/// Upper bound on Newton iterations in [`U256::isqrt`]. From its seed (within `2^-30` above
+/// the root) the integer Newton step takes at most four divisions (tested); the cap only turns
+/// a broken invariant into an error instead of a loop.
 const ISQRT_MAX_ITERATIONS: u32 = 128;
 
 /// Unsigned 256-bit integer as four 64-bit limbs, `w0` least significant.
@@ -158,78 +166,119 @@ impl U256 {
     /// Quotient and remainder of `self / d`.
     ///
     /// `DomainError` if `d == 0`; `Overflow` if the quotient does not fit in a `u128`.
-    /// Knuth's algorithm D on 64-bit digits: short division when `d` fits in one digit,
-    /// otherwise the two-digit divisor is normalized and each quotient digit is estimated,
-    /// refined with the second divisor digit and corrected.
+    /// Knuth's algorithm D (TAOCP vol. 2, 4.3.1) on 32-bit digits held in `u64`, so every
+    /// estimate, product and remainder is a native 64-bit operation: on SBF a `u64` divide is
+    /// one instruction, a `u128` divide a `__udivti3` call of about 580 CU (milestone 3). A
+    /// one-digit divisor takes short division; otherwise the divisor is normalized (top bit of
+    /// its top digit set) and each of the four quotient digits is estimated from the top two
+    /// remainder digits, refined with the second divisor digit (step D3) and corrected by at
+    /// most one add-back (step D6).
     pub(crate) fn div_rem(self, d: u128) -> Result<(u128, u128), PricingError> {
         if d == 0 {
             return Err(PricingError::DomainError);
         }
-        if hi64(d) == 0 {
-            self.div_rem_short(lo64(d))
-        } else {
-            self.div_rem_long(d)
-        }
-    }
-
-    /// Division by a one-digit divisor.
-    fn div_rem_short(self, v: u64) -> Result<(u128, u128), PricingError> {
-        // The quotient fits in 128 bits iff self < v × 2^128, that is w3 == 0 and w2 < v.
-        if self.w3 != 0 || self.w2 >= v {
-            return Err(PricingError::Overflow);
-        }
-        let v = u128::from(v);
-        let (q1, r) = short_step(self.w2, self.w1, v)?;
-        let (q0, r) = short_step(r, self.w0, v)?;
-        Ok((join(q1, q0), u128::from(r)))
-    }
-
-    /// Division by a two-digit divisor (`d >= 2^64`).
-    fn div_rem_long(self, d: u128) -> Result<(u128, u128), PricingError> {
         // The quotient fits in 128 bits iff self < d × 2^128, that is (w3:w2) < d.
         if join(self.w3, self.w2) >= d {
             return Err(PricingError::Overflow);
         }
-        let s = hi64(d).leading_zeros();
-        // `s` counts leading zeros of `d`, so the shift drops no bits.
-        let dn = d.checked_shl(s).ok_or(PricingError::Overflow)?;
-        let shift = |hi: u64, lo: u64| -> Result<u64, PricingError> {
-            if s == 0 {
-                return Ok(hi);
-            }
-            let back = 64u32.checked_sub(s).ok_or(PricingError::Overflow)?;
-            Ok(hi.checked_shl(s).ok_or(PricingError::Overflow)?
-                | lo.checked_shr(back).ok_or(PricingError::Overflow)?)
+        let n = digit_count(d);
+        if n == 1 {
+            return self.div_rem_digit(lo64(d));
+        }
+        let top = digit(&split32(d), n.checked_sub(1).ok_or(PricingError::Overflow)?)?;
+        // `top` is a nonzero 32-bit digit in a `u64`: 32 to 63 leading zeros, so `s <= 31`
+        // and the shifted divisor still has `n` digits.
+        let s = top.leading_zeros().saturating_sub(32);
+        let vn = split32(d.checked_shl(s).ok_or(PricingError::Overflow)?);
+        let mut u = self.shifted_digits(s)?;
+        // One instance per divisor length, so the digit loops unroll and the index checks
+        // fold away.
+        let q = match n {
+            2 => quotient::<2>(&mut u, &vn)?,
+            3 => quotient::<3>(&mut u, &vn)?,
+            _ => quotient::<4>(&mut u, &vn)?,
         };
-        // (w3:w2) < d, so the digit shifted out of w3 is zero and (u3:u2) < dn.
-        let u3 = shift(self.w3, self.w2)?;
-        let u2 = shift(self.w2, self.w1)?;
-        let u1 = shift(self.w1, self.w0)?;
-        let u0 = self.w0.checked_shl(s).ok_or(PricingError::Overflow)?;
-        let (q1, r) = long_step(join(u3, u2), u1, dn)?;
-        let (q0, r) = long_step(r, u0, dn)?;
-        let rem = r.checked_shr(s).ok_or(PricingError::Overflow)?;
-        Ok((join(q1, q0), rem))
+        // The remainder is in the low `n` digits; the digits above them are zero.
+        let low = u.get(..4).ok_or(PricingError::Overflow)?;
+        let r = join32(low)? >> s;
+        Ok((join32(&q)?, r))
+    }
+
+    /// Division by a one-digit divisor `v < 2^32`: four native 64-bit divisions.
+    fn div_rem_digit(self, v: u64) -> Result<(u128, u128), PricingError> {
+        // (w3:w2) < v < 2^32, so the running remainder starts below 2^32.
+        let mut r = self.w2;
+        let mut q = [0u64; 4];
+        let low = [self.w1 >> 32, lo32(self.w1), self.w0 >> 32, lo32(self.w0)];
+        for (k, &next) in low.iter().enumerate() {
+            // r < v <= 2^32 − 1, so r × 2^32 + next < 2^64.
+            let num = (r << 32) | next;
+            let qk = num.checked_div(v).ok_or(PricingError::DomainError)?;
+            r = num.checked_rem(v).ok_or(PricingError::DomainError)?;
+            let j = 3usize.checked_sub(k).ok_or(PricingError::Overflow)?;
+            *q.get_mut(j).ok_or(PricingError::Overflow)? = qk;
+        }
+        Ok((join32(&q)?, u128::from(r)))
+    }
+
+    /// The nine 32-bit digits of `self × 2^s`, `s < 32`, least significant first.
+    fn shifted_digits(self, s: u32) -> Result<[u64; 9], PricingError> {
+        let words = [self.w0, self.w1, self.w2, self.w3];
+        let mut out = [0u64; 9];
+        let mut carry = 0u64;
+        for (i, &w) in words.iter().enumerate() {
+            // `w << s` keeps the low 64 bits; the bits shifted out carry into the next word.
+            let shifted = (w << s) | carry;
+            carry = if s == 0 {
+                0
+            } else {
+                w >> 64u32.saturating_sub(s)
+            };
+            let k = i.checked_mul(2).ok_or(PricingError::Overflow)?;
+            *out.get_mut(k).ok_or(PricingError::Overflow)? = lo32(shifted);
+            *out.get_mut(k.checked_add(1).ok_or(PricingError::Overflow)?)
+                .ok_or(PricingError::Overflow)? = shifted >> 32;
+        }
+        *out.get_mut(8).ok_or(PricingError::Overflow)? = carry;
+        Ok(out)
+    }
+
+    /// The top 64 bits of `self` and the even shift `2e` with `self >> 2e` equal to them,
+    /// for a nonzero `self`.
+    fn top_64(self) -> Result<(u64, u32), PricingError> {
+        let bits = 256u32
+            .checked_sub(self.leading_zeros())
+            .ok_or(PricingError::Overflow)?;
+        // An even shift keeps `sqrt(self >> 2e) × 2^e` a bound on `sqrt(self)`; `bits − 64`
+        // rounded up to even leaves 63 or 64 significant bits.
+        let shift = bits.saturating_sub(64).div_ceil(2).saturating_mul(2);
+        let (t, _) = self.shr(shift)?;
+        Ok((u64::try_from(t).map_err(|_| PricingError::Overflow)?, shift))
     }
 
     /// `floor(sqrt(self))`; `Overflow` if `self >= 2^254`.
     ///
-    /// Integer Newton iteration from a power of two at or above the root; the sequence
-    /// decreases strictly until it reaches `floor(sqrt(self))`.
+    /// Integer Newton iteration from a seed at or above the root: the root of the top 64
+    /// bits (native `u64` Newton) plus one, scaled back. Write `self = T × 2^(2e) + low` with
+    /// `T` the top 64 bits; then `sqrt(self) < sqrt(T + 1) × 2^e <= (isqrt(T) + 1) × 2^e`, the
+    /// seed, whose relative excess is below `2^-30`. From any seed at or above the root the
+    /// integer Newton sequence decreases strictly until it reaches `floor(sqrt(self))`, where
+    /// the next step stops decreasing; quadratic convergence takes this seed there in two or
+    /// three steps, and one more confirms it.
     pub(crate) fn isqrt(self) -> Result<u128, PricingError> {
-        let bits = 256u32
-            .checked_sub(self.leading_zeros())
-            .ok_or(PricingError::Overflow)?;
-        if bits == 0 {
+        if self == Self::default() {
             return Ok(0);
         }
-        let half = bits.div_ceil(2);
-        if half > 127 {
+        if self.leading_zeros() < 2 {
             return Err(PricingError::Overflow);
         }
-        // `self < 2^bits <= 2^(2 × half)`, so `x >= sqrt(self)`.
-        let mut x = 1u128.checked_shl(half).ok_or(PricingError::Overflow)?;
+        let (t, shift) = self.top_64()?;
+        let seed = isqrt_u64(t).checked_add(1).ok_or(PricingError::Overflow)?;
+        let mut x = u128::from(seed)
+            .checked_shl(shift.checked_div(2).ok_or(PricingError::Overflow)?)
+            .ok_or(PricingError::Overflow)?;
         for _ in 0..ISQRT_MAX_ITERATIONS {
+            note_isqrt_step();
             let (q, _) = self.div_rem(x)?;
             let y = x
                 .checked_add(q)
@@ -244,82 +293,203 @@ impl U256 {
     }
 }
 
-/// `(r × 2^64 + digit) / v` with `r < v < 2^64`, so the quotient digit fits in 64 bits.
-fn short_step(r: u64, digit: u64, v: u128) -> Result<(u64, u64), PricingError> {
-    let num = join(r, digit);
-    let q = num.checked_div(v).ok_or(PricingError::Overflow)?;
-    let rem = q
-        .checked_mul(v)
-        .and_then(|p| num.checked_sub(p))
-        .ok_or(PricingError::Overflow)?;
-    Ok((
-        u64::try_from(q).map_err(|_| PricingError::Overflow)?,
-        u64::try_from(rem).map_err(|_| PricingError::Overflow)?,
-    ))
+/// Largest 32-bit digit, held in a `u64`.
+const DIGIT: u64 = 0xffff_ffff;
+
+/// The low 32 bits of `x`. A truncating cast, not `x & DIGIT`: sBPF immediates are
+/// sign-extended, so the mask would compile to two shifts.
+#[inline(always)]
+fn lo32(x: u64) -> u64 {
+    // Truncation intended: keeps the low 32 bits.
+    u64::from(x as u32)
 }
 
-/// One digit of algorithm D: `(top × 2^64 + digit) / dn` with `top < dn` and `dn` normalized
-/// (top bit set). The estimate from the top divisor digit is refined with the second one
-/// (Knuth, TAOCP vol. 2, 4.3.1, step D3), then corrected by at most two add-backs.
-fn long_step(top: u128, digit: u64, dn: u128) -> Result<(u64, u128), PricingError> {
-    let (vn1, vn0) = (u128::from(hi64(dn)), u128::from(lo64(dn)));
-    let mut qhat = top.checked_div(vn1).ok_or(PricingError::Overflow)?;
-    let mut rhat = qhat
-        .checked_mul(vn1)
-        .and_then(|p| top.checked_sub(p))
-        .ok_or(PricingError::Overflow)?;
+/// The four 32-bit digits of `x`, least significant first.
+fn split32(x: u128) -> [u64; 4] {
+    let (hi, lo) = (hi64(x), lo64(x));
+    [lo32(lo), lo >> 32, lo32(hi), hi >> 32]
+}
+
+/// The `u128` with the 32-bit digits `d[0..4]`, least significant first.
+fn join32(d: &[u64]) -> Result<u128, PricingError> {
+    let at = |i: usize| digit(d, i);
+    Ok(join((at(3)? << 32) | at(2)?, (at(1)? << 32) | at(0)?))
+}
+
+/// Number of significant 32-bit digits of a nonzero `d`, in `1..=4`.
+fn digit_count(d: u128) -> usize {
+    match 128u32.saturating_sub(d.leading_zeros()) {
+        0..=32 => 1,
+        33..=64 => 2,
+        65..=96 => 3,
+        _ => 4,
+    }
+}
+
+/// Product of two 32-bit digits. The masks are no-ops for digits, but they let the compiler
+/// see that the product fits in 64 bits: an overflow-checked `u64` multiply of unbounded
+/// operands lowers to a `__multi3` call on SBF (about 50 CU), which made each quotient digit
+/// cost about 390 CU in the first version of this kernel.
+#[inline(always)]
+fn dmul(a: u64, b: u64) -> Result<u64, PricingError> {
+    if a > DIGIT || b > DIGIT {
+        return Err(PricingError::Overflow);
+    }
+    lo32(a).checked_mul(lo32(b)).ok_or(PricingError::Overflow)
+}
+
+/// `a[i]`, or `Overflow` for an index out of range (a broken invariant).
+#[inline(always)]
+fn digit(a: &[u64], i: usize) -> Result<u64, PricingError> {
+    a.get(i).copied().ok_or(PricingError::Overflow)
+}
+
+/// `a[i] = v`, or `Overflow` for an index out of range.
+#[inline(always)]
+fn set(a: &mut [u64], i: usize, v: u64) -> Result<(), PricingError> {
+    *a.get_mut(i).ok_or(PricingError::Overflow)? = v;
+    Ok(())
+}
+
+/// The four quotient digits of algorithm D for an `N`-digit normalized divisor.
+#[inline(always)]
+fn quotient<const N: usize>(u: &mut [u64; 9], vn: &[u64; 4]) -> Result<[u64; 4], PricingError> {
+    // Most significant digit first: each step consumes the remainder of the one above.
+    let q3 = step::<N>(u, vn, 3)?;
+    let q2 = step::<N>(u, vn, 2)?;
+    let q1 = step::<N>(u, vn, 1)?;
+    let q0 = step::<N>(u, vn, 0)?;
+    Ok([q0, q1, q2, q3])
+}
+
+/// One quotient digit of algorithm D: replaces `u[j..=j + n]` by its remainder modulo the
+/// normalized `n`-digit divisor `vn` and returns the digit. Requires `u[j..=j + n] < vn × b`
+/// (`b = 2^32`), which the overflow check and the previous steps establish.
+#[inline(always)]
+fn step<const N: usize>(u: &mut [u64; 9], vn: &[u64; 4], j: usize) -> Result<u64, PricingError> {
+    let n = N;
+    let idx = |k: usize| j.checked_add(k).ok_or(PricingError::Overflow);
+    let n1 = n.checked_sub(1).ok_or(PricingError::Overflow)?;
+    let n2 = n.checked_sub(2).ok_or(PricingError::Overflow)?;
+    let (v1, v2) = (digit(vn, n1)?, digit(vn, n2)?);
+    let jn = idx(n)?;
+    // D3: estimate from the top two remainder digits; u[j + n] <= v1 < 2^32.
+    let num = (digit(u, jn)? << 32) | digit(u, idx(n1)?)?;
+    let mut qhat = num.checked_div(v1).ok_or(PricingError::Overflow)?;
+    let mut rhat = num.checked_rem(v1).ok_or(PricingError::Overflow)?;
+    let u2 = digit(u, idx(n2)?)?;
     for _ in 0..2 {
-        // Short-circuit: the product is only formed when qhat < 2^64 and rhat < 2^64.
-        let too_big = qhat > LOW_64
-            || qhat.checked_mul(vn0).ok_or(PricingError::Overflow)? > join(lo64(rhat), digit);
+        // Short-circuit: the product is formed only when qhat and rhat are digits, so it
+        // stays below 2^64.
+        let too_big = qhat > DIGIT || dmul(qhat, v2)? > ((rhat << 32) | u2);
         if !too_big {
             break;
         }
+        note(&REFINE);
         qhat = qhat.checked_sub(1).ok_or(PricingError::Overflow)?;
-        rhat = rhat.checked_add(vn1).ok_or(PricingError::Overflow)?;
-        if rhat > LOW_64 {
+        rhat = rhat.checked_add(v1).ok_or(PricingError::Overflow)?;
+        if rhat > DIGIT {
             break;
         }
     }
-    let mut q = qhat.min(LOW_64);
-    // Three-digit values as (top digit, low 128 bits).
-    let value = (hi64(top), join(lo64(top), digit));
-    let mut prod = mul_3(q, vn1, vn0)?;
-    for _ in 0..2 {
-        if prod > value {
-            q = q.checked_sub(1).ok_or(PricingError::Overflow)?;
-            prod = sub_3(prod, (0, dn))?;
-        }
+    // A zero digit leaves the remainder unchanged (common for the top digits of a quotient
+    // below 2^96).
+    if qhat == 0 {
+        return Ok(0);
     }
-    let (h, rem) = sub_3(value, prod)?;
-    if h != 0 || rem >= dn {
-        // Excluded by the correction bound; reported rather than asserted.
-        return Err(PricingError::Overflow);
-    }
-    Ok((u64::try_from(q).map_err(|_| PricingError::Overflow)?, rem))
-}
-
-/// `q × (vn1 × 2^64 + vn0)` for `q < 2^64`, as (top digit, low 128 bits).
-fn mul_3(q: u128, vn1: u128, vn0: u128) -> Result<(u64, u128), PricingError> {
-    let p0 = q.checked_mul(vn0).ok_or(PricingError::Overflow)?;
-    let p1 = q.checked_mul(vn1).ok_or(PricingError::Overflow)?;
-    let t = add(&[hi64(p0), lo64(p1)])?;
-    let top = add(&[hi64(t), hi64(p1)])?;
-    Ok((
-        u64::try_from(top).map_err(|_| PricingError::Overflow)?,
-        join(lo64(t), lo64(p0)),
-    ))
-}
-
-/// `a − b` on (top digit, low 128 bits); `Overflow` if `b > a`.
-fn sub_3(a: (u64, u128), b: (u64, u128)) -> Result<(u64, u128), PricingError> {
-    let (lo, borrow) = a.1.overflowing_sub(b.1);
-    let hi =
-        a.0.checked_sub(b.0)
-            .and_then(|h| h.checked_sub(u64::from(borrow)))
+    // D4: u[j..=j + n] −= qhat × vn. Each product plus carry is below 2^64; a negative
+    // difference of digits wraps to a value with the top bit set.
+    let (mut carry, mut borrow) = (0u64, 0u64);
+    for i in 0..n {
+        let p = dmul(qhat, digit(vn, i)?)?
+            .checked_add(carry)
             .ok_or(PricingError::Overflow)?;
-    Ok((hi, lo))
+        carry = p >> 32;
+        let k = idx(i)?;
+        let t = digit(u, k)?.wrapping_sub(lo32(p)).wrapping_sub(borrow);
+        set(u, k, lo32(t))?;
+        borrow = t >> 63;
+    }
+    let t = digit(u, jn)?.wrapping_sub(carry).wrapping_sub(borrow);
+    set(u, jn, lo32(t))?;
+    if t >> 63 == 0 {
+        return Ok(qhat);
+    }
+    // D6: qhat was one too large (probability about 2/b): add the divisor back.
+    note(&ADD_BACK);
+    qhat = qhat.checked_sub(1).ok_or(PricingError::Overflow)?;
+    let mut c = 0u64;
+    for i in 0..n {
+        let k = idx(i)?;
+        let s = digit(u, k)?
+            .checked_add(digit(vn, i)?)
+            .and_then(|s| s.checked_add(c))
+            .ok_or(PricingError::Overflow)?;
+        set(u, k, lo32(s))?;
+        c = s >> 32;
+    }
+    // The carry out of the top digit cancels the borrow of D4.
+    let top = lo32(digit(u, jn)?.wrapping_add(c));
+    set(u, jn, top)?;
+    Ok(qhat)
 }
+
+/// `floor(sqrt(t))` for a `u64`, by integer Newton from a power of two at or above the root.
+/// The loop cap is never reached; were it, `x` would still be at or above the root, so the
+/// seed built from it stays an upper bound.
+fn isqrt_u64(t: u64) -> u64 {
+    if t == 0 {
+        return 0;
+    }
+    let bits = 64u32.saturating_sub(t.leading_zeros());
+    // 2^ceil(bits/2) >= sqrt(t); at most 2^32, which fits.
+    let mut x = 1u64 << bits.div_ceil(2);
+    // From 2^32 at most, the sequence reaches the root in well under 64 steps.
+    for _ in 0..64 {
+        // floor((x + t/x) / 2) without forming x + t/x, which can exceed 2^64.
+        let q = t.checked_div(x).unwrap_or(0);
+        let y = (x >> 1).saturating_add(q >> 1).saturating_add(x & q & 1);
+        if y >= x {
+            return x;
+        }
+        x = y;
+    }
+    x
+}
+
+/// Path counters for the tests: algorithm D's refinement (D3) and add-back (D6) branches.
+#[cfg(test)]
+static REFINE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static ADD_BACK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+// Newton steps (divisions) taken by [`U256::isqrt`] on this thread, for the tests; per thread,
+// so tests running in parallel do not disturb one another's count.
+#[cfg(test)]
+std::thread_local! {
+    pub(crate) static ISQRT_STEPS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn note_isqrt_step() {
+    ISQRT_STEPS.with(|c| c.set(c.get().saturating_add(1)));
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn note_isqrt_step() {}
+
+#[cfg(test)]
+fn note(c: &core::sync::atomic::AtomicU64) {
+    c.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn note(_: &()) {}
+#[cfg(not(test))]
+const REFINE: () = ();
+#[cfg(not(test))]
+const ADD_BACK: () = ();
 
 #[cfg(test)]
 #[allow(

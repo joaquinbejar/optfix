@@ -1,0 +1,18 @@
+# Writes optfix/tests/data/frozen_0_1.csv: inputs and outputs of the published optfix 0.1.0
+# (the `v0.1.0` tag), the bit-for-bit reference that 0.2 must reproduce (docs/PLAN.md
+# section 8, milestone 10). Standalone: not a workspace member, so the workspace never sees
+# two packages named `optfix`.
+#
+#     cargo run --release --manifest-path tools/frozen_0_1/Cargo.toml > optfix/tests/data/frozen_0_1.csv
+
+[package]
+name = "frozen-0-1"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+# Exact pin: the reference is this release and no other.
+optfix = "=0.1.0"

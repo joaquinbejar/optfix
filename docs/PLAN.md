@@ -601,11 +601,8 @@ against Agave 4.4.
 
 ## Follow-ups (not in a milestone yet)
 
-- **Cheaper U256 division.** `div_*`, `from_ratio`, `from_scaled` and `sqrt` still divide
-  with `u128` operations, which lower to `__udivti3` (about 580 CU per call on SBF). A
-  32-bit-digit 128/64 step measured about 135 CU in milestone 3, so a division kernel on
-  native `u64` digits should cut `DivDown` (1,597 CU) and `SqrtDown` (10,703 CU) severalfold.
-  `MulDown` no longer divides since the switch to Q64.64 (284 CU).
+- **Cheaper U256 division.** Done in milestone 10 (section 8): `DivDown` 546 and `SqrtDown`
+  2,281 net CU at the median, from 1,597 and 10,927.
 
 ## 6. Open questions
 
@@ -998,6 +995,33 @@ lower.
   one, and a deliberately failing commit on a scratch branch shows each job failing.
 
 ### Milestone 10: division on native `u64` digits (candidate 1)
+
+(Done; `DivDown` max is 44 CU over its target, to be re-agreed with codex before merging.) As built: algorithm D on
+32-bit digits in `u64` (`optfix/src/u256.rs`), specialized per divisor length so the digit
+loops unroll; a one-digit divisor takes four native divisions; `isqrt` seeds Newton with the
+root of the top 64 bits plus one and keeps the integer Newton loop, so its exactness never
+depends on the seed's precision (at most four divisions, tested). Net CU, median and max:
+
+| Row | 0.1.0 | 0.2 | Target (max) |
+| --- | ---: | ---: | ---: |
+| `DivDown` | 1,597 / 1,993 | 546 / 644 | 600 |
+| `SqrtDown` | 10,929 / 13,980 | 2,281 / 2,383 | 3,000 |
+
+What it took: the first version on 32-bit digits cost more than 0.1.0 (1,849 median), because
+an overflow-checked `u64` multiply of operands the compiler cannot bound lowers to `__multi3`
+(about 50 CU); bounding the digit products (983), one instance per divisor length (784) and
+forced inlining of the digit step (570) brought it down, and a zero estimated digit skips the
+multiply-subtract (546). No libcall is left in `div_rem`; what remains is about 100
+instructions per quotient digit. `DivDown`'s max misses the 600 target by 44 CU.
+
+Verification: the 0.1.0 kernel is kept test-only (`u256/v01.rs`) and `u256/frozen.rs` checks
+the new one against it and against `num-bigint` (quotient, remainder, `floor(sqrt)`) on
+1,000,000 cases per property, plus every divisor length with shifts 0 and 31, the overflow
+boundary, powers of two and squares with neighbours; counters prove the D3 refinement and the
+D6 add-back run. The frozen 0.1 fixture (`tests/data/frozen_0_1.csv`, 14,901 rows from
+`tools/frozen_0_1`, which depends on the published `optfix = "=0.1.0"` outside the workspace)
+holds `div_*`, `from_ratio`, `from_scaled`, `sqrt_*`, `price`, `price_and_greeks` and
+`implied_vol` results and error variants; `tests/frozen_0_1.rs` reproduces every row.
 
 - On SBF, `u128 / u128` lowers to `__udivti3` (about 580 CU per call, measured in milestone
   3), while a `u64` divide is about 1 CU. Algorithm D today uses 64-bit digits, so each
