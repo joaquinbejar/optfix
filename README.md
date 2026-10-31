@@ -1,3 +1,4 @@
+[![CI](https://github.com/joaquinbejar/optfix/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/joaquinbejar/optfix/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/optfix.svg)](https://crates.io/crates/optfix)
 [![Docs.rs](https://docs.rs/optfix/badge.svg)](https://docs.rs/optfix)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/joaquinbejar/optfix/blob/main/LICENSE)

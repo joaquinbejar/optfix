@@ -69,6 +69,7 @@ CU numbers depend on the toolchain and the build profile. This table was produce
 
 - Agave CLI: `solana-cli 4.4.0 (src:9ef63128; feat:dddabd53, client:Agave)`
 - SBF build: cargo-build-sbf 4.5.0, Default platform-tools: v1.57, Default Rust: 1.95.0, sBPF v3
+- Host toolchain: `rustc 1.99.1 (58cf8f9c3 2026-10-13)`
 - LiteSVM 0.18.1, Agave crates 4.3.2 (`Cargo.lock`)
 - Release profile: `overflow-checks = true`, `lto = "fat"`, `codegen-units = 1`
 

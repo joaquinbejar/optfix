@@ -1,0 +1,49 @@
+# CI for optfix (docs/PLAN.md section 8, milestone 9): `make pre-push` and `make bench` on
+# pinned toolchains, so the committed docs/benchmarks.md is reproduced exactly.
+#
+# Pins (bump each in its own PR, with the bench table regenerated and the budget re-agreed):
+# - Agave CLI 4.4.0 release tarball, which bundles cargo-build-sbf 4.5.0;
+# - platform-tools v1.57 (Rust 1.95.0 for SBF), installed from its verified archive;
+# - host Rust 1.99.1 with rustfmt and clippy.
+# SHA-256 values are the digests GitHub publishes for the release assets.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_PIN: "1.99.1"
+  AGAVE_VERSION: "v4.4.0"
+  AGAVE_SHA256: "3363f4728fe786ac7036e342a20df928aa2e3e43f807fbdce67814840538c574"
+  PLATFORM_TOOLS_VERSION: "v1.57"
+  PLATFORM_TOOLS_SHA256: "b0f7af104adf726fff2a6a09ea2eb2f2d2965c92295f4d7388c08d140e0c2b00"
+  CARGO_TERM_COLOR: never
+
+jobs:
+  pre-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/toolchains
+      - run: make pre-push RUST_TOOLCHAIN="$RUST_PIN" CARGO_FLAGS=--locked
+
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/toolchains
+      - run: make bench RUST_TOOLCHAIN="$RUST_PIN" CARGO_FLAGS=--locked
+      - name: docs/benchmarks.md is the committed one
+        run: git diff --exit-code docs/benchmarks.md

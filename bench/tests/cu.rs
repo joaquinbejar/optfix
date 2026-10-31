@@ -747,6 +747,8 @@ fn table(m: &Measurement, budget: &str) -> String {
     writeln!(s).unwrap();
     writeln!(s, "- Agave CLI: `{agave}`").unwrap();
     writeln!(s, "- SBF build: {toolchain}").unwrap();
+    let host = std::env::var("OPTFIX_HOST_RUSTC").unwrap_or_else(|_| "unknown".into());
+    writeln!(s, "- Host toolchain: `{host}`").unwrap();
     writeln!(s, "- LiteSVM 0.18.1, Agave crates 4.3.2 (`Cargo.lock`)").unwrap();
     writeln!(
         s,
