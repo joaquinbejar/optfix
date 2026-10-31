@@ -198,6 +198,66 @@ pub fn price_and_greeks(opt: &EuropeanOption, m: &MarketInputs) -> Result<Priced
     evaluate(opt, m, true)
 }
 
+/// Market inputs of a Black-76 price: an option on a futures or forward contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FuturesInputs {
+    /// Futures or forward price `F` of the contract the option is written on (the range of a
+    /// spot price).
+    pub forward: Spot,
+    /// Annualized volatility of `F`.
+    pub vol: Volatility,
+    /// Continuously compounded risk-free rate `r`, which discounts the payoff.
+    pub rate: Rate,
+}
+
+impl FuturesInputs {
+    /// The equivalent Black-Scholes-Merton inputs: `S = F` and `q = r`, so the forward drift
+    /// `r − q` is zero and both legs are discounted by `e^{−rT}`.
+    #[must_use]
+    pub fn as_market(&self) -> MarketInputs {
+        MarketInputs {
+            spot: self.forward,
+            vol: self.vol,
+            rate: self.rate,
+            carry: self.rate,
+        }
+    }
+}
+
+/// The Black-76 premium of an option on a futures or forward price `F`:
+/// `C = e^{−rT} (F N(d1) − K N(d2))`, `d1 = (ln(F/K) + σ²T/2) / (σ√T)`.
+///
+/// It is [`price`] with `S = F` and `q = r` ([`FuturesInputs::as_market`]), bit for bit, so
+/// the price envelope of [`price`] applies with `F` in place of `S`.
+///
+/// # Errors
+///
+/// As [`price`]: `DomainError` if `F/K` is outside `[0.05, 20]`.
+#[must_use = "the result carries a possible error"]
+pub fn price_black76(opt: &EuropeanOption, m: &FuturesInputs) -> Result<Price, PricingError> {
+    price(opt, &m.as_market())
+}
+
+/// The Black-76 premium and greeks: [`price_and_greeks`] with `S = F` and `q = r`, bit for bit,
+/// within the same envelopes. The greeks are with respect to the futures price and hold the
+/// other inputs fixed:
+///
+/// - `delta = ∂V/∂F` (`e^{−rT} N(d1)` for a call) and `gamma = ∂²V/∂F²`;
+/// - `vega = ∂V/∂σ`, per 1.00 of volatility;
+/// - `theta = ∂V/∂t` in calendar time, per year, holding `F`, `σ` and `r` fixed: what
+///   Black-Scholes-Merton theta computes with `q = r`, since it holds `S` fixed.
+///
+/// # Errors
+///
+/// As [`price_and_greeks`]: `DomainError` if `F/K` is outside `[0.05, 20]`.
+#[must_use = "the result carries a possible error"]
+pub fn price_and_greeks_black76(
+    opt: &EuropeanOption,
+    m: &FuturesInputs,
+) -> Result<Priced, PricingError> {
+    price_and_greeks(opt, &m.as_market())
+}
+
 /// One leg of a strip: the option kind and strike; expiry and market inputs are the strip's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StripLeg {

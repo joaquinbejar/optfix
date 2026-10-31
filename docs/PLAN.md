@@ -1116,6 +1116,16 @@ pub fn price_and_greeks_strip(expiry: Years, m: &MarketInputs, legs: &[StripLeg]
 
 ### Milestone 12: Black-76 (candidate 5, first part)
 
+(Done.) As built: `FuturesInputs { forward, vol, rate }` with `as_market()` (`S = F`, `q = r`),
+and `price_black76` / `price_and_greeks_black76` as one-line wrappers over `price` /
+`price_and_greeks`. `tests/black76.rs` checks the identity on 100,000 points of the supported
+domain (results and errors, including `F/K` outside `[0.05, 20]`) and the price against
+OptionStratLib's `black_76` on 20,000 points: worst 0.17 of the oracle tolerance
+`10^-9 × max(F, K)`. The greek conventions are documented on `price_and_greeks_black76`. Bench
+rows `PriceBlack76` and `PriceAndGreeksBlack76` (tags 17, 18) measure 9,243 and 14,222 net CU
+at the median, within 20 CU of `Price` and `PriceAndGreeks` (the inputs differ only in
+`q = r`).
+
 - `price_black76` and `price_and_greeks_black76` take a forward `F` (as `Spot`) and compute
   Black-Scholes-Merton with `S = F` and `q = r`. They are thin wrappers, bit-identical to
   `price` and `price_and_greeks` with `carry = rate`, so the 0.1 envelopes apply.

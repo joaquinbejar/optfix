@@ -205,24 +205,26 @@ the Black-Scholes and implied-volatility rows still include decoding six argumen
 | Function | Median CU | Max CU |
 | --- | ---: | ---: |
 | `Fixed::mul_down` | 275 | 288 |
-| `Fixed::div_down` | 544 | 642 |
-| `Fixed::sqrt_down` | 2280 | 2382 |
-| `exp` | 314 | 335 |
+| `Fixed::div_down` | 545 | 643 |
+| `Fixed::sqrt_down` | 2281 | 2383 |
+| `exp` | 315 | 336 |
 | `ln` | 456 | 462 |
-| `norm_cdf` | 1323 | 1383 |
+| `norm_cdf` | 1322 | 1382 |
 | `norm_pdf` | 574 | 597 |
 | `wide::mul_shr` | 340 | 355 |
-| `price` | 9228 | 9548 |
-| `price`, near the money | 11096 | 11471 |
-| `price_and_greeks` | 14201 | 14595 |
-| `price_and_greeks`, near the money | 16077 | 16519 |
-| `implied_vol` | 27130 | 34722 |
-| `implied_vol`, near the money | 32763 | 42078 |
+| `price` | 9227 | 9547 |
+| `price`, near the money | 11095 | 11470 |
+| `price_and_greeks` | 14203 | 14597 |
+| `price_and_greeks`, near the money | 16079 | 16521 |
+| `implied_vol` | 27131 | 34723 |
+| `implied_vol`, near the money | 32764 | 42079 |
 | `implied_vol`, worst case (every step taken) | 42003 | 42951 |
-| `price_strip`, 1 leg | 9463 | 9792 |
-| `price_strip`, 16 legs | 80900 | 87931 |
-| `price_and_greeks_strip`, 1 leg | 14489 | 14889 |
-| `price_and_greeks_strip`, 16 legs | 161006 | 168789 |
+| `price_black76` | 9243 | 9515 |
+| `price_and_greeks_black76` | 14222 | 14555 |
+| `price_strip`, 1 leg | 9462 | 9791 |
+| `price_strip`, 16 legs | 80899 | 87930 |
+| `price_and_greeks_strip`, 1 leg | 14488 | 14888 |
+| `price_and_greeks_strip`, 16 legs | 161005 | 168788 |
 
 `implied_vol` takes at most 3 steps. A strip shares one expiry and market: each extra leg costs about 4762 CU in `price_strip` and 9767 in `price_and_greeks_strip` (medians, from 1 to 16 legs).
 <!-- /generated:cu -->
