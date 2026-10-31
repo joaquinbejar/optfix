@@ -230,12 +230,15 @@ and computing each greek separately (the `Baseline` row of `docs/benchmarks.md`)
 ```shell
 make test        # every test, including the million-case property tests
 make bench       # build bench-program for SBF, run it in LiteSVM, regenerate docs/benchmarks.md
+                 # (fails when a row is over its limit in bench/budget.md)
 make precision   # measured exp and ln errors; regenerates docs/precision.md
 make readme      # regenerate this README's example and tables
 make pre-push    # fmt, clippy, lint controls, tests and docs, as required before a push
 ```
 
-`OPTFIX_PROPTEST_CASES=<n>` lowers the property test case count. The README's example and
+`OPTFIX_PROPTEST_CASES=<n>` lowers the property test case count. Every CU row has committed
+limits in `bench/budget.md`; `make test` and `make bench` fail on a row over its limit, and a
+PR that changes a row's cost updates its limit in the same diff. The README's example and
 tables are generated: `make test` fails while they are stale.
 
 ### Documentation

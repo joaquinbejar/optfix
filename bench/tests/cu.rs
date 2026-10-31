@@ -25,6 +25,7 @@ use optfix::{
     implied_vol, price_and_greeks, EuropeanOption, Fixed, Greeks, IvInputs, MarketInputs,
     OptionKind, Price, Priced, PricingError, Rate, Rounding, Spot, Strike, Volatility, Years,
 };
+use optfix_bench::{check, Measured};
 use solana_address::Address;
 use solana_instruction::Instruction;
 use solana_keypair::Keypair;
@@ -631,7 +632,40 @@ would have won for its exact token conversions (`docs/PLAN.md`, decision log); i
 the more accurate (`docs/precision.md`).
 ";
 
-fn table(m: &Measurement) -> String {
+/// Every row of the table, with the budget's units: net of the `Noop` median, gross for
+/// `Noop` itself.
+fn budget_rows(m: &Measurement) -> Vec<Measured> {
+    let (_, noop_med, noop_hi) = stats(&m.noop);
+    let mut out = vec![Measured {
+        name: "Noop".into(),
+        median: noop_med,
+        max: noop_hi,
+    }];
+    let names = ROWS
+        .iter()
+        .map(|r| r.name)
+        .chain(BSM_ROWS.iter().map(|r| r.1))
+        .chain(IV_ROWS.iter().map(|r| r.1));
+    for (name, cu) in names.zip(m.rows.iter().chain(&m.bsm).chain(&m.iv)) {
+        let (_, med, hi) = stats(cu);
+        out.push(Measured {
+            name: name.into(),
+            median: med - noop_med,
+            max: hi - noop_med,
+        });
+    }
+    out
+}
+
+/// `bench/budget.md`, or `OPTFIX_BUDGET` (the failing control of `make budget-control`).
+fn budget_path() -> PathBuf {
+    std::env::var("OPTFIX_BUDGET").map_or_else(
+        |_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("budget.md"),
+        PathBuf::from,
+    )
+}
+
+fn table(m: &Measurement, budget: &str) -> String {
     let (noop_lo, noop_med, noop_hi) = stats(&m.noop);
     let toolchain = std::env::var("OPTFIX_SBF_TOOLCHAIN").unwrap_or_else(|_| "unknown".into());
     let mut s = String::new();
@@ -690,6 +724,17 @@ fn table(m: &Measurement) -> String {
     }
     let agave = std::env::var("OPTFIX_AGAVE").unwrap_or_else(|_| "unknown".into());
     writeln!(s).unwrap();
+    writeln!(s, "## Budget").unwrap();
+    writeln!(s).unwrap();
+    writeln!(
+        s,
+        "Limits from `bench/budget.md` (`docs/PLAN.md`, milestone 8), net of the `Noop` median \
+         like the table above (gross for `Noop`). `make bench` and `make test` fail when a row \
+         is over a limit; \"loose\" marks a row more than 20% under its limit, to be tightened."
+    )
+    .unwrap();
+    writeln!(s).unwrap();
+    s.push_str(budget);
     s.push_str(COMPARISON);
     writeln!(s).unwrap();
     writeln!(s, "## Reproducing").unwrap();
@@ -727,8 +772,19 @@ fn test_cu_table_is_deterministic_and_matches_host() {
         first.iv, second.iv,
         "implied-volatility CU differs between runs"
     );
-    let t = table(&first);
+    let path = budget_path();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let report = check(&text, &budget_rows(&first));
+    let t = table(&first, &report.table);
     println!("{t}");
+    if !report.violations.is_empty() {
+        let list: Vec<String> = report.violations.iter().map(ToString::to_string).collect();
+        panic!(
+            "CU budget {} violated:\n{}",
+            path.display(),
+            list.join("\n")
+        );
+    }
     if let Ok(path) = std::env::var("OPTFIX_BENCH_OUT") {
         std::fs::write(&path, t).unwrap();
     }
