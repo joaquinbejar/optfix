@@ -14,6 +14,8 @@ Standard library only.
 """
 
 import json
+import os
+import shlex
 import subprocess
 import sys
 
@@ -34,7 +36,9 @@ MINUTES = {
 
 def test_targets() -> list[str]:
     out = subprocess.run(
-        ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+        # The same flags as every other cargo call (`--locked` in CI).
+        ["cargo", "metadata", *shlex.split(os.environ.get("CARGO_FLAGS", "")),
+         "--no-deps", "--format-version", "1"],
         check=True,
         capture_output=True,
         text=True,

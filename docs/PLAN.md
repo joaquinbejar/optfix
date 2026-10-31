@@ -947,8 +947,9 @@ lower.
 - **Platform-dependent bench inputs.** The bench drew its random inputs with the host's
   `powf`/`log10`, which differ in the last bits between macOS and glibc, so the first CI run
   measured `ImpliedVol` at a 27,123 CU median against the committed 27,121. Inputs are now drawn
-  with the pure-Rust `libm` crate (a `bench/` dev-dependency); the committed table moved by at
-  most 4 CU per row, all within the budget, and CI reproduces it byte for byte.
+  with the pure-Rust `libm` crate (a `bench/` dev-dependency); every median and max moved by
+  at most 4 CU (the unbudgeted minimum of `Baseline` by 10), all within the budget, and CI
+  reproduces the table byte for byte.
 - **Runtime.** One runner took 40 minutes for `make pre-push` (tests 28 minutes, run one binary
   after another; the debug-profile CU test and `budget-control` about 7 minutes each). Over the
   30-minute threshold, so CI runs it as parallel jobs whose union is exactly `make pre-push`:

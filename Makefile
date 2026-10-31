@@ -88,7 +88,11 @@ SHARDS ?= 3
 SHARD ?= 0
 .PHONY: test-shard
 test-shard:
-	cargo test $(CARGO_FLAGS) --workspace --all-features $$(python3 tools/test_shards.py $(SHARDS) $(SHARD))
+	@sel=$$(python3 tools/test_shards.py $(SHARDS) $(SHARD)) || \
+		{ echo "test-shard: tools/test_shards.py failed"; exit 1; }; \
+	if [ -z "$$sel" ]; then echo "test-shard: shard $(SHARD) has no targets"; exit 0; fi; \
+	echo "cargo test $(CARGO_FLAGS) --workspace --all-features $$sel"; \
+	cargo test $(CARGO_FLAGS) --workspace --all-features $$sel
 	@if [ "$(SHARD)" = 0 ]; then cargo test $(CARGO_FLAGS) --workspace --all-features --doc; fi
 
 # Format the code
