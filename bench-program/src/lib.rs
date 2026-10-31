@@ -83,6 +83,11 @@ pub enum Instruction {
     PriceAndGreeksStrip = 15,
     /// The [`digest`] alone, over `n` zero values (bench-only, subtracted from the row above).
     Digest = 16,
+    /// `optfix::price_black76` (milestone 12): an option-kind byte and five `FixedBytes`:
+    /// forward, strike, expiry, volatility, rate; returns the price.
+    PriceBlack76 = 17,
+    /// `optfix::price_and_greeks_black76`: as `PriceBlack76`; returns the price and greeks.
+    PriceAndGreeksBlack76 = 18,
 }
 
 impl Instruction {
@@ -111,6 +116,8 @@ impl Instruction {
             14 => Ok(Self::PriceStrip),
             15 => Ok(Self::PriceAndGreeksStrip),
             16 => Ok(Self::Digest),
+            17 => Ok(Self::PriceBlack76),
+            18 => Ok(Self::PriceAndGreeksBlack76),
             _ => Err(BenchError::UnknownInstruction),
         }
     }
@@ -206,6 +213,13 @@ pub fn process_instruction(
         Instruction::PriceStrip => return price_strip(args),
         Instruction::PriceAndGreeksStrip => return greeks_strip(args),
         Instruction::Digest => return digest_only(args),
+        Instruction::PriceAndGreeksBlack76 => {
+            set_return_data(&encode_priced(futures(
+                args,
+                optfix::price_and_greeks_black76,
+            )?));
+            return Ok(());
+        }
         _ => {}
     }
     if let Instruction::PriceAndGreeks | Instruction::Baseline = ix {
@@ -228,13 +242,15 @@ pub fn process_instruction(
         Instruction::NormPdf => unary(args, optfix::norm_pdf)?,
         Instruction::MulShr => mul_shr(args)?,
         Instruction::Price => bsm(args, price_only)?.map(|p| p.price.get()),
+        Instruction::PriceBlack76 => futures(args, black76_price_only)?.map(|p| p.price.get()),
         Instruction::ImpliedVol => iv(args, optfix::implied_vol)?,
         Instruction::ImpliedVolAllIterations => iv(args, optfix::iv_bench::all_iterations)?,
         Instruction::PriceAndGreeks
         | Instruction::Baseline
         | Instruction::PriceStrip
         | Instruction::PriceAndGreeksStrip
-        | Instruction::Digest => return Err(BenchError::InvalidArguments.into()),
+        | Instruction::Digest
+        | Instruction::PriceAndGreeksBlack76 => return Err(BenchError::InvalidArguments.into()),
     };
     set_return_data(&encode_result(result));
     Ok(())
@@ -333,6 +349,48 @@ fn bsm(
                 vol: Volatility::try_new(sigma.get())?,
                 rate: Rate::try_new(r.get())?,
                 carry: Rate::try_new(q.get())?,
+            },
+        ))
+    };
+    Ok(inputs().and_then(|(opt, m)| f(&opt, &m)))
+}
+
+/// `price_black76` with zero greeks, so both Black-76 rows share [`futures`].
+fn black76_price_only(
+    opt: &EuropeanOption,
+    m: &optfix::FuturesInputs,
+) -> Result<Priced, PricingError> {
+    Ok(Priced {
+        price: optfix::price_black76(opt, m)?,
+        greeks: EMPTY_PRICED.greeks,
+    })
+}
+
+/// Decodes `[kind, F, K, T, σ, r]` and runs `f` (a Black-76 function); an argument outside its
+/// newtype's range is reported as a `DomainError` result.
+#[inline(never)]
+fn futures(
+    args: &[u8],
+    f: fn(&EuropeanOption, &optfix::FuturesInputs) -> Result<Priced, PricingError>,
+) -> Result<Result<Priced, PricingError>, BenchError> {
+    let (&kind, rest) = args.split_first().ok_or(BenchError::InvalidArguments)?;
+    let kind = match kind {
+        0 => OptionKind::Call,
+        1 => OptionKind::Put,
+        _ => return Err(BenchError::InvalidArguments),
+    };
+    let [forward, k, t, sigma, r]: [FixedBytes; 5] = decode(rest)?;
+    let inputs = || -> Result<(EuropeanOption, optfix::FuturesInputs), PricingError> {
+        Ok((
+            EuropeanOption {
+                kind,
+                strike: Strike::try_new(k.get())?,
+                expiry: Years::try_new(t.get())?,
+            },
+            optfix::FuturesInputs {
+                forward: Spot::try_new(forward.get())?,
+                vol: Volatility::try_new(sigma.get())?,
+                rate: Rate::try_new(r.get())?,
             },
         ))
     };

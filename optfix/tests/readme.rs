@@ -181,6 +181,8 @@ fn cu_table(bench: &str) -> String {
             "`implied_vol`, worst case (every step taken)",
             "ImpliedVol, all iterations, near the money",
         ),
+        ("`price_black76`", "PriceBlack76"),
+        ("`price_and_greeks_black76`", "PriceAndGreeksBlack76"),
         ("`price_strip`, 1 leg", "PriceStrip, 1 leg"),
         ("`price_strip`, 16 legs", "PriceStrip, 16 legs"),
     ] {

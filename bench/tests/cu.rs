@@ -57,6 +57,8 @@ enum Ix {
     PriceStrip = 14,
     PriceAndGreeksStrip = 15,
     Digest = 16,
+    PriceBlack76 = 17,
+    PriceAndGreeksBlack76 = 18,
 }
 
 /// Status byte plus one 16-byte little-endian value.
@@ -350,7 +352,7 @@ fn price_only(o: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingErr
 
 /// The Black-Scholes rows: instruction, name, host function, and whether the strikes are near
 /// the money (`|S − K| < K / 256`, the other form of `ln(S/K) / (σ√T)`).
-const BSM_ROWS: [(Ix, &str, BsmFn, bool); 5] = [
+const BSM_ROWS: [(Ix, &str, BsmFn, bool); 7] = [
     (Ix::Price, "Price", price_only, false),
     (
         Ix::PriceAndGreeks,
@@ -371,7 +373,40 @@ const BSM_ROWS: [(Ix, &str, BsmFn, bool); 5] = [
         price_and_greeks,
         true,
     ),
+    // Black-76 (milestone 12): the same inputs with `F = S` and `r`, run as `q = r`.
+    (Ix::PriceBlack76, "PriceBlack76", black76_price_only, false),
+    (
+        Ix::PriceAndGreeksBlack76,
+        "PriceAndGreeksBlack76",
+        black76_greeks,
+        false,
+    ),
 ];
+
+/// The Black-76 inputs of a Black-Scholes input: `F = S`, `σ`, `r` (its carry is not used).
+fn futures_of(m: &MarketInputs) -> optfix::FuturesInputs {
+    optfix::FuturesInputs {
+        forward: m.spot,
+        vol: m.vol,
+        rate: m.rate,
+    }
+}
+
+fn black76_price_only(o: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingError> {
+    Ok(Priced {
+        price: optfix::price_black76(o, &futures_of(m))?,
+        greeks: Greeks {
+            delta: Fixed::ZERO,
+            gamma: Fixed::ZERO,
+            vega: Fixed::ZERO,
+            theta: Fixed::ZERO,
+        },
+    })
+}
+
+fn black76_greeks(o: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingError> {
+    optfix::price_and_greeks_black76(o, &futures_of(m))
+}
 
 /// One Black-Scholes input over the supported domain: `S` log-uniform in `[10^-6, 10^9]`,
 /// `S/K` log-uniform in `[0.05, 20]`, `T` uniform in `(0, 30]`, `σ` log-uniform in `[0.005, 5]`,
@@ -411,9 +446,22 @@ fn bsm_input(rng: &mut Rng, near: bool) -> (EuropeanOption, MarketInputs) {
     )
 }
 
-/// Instruction data of a Black-Scholes row: tag, kind byte, six 16-byte values.
+/// Instruction data of a Black-Scholes row: tag, kind byte, six 16-byte values (five for
+/// Black-76: `F, K, T, σ, r`).
 fn bsm_data(ix: Ix, o: &EuropeanOption, m: &MarketInputs) -> Vec<u8> {
     let mut d = vec![ix as u8, o.kind as u8];
+    if let Ix::PriceBlack76 | Ix::PriceAndGreeksBlack76 = ix {
+        for v in [
+            m.spot.get(),
+            o.strike.get(),
+            o.expiry.get(),
+            m.vol.get(),
+            m.rate.get(),
+        ] {
+            d.extend_from_slice(&v.to_bytes().0);
+        }
+        return d;
+    }
     for v in [
         m.spot.get(),
         o.strike.get(),
@@ -429,7 +477,7 @@ fn bsm_data(ix: Ix, o: &EuropeanOption, m: &MarketInputs) -> Vec<u8> {
 
 /// Expected return data: `Price` as one value, the others as status plus five values.
 fn bsm_expected(ix: Ix, r: Result<Priced, PricingError>) -> Vec<u8> {
-    if let Ix::Price = ix {
+    if let Ix::Price | Ix::PriceBlack76 = ix {
         return encode_result(r.map(|p| p.price.get())).to_vec();
     }
     let mut out = vec![0u8; 81];
