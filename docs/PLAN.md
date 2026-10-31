@@ -1140,6 +1140,31 @@ at the median, within 20 CU of `Price` and `PriceAndGreeks` (the inputs differ o
 
 ### Milestone 13: binary prices (candidate 5, second part; deferrable)
 
+(Done; the gate passed, so binaries are in 0.2.) As built:
+`price_cash_or_nothing(opt, m, payout)` and `price_asset_or_nothing(opt, m)`, on the same
+`d1` and `d2` as `price` (`Shared::binary`), each side's own tail `N(±d)` computed directly.
+`payout` is a `Price` up to `Spot::MAX` (`10^9`), `DomainError` above. `T = 0` pays strictly in
+the money (`S > K` for a call, `S < K` for a put), nothing at `S = K`; no `σ√T` threshold.
+
+- **Bound**: `BINARY_ERR_REL × scale + BINARY_ERR_ABS`, `2^-48` and 64 ulps as for `price`,
+  with the undiscounted notional as the scale: `payout` for cash-or-nothing, `S` for
+  asset-or-nothing. Not `payout × Dr` or `S Dq`, the first proposal: a discount factor down to
+  `e^{−15}` holds only absolute precision in Q64.64, and the error over the discounted scale
+  reaches 6.8e-14 (the same reason `max(S, K)` is the price scale, open question 4). Measured
+  against the 256-bit reference (`docs/precision.md`, 1,000,000 points): 1.3e-17 and 7.4e-18.
+- **Independent reference**: `tests/data/binary_fixture.csv`, 35,676 rows of exact prices at
+  100 mpmath digits (`tools/binary_fixture/gen_binary_fixture.py`): `d2` (cash) or `d1`
+  (asset) in `{−9, −5, −1, −1/4, 0, 1/4, 1, 5, 9}` at 26 expiries from `10^-12` s to 30 years,
+  four volatilities, four spot scales and three rate/carry sets, plus at-the-money strikes,
+  both sides of the `d1` switch and `T = 0`. Worst: 3% of the bound.
+- **Identities** (`tests/binary_props.rs`, `T > 0`): cash call + put = `payout × Dr` within
+  twice the bound; asset call − `K ×` cash call (unit payout) = the vanilla call within the
+  summed bounds. At `T = 0` and `S = K` both sides are zero.
+- **OptionStratLib** `binary_black_scholes` (payout 1, `q >= 0`) on 20,000 points: worst 0.10
+  of the oracle tolerance `10^-9 × scale`, a cross-check of the formulas only.
+- **CU**: `CashOrNothing` 7,266 and `AssetOrNothing` 6,889 net at the median (tags 19, 20),
+  below `Price` (one `N` instead of two).
+
 Cash-or-nothing (`payout × Dr × N(±d2)`) and asset-or-nothing (`S Dq N(±d1)`), prices only,
 on the same `d1`, `d2` as `price`. The vanilla envelopes do not bound these: each term
 carries the absolute error of `N` and of `d1`/`d2`, unbounded relative to a small price in the

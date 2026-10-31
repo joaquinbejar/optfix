@@ -32,6 +32,7 @@ MINUTES = {
     "bsm_oracle": 0.4,
     "bsm_fixture": 0.3,
     "strip": 3.0,
+    "binary_props": 2.0,
 }
 
 

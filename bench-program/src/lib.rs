@@ -88,6 +88,11 @@ pub enum Instruction {
     PriceBlack76 = 17,
     /// `optfix::price_and_greeks_black76`: as `PriceBlack76`; returns the price and greeks.
     PriceAndGreeksBlack76 = 18,
+    /// `optfix::price_cash_or_nothing` (milestone 13): as `Price` plus a seventh `FixedBytes`,
+    /// the payout; returns the price.
+    CashOrNothing = 19,
+    /// `optfix::price_asset_or_nothing`: as `Price`; returns the price.
+    AssetOrNothing = 20,
 }
 
 impl Instruction {
@@ -118,6 +123,8 @@ impl Instruction {
             16 => Ok(Self::Digest),
             17 => Ok(Self::PriceBlack76),
             18 => Ok(Self::PriceAndGreeksBlack76),
+            19 => Ok(Self::CashOrNothing),
+            20 => Ok(Self::AssetOrNothing),
             _ => Err(BenchError::UnknownInstruction),
         }
     }
@@ -243,6 +250,8 @@ pub fn process_instruction(
         Instruction::MulShr => mul_shr(args)?,
         Instruction::Price => bsm(args, price_only)?.map(|p| p.price.get()),
         Instruction::PriceBlack76 => futures(args, black76_price_only)?.map(|p| p.price.get()),
+        Instruction::CashOrNothing => cash_or_nothing(args)?,
+        Instruction::AssetOrNothing => bsm(args, asset_or_nothing_only)?.map(|p| p.price.get()),
         Instruction::ImpliedVol => iv(args, optfix::implied_vol)?,
         Instruction::ImpliedVolAllIterations => iv(args, optfix::iv_bench::all_iterations)?,
         Instruction::PriceAndGreeks
@@ -328,7 +337,7 @@ fn price_only(opt: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingE
 #[inline(never)]
 fn bsm(
     args: &[u8],
-    f: fn(&EuropeanOption, &MarketInputs) -> Result<Priced, PricingError>,
+    f: impl Fn(&EuropeanOption, &MarketInputs) -> Result<Priced, PricingError>,
 ) -> Result<Result<Priced, PricingError>, BenchError> {
     let (&kind, rest) = args.split_first().ok_or(BenchError::InvalidArguments)?;
     let kind = match kind {
@@ -353,6 +362,35 @@ fn bsm(
         ))
     };
     Ok(inputs().and_then(|(opt, m)| f(&opt, &m)))
+}
+
+/// `price_asset_or_nothing` with zero greeks, so it shares [`bsm`]'s decoding.
+fn asset_or_nothing_only(opt: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingError> {
+    Ok(Priced {
+        price: optfix::price_asset_or_nothing(opt, m)?,
+        greeks: EMPTY_PRICED.greeks,
+    })
+}
+
+/// Decodes `[kind, S, K, T, σ, r, q, payout]` and runs `price_cash_or_nothing`; an argument
+/// outside its newtype's range is reported as a `DomainError` result.
+#[inline(never)]
+fn cash_or_nothing(args: &[u8]) -> Result<Result<Fixed, PricingError>, BenchError> {
+    let (head, payout) = args
+        .split_at_checked(args.len().saturating_sub(16))
+        .ok_or(BenchError::InvalidArguments)?;
+    let payout: FixedBytes = decode(payout)?;
+    let pay = match Price::try_new(payout.get()) {
+        Ok(p) => p,
+        Err(e) => return Ok(Err(e)),
+    };
+    Ok(bsm(head, |opt, m| {
+        Ok(Priced {
+            price: optfix::price_cash_or_nothing(opt, m, pay)?,
+            greeks: EMPTY_PRICED.greeks,
+        })
+    })?
+    .map(|p| p.price.get()))
 }
 
 /// `price_black76` with zero greeks, so both Black-76 rows share [`futures`].

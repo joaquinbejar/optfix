@@ -340,6 +340,56 @@ fn strip_leg(
     sh.leg(leg.kind, leg.strike.get(), greeks)
 }
 
+/// Binary price envelope, relative part: `|error| <= BINARY_ERR_REL × scale + BINARY_ERR_ABS`,
+/// where the scale is the undiscounted notional, `payout` for cash-or-nothing and `S` for
+/// asset-or-nothing, as `max(S, K)` is for [`price`]: a small discount factor (down to
+/// `e^{−15}`) holds only absolute precision in Q64.64, so the error does not shrink with
+/// `payout × Dr` or `S Dq` (`docs/precision.md`).
+/// `2^-48`, as [`PRICE_ERR_REL`]: measured 1.3e-17 (`docs/precision.md`).
+pub const BINARY_ERR_REL: Fixed = Fixed::from_raw(1 << 16);
+/// Binary price envelope, absolute part: 64 ulps.
+pub const BINARY_ERR_ABS: Fixed = Fixed::from_raw(64);
+
+/// The cash-or-nothing premium: `payout × Dr × N(d2)` for a call (paid if `S_T > K`),
+/// `payout × Dr × N(−d2)` for a put, on the same `d1` and `d2` as [`price`]. At `T = 0` a
+/// strictly in-the-money option is worth `payout` and one at or out of the money nothing.
+/// Within [`BINARY_ERR_REL`] `× payout +` [`BINARY_ERR_ABS`].
+///
+/// # Errors
+///
+/// `DomainError` if `S/K` is outside `[0.05, 20]` or `payout` is above `Spot::MAX` (`10^9`).
+#[must_use = "the result carries a possible error"]
+pub fn price_cash_or_nothing(
+    opt: &EuropeanOption,
+    m: &MarketInputs,
+    payout: Price,
+) -> Result<Price, PricingError> {
+    if payout.get() > Spot::MAX.get() {
+        return Err(PricingError::DomainError);
+    }
+    check_moneyness(m.spot.get(), opt.strike.get())?;
+    let mut sh = Shared::new(opt.expiry, m)?;
+    Price::try_new(sh.binary(opt.kind, opt.strike.get(), Some(payout.get()))?)
+}
+
+/// The asset-or-nothing premium: `S Dq N(d1)` for a call (the asset delivered if `S_T > K`),
+/// `S Dq N(−d1)` for a put, on the same `d1` as [`price`]. At `T = 0` a strictly in-the-money
+/// option is worth `S` and one at or out of the money nothing. Within [`BINARY_ERR_REL`]
+/// `× S +` [`BINARY_ERR_ABS`].
+///
+/// # Errors
+///
+/// `DomainError` if `S/K` is outside `[0.05, 20]`.
+#[must_use = "the result carries a possible error"]
+pub fn price_asset_or_nothing(
+    opt: &EuropeanOption,
+    m: &MarketInputs,
+) -> Result<Price, PricingError> {
+    check_moneyness(m.spot.get(), opt.strike.get())?;
+    let mut sh = Shared::new(opt.expiry, m)?;
+    Price::try_new(sh.binary(opt.kind, opt.strike.get(), None)?)
+}
+
 /// Shared evaluation; `greeks = false` stops after the price (the greeks are then zero).
 fn evaluate(opt: &EuropeanOption, m: &MarketInputs, greeks: bool) -> Result<Priced, PricingError> {
     check_moneyness(m.spot.get(), opt.strike.get())?;
@@ -418,6 +468,51 @@ impl Shared {
             dq,
             s_dq,
             live,
+        })
+    }
+
+    /// A binary premium for one strike and kind: cash-or-nothing paying `payout`, or
+    /// asset-or-nothing for `None`. The moneyness check has already passed.
+    fn binary(
+        &mut self,
+        kind: OptionKind,
+        k: Fixed,
+        payout: Option<Fixed>,
+    ) -> Result<Fixed, PricingError> {
+        let (s, dr, s_dq) = (self.s, self.dr, self.s_dq);
+        let call = matches!(kind, OptionKind::Call);
+        let Some(live) = self.live.as_mut() else {
+            // T = 0: Dq = Dr = 1 exactly, so S Dq against K Dr is S against K; strictly in
+            // the money pays.
+            let k_dr = k.mul_down(dr)?;
+            let itm = if call { s_dq > k_dr } else { s_dq < k_dr };
+            return Ok(match (itm, payout) {
+                (false, _) => Fixed::ZERO,
+                (true, Some(p)) => p.mul_down(dr)?,
+                (true, None) => s_dq,
+            });
+        };
+        let d1 = d1_from(
+            s,
+            k,
+            live.ln_s,
+            ln(k)?,
+            live.ls,
+            live.sst,
+            live.drift,
+            &mut live.inv_sst,
+        )?;
+        // Each side's own tail, not one minus the other: N(−x) is computed directly.
+        Ok(match payout {
+            Some(p) => {
+                let d2 = d1.checked_sub(live.sst)?;
+                let x = if call { d2 } else { d2.checked_neg()? };
+                p.mul_down(dr)?.mul_down(norm_cdf(x)?)?
+            }
+            None => {
+                let x = if call { d1 } else { d1.checked_neg()? };
+                s_dq.mul_down(norm_cdf(x)?)?
+            }
         })
     }
 
