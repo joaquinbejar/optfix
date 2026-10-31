@@ -2,6 +2,8 @@
 //!
 //! - Every on-chain result equals the host result bit for bit, success and error alike.
 //! - CU numbers are deterministic: the measurement runs twice in fresh VMs and must match.
+//! - Inputs are drawn with the pure-Rust `libm` (not the platform's `powf`), so every platform
+//!   measures the same inputs and CI reproduces the committed table.
 //! - With `OPTFIX_BENCH_OUT=<path>` the table is written there (`make bench` uses
 //!   `docs/benchmarks.md`); it is always printed.
 
@@ -106,7 +108,7 @@ impl Rng {
     /// `10^(−6 + 15 u)` with `u` uniform in `[0, 1)` at `2^-53` resolution.
     fn log_uniform(&mut self) -> Fixed {
         let u = (self.next() >> 11) as f64 / (1u64 << 53) as f64;
-        Fixed::from_raw((10f64.powf(-6.0 + 15.0 * u) * ONE) as i128)
+        Fixed::from_raw((libm::pow(10.0, -6.0 + 15.0 * u) * ONE) as i128)
     }
 
     /// Uniform in `[−42, 43]`: the `exp` arguments of pricing (discount and forward factors
@@ -370,17 +372,17 @@ const BSM_ROWS: [(Ix, &str, BsmFn, bool); 5] = [
 /// `r` and `q` uniform in `[−0.1, 0.5]`, call or put.
 fn bsm_input(rng: &mut Rng, near: bool) -> (EuropeanOption, MarketInputs) {
     let mut u = || (rng.next() >> 11) as f64 / (1u64 << 53) as f64;
-    let s = 10f64.powf(-6.0 + 15.0 * u());
+    let s = libm::pow(10.0, -6.0 + 15.0 * u());
     let m = if near {
         // |S − K| < K / 256: S/K within about ±0.39%.
         1.0 + (u() - 0.5) * 0.0078
     } else {
-        10f64.powf((0.05f64).log10() + (400f64).log10() * u())
+        libm::pow(10.0, libm::log10(0.05) + libm::log10(400.0) * u())
     };
     let k = (s * m).clamp(1.01e-6, 0.99e9);
     let k = k.clamp(s / 19.9, s * 19.9);
     let t = 30.0 * u().max(1e-9);
-    let sigma = 10f64.powf((0.005f64).log10() + 3.0 * u()).min(5.0);
+    let sigma = libm::pow(10.0, libm::log10(0.005) + 3.0 * u()).min(5.0);
     let (r, q) = (-0.1 + 0.6 * u(), -0.1 + 0.6 * u());
     let fx = |v: f64| Fixed::from_raw((v * ONE) as i128);
     let call = u() < 0.5;
@@ -747,6 +749,8 @@ fn table(m: &Measurement, budget: &str) -> String {
     writeln!(s).unwrap();
     writeln!(s, "- Agave CLI: `{agave}`").unwrap();
     writeln!(s, "- SBF build: {toolchain}").unwrap();
+    let host = std::env::var("OPTFIX_HOST_RUSTC").unwrap_or_else(|_| "unknown".into());
+    writeln!(s, "- Host toolchain: `{host}`").unwrap();
     writeln!(s, "- LiteSVM 0.18.1, Agave crates 4.3.2 (`Cargo.lock`)").unwrap();
     writeln!(
         s,

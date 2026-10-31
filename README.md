@@ -1,3 +1,4 @@
+[![CI](https://github.com/joaquinbejar/optfix/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/joaquinbejar/optfix/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/optfix.svg)](https://crates.io/crates/optfix)
 [![Docs.rs](https://docs.rs/optfix/badge.svg)](https://docs.rs/optfix)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/joaquinbejar/optfix/blob/main/LICENSE)
@@ -204,20 +205,20 @@ the Black-Scholes and implied-volatility rows still include decoding six argumen
 | Function | Median CU | Max CU |
 | --- | ---: | ---: |
 | `Fixed::mul_down` | 277 | 290 |
-| `Fixed::div_down` | 1597 | 1991 |
-| `Fixed::sqrt_down` | 10927 | 13980 |
+| `Fixed::div_down` | 1597 | 1993 |
+| `Fixed::sqrt_down` | 10929 | 13980 |
 | `exp` | 316 | 337 |
 | `ln` | 457 | 463 |
 | `norm_cdf` | 1324 | 1384 |
 | `norm_pdf` | 573 | 596 |
 | `wide::mul_shr` | 317 | 333 |
-| `price` | 9251 | 9577 |
+| `price` | 9252 | 9577 |
 | `price`, near the money | 11094 | 11475 |
-| `price_and_greeks` | 14240 | 14641 |
+| `price_and_greeks` | 14241 | 14641 |
 | `price_and_greeks`, near the money | 16095 | 16540 |
-| `implied_vol` | 27121 | 34706 |
-| `implied_vol`, near the money | 32675 | 41954 |
-| `implied_vol`, worst case (every step taken) | 41882 | 42828 |
+| `implied_vol` | 27123 | 34706 |
+| `implied_vol`, near the money | 32674 | 41954 |
+| `implied_vol`, worst case (every step taken) | 41883 | 42828 |
 
 `implied_vol` takes at most 3 steps.
 <!-- /generated:cu -->

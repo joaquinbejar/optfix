@@ -7,10 +7,18 @@ all: fmt-check lint test
 # sBPF target version for the bench program (cargo-build-sbf's default is v3).
 SBF_ARCH ?= v3
 
+# Host toolchain for the explicit `+toolchain` calls (rustfmt): `stable` locally, the exact
+# pin in CI (.github/workflows/ci.yml), where RUSTUP_TOOLCHAIN covers the plain `cargo` calls
+# but cannot override an explicit `+stable`.
+RUST_TOOLCHAIN ?= stable
+# Extra flags for every cargo command; CI sets `--locked`.
+CARGO_FLAGS ?=
+export CARGO_FLAGS
+
 # Build the workspace
 .PHONY: build
 build:
-	cargo build --workspace
+	cargo build $(CARGO_FLAGS) --workspace
 
 # Build bench-program for SBF into target/deploy. cargo-build-sbf's exit status is kept (no
 # pipe), and scripts/check-sbf-log.sh fails the build on a stack frame above 4 KiB, which
@@ -18,7 +26,7 @@ build:
 .PHONY: program
 program:
 	@mkdir -p target
-	@cargo build-sbf --manifest-path bench-program/Cargo.toml --arch $(SBF_ARCH) \
+	@cargo build-sbf --manifest-path bench-program/Cargo.toml --arch $(SBF_ARCH) -- $(CARGO_FLAGS) \
 		> target/build-sbf.log 2>&1; status=$$?; cat target/build-sbf.log; \
 		if [ $$status -ne 0 ]; then echo "program: cargo-build-sbf failed ($$status)"; exit $$status; fi
 	@sh scripts/check-sbf-log.sh target/build-sbf.log
@@ -46,46 +54,61 @@ bench: program
 	OPTFIX_SBF_TOOLCHAIN="$$(cargo build-sbf --version 2>/dev/null | paste -sd ',' - | sed 's/,/, /g'), sBPF $(SBF_ARCH)" \
 	OPTFIX_AGAVE="$$(solana --version 2>/dev/null)" \
 	OPTFIX_BENCH_OUT=$(CURDIR)/docs/benchmarks.md \
-	cargo test -p optfix-bench --release --test cu -- --nocapture
+	OPTFIX_HOST_RUSTC="$$(rustc --version)" \
+	cargo test $(CARGO_FLAGS) -p optfix-bench --release --test cu -- --nocapture
 
 # Maximum exp and ln errors over a deterministic sample; regenerates docs/precision.md
 PRECISION_SAMPLES ?= 200000
 .PHONY: precision
 precision:
 	OPTFIX_PRECISION_SAMPLES=$(PRECISION_SAMPLES) OPTFIX_PRECISION_OUT=$(CURDIR)/docs/precision.md \
-	cargo test -p optfix --release --features bench-internals --test precision -- --nocapture
+	cargo test $(CARGO_FLAGS) -p optfix --release --features bench-internals --test precision -- --nocapture
 
 # Regenerate README.md's example and tables from the constants and docs/benchmarks.md
 # (`make test` fails while it is stale)
 .PHONY: readme
 readme:
-	OPTFIX_README_WRITE=1 cargo test -p optfix --test readme
+	OPTFIX_README_WRITE=1 cargo test $(CARGO_FLAGS) -p optfix --test readme
 
 # Package optfix as crates.io would and build the package; never uploads
 .PHONY: publish-dry-run
 publish-dry-run:
-	cargo publish -p optfix --dry-run
+	cargo publish $(CARGO_FLAGS) -p optfix --dry-run
 
 # Run every test, including the million-case property tests and the LiteSVM bench
 # (which needs `make program` first). OPTFIX_PROPTEST_CASES=<n> lowers the case count.
 .PHONY: test
 test:
-	cargo test --workspace --all-features
+	cargo test $(CARGO_FLAGS) --workspace --all-features
+
+# One CI shard of `make test` (tools/test_shards.py): SHARDS parallel jobs, each running its
+# targets with full case counts; shard 0 also runs the unit tests and doctests. The union of
+# the shards is exactly `make test`.
+SHARDS ?= 3
+SHARD ?= 0
+.PHONY: test-shard
+test-shard:
+	@sel=$$(python3 tools/test_shards.py $(SHARDS) $(SHARD)) || \
+		{ echo "test-shard: tools/test_shards.py failed"; exit 1; }; \
+	if [ -z "$$sel" ]; then echo "test-shard: shard $(SHARD) has no targets"; exit 0; fi; \
+	echo "cargo test $(CARGO_FLAGS) --workspace --all-features $$sel"; \
+	cargo test $(CARGO_FLAGS) --workspace --all-features $$sel
+	@if [ "$(SHARD)" = 0 ]; then cargo test $(CARGO_FLAGS) --workspace --all-features --doc; fi
 
 # Format the code
 .PHONY: fmt
 fmt:
-	cargo +stable fmt --all
+	cargo +$(RUST_TOOLCHAIN) fmt --all
 
 # Check formatting
 .PHONY: fmt-check
 fmt-check:
-	cargo +stable fmt --all --check
+	cargo +$(RUST_TOOLCHAIN) fmt --all --check
 
 # Clippy with every warning denied
 .PHONY: lint
 lint:
-	cargo clippy --workspace --all-targets --all-features -- -D warnings
+	cargo clippy $(CARGO_FLAGS) --workspace --all-targets --all-features -- -D warnings
 
 # Failing control: clippy must reject every banned macro in lint-control's library code, on
 # each probe line with the exact definition path (see lint-control/check.sh).
@@ -100,10 +123,10 @@ IV_TABLES ?= optfix/src/iv_tables.rs
 .PHONY: tables-check
 tables-check:
 	@mkdir -p target
-	@python3 tools/gen_tables.py > target/tables.rs && rustfmt +stable --edition 2021 target/tables.rs
+	@python3 tools/gen_tables.py > target/tables.rs && rustfmt +$(RUST_TOOLCHAIN) --edition 2021 target/tables.rs
 	@cmp target/tables.rs $(KERNEL_TABLES) || \
 		{ echo "tables-check: $(KERNEL_TABLES) is not what tools/gen_tables.py writes"; exit 1; }
-	@python3 tools/gen_iv_tables.py > target/iv_tables.rs && rustfmt +stable --edition 2021 target/iv_tables.rs
+	@python3 tools/gen_iv_tables.py > target/iv_tables.rs && rustfmt +$(RUST_TOOLCHAIN) --edition 2021 target/iv_tables.rs
 	@cmp target/iv_tables.rs $(IV_TABLES) || \
 		{ echo "tables-check: $(IV_TABLES) is not what tools/gen_iv_tables.py writes"; exit 1; }
 	@echo "tables-check: both generated table files regenerate byte for byte"
@@ -132,7 +155,7 @@ budget-control:
 	@mkdir -p target
 	@python3 tools/budget_control.py $(BUDGET_CONTROL_ROW) bench/budget.md docs/benchmarks.md \
 		> target/budget.control.md
-	@if OPTFIX_BUDGET=$(CURDIR)/target/budget.control.md cargo test --workspace --all-features \
+	@if OPTFIX_BUDGET=$(CURDIR)/target/budget.control.md cargo test $(CARGO_FLAGS) --workspace --all-features \
 		--test cu -- test_cu_table_is_deterministic_and_matches_host > target/budget.control.log 2>&1; then \
 		echo "budget-control: the CU test accepted a limit below a measured value"; exit 1; fi
 	@grep -q "\`$(BUDGET_CONTROL_ROW)\` max .* is over its limit" target/budget.control.log || \
@@ -142,7 +165,7 @@ budget-control:
 # Rustdoc with every warning denied
 .PHONY: doc
 doc:
-	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+	RUSTDOCFLAGS="-D warnings" cargo doc $(CARGO_FLAGS) --workspace --no-deps --all-features
 
 # Pre-push checks: must pass with zero warnings
 .PHONY: pre-push

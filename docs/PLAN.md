@@ -941,6 +941,29 @@ lower.
 
 ### Milestone 9: GitHub Actions CI (candidate 3)
 
+(Done.) As built: `.github/workflows/ci.yml` and the composite action
+`.github/actions/toolchains` (pins, SHA-256 checks, version asserts). Findings while building it:
+
+- **Platform-dependent bench inputs.** The bench drew its random inputs with the host's
+  `powf`/`log10`, which differ in the last bits between macOS and glibc, so the first CI run
+  measured `ImpliedVol` at a 27,123 CU median against the committed 27,121. Inputs are now drawn
+  with the pure-Rust `libm` crate (a `bench/` dev-dependency); every median and max moved by
+  at most 4 CU (the unbudgeted minimum of `Baseline` by 10), all within the budget, and CI
+  reproduces the table byte for byte.
+- **Runtime.** One runner took 40 minutes for `make pre-push` (tests 28 minutes, run one binary
+  after another; the debug-profile CU test and `budget-control` about 7 minutes each). Over the
+  30-minute threshold, so CI runs it as parallel jobs whose union is exactly `make pre-push`:
+  `checks` (every other target, plus a step that fails if the `pre-push` prerequisites change
+  without the workflow), `test` in three shards (`make test-shard`, `tools/test_shards.py`:
+  integration targets from `cargo metadata`, longest first, full case counts; shard 0 adds the
+  unit tests and doctests) and `budget-control`. Local `make pre-push` is unchanged.
+- **Failing controls** (scratch PRs #19 to #21 on the final workflow, closed unmerged): one
+  unformatted line failed `checks` only; one edited number in `docs/benchmarks.md` failed
+  `bench` only, at the committed-table diff; a planted failing test in each shard and an
+  unknown `BUDGET_CONTROL_ROW` failed `test (0)`, `test (1)`, `test (2)` and `budget-control`
+  (and `checks`, on clippy), each on the planted cause. The final run on #18: every job green,
+  the longest (`test (1)`) 13 minutes.
+
 - One workflow on `pull_request` and on pushes to `main`, `ubuntu-latest`:
   - job `pre-push`: `make pre-push`;
   - job `bench`: `make bench` with the budget of milestone 8, then

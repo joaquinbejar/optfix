@@ -9,6 +9,7 @@ repository.workspace = true
 publish = false
 
 [dev-dependencies]
+libm = { workspace = true }
 litesvm = { workspace = true }
 optfix = { workspace = true, features = ["bench-internals"] }
 solana-address = { workspace = true }
