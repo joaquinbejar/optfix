@@ -7,7 +7,7 @@
 [![PRs](https://img.shields.io/github/issues-pr/joaquinbejar/optfix.svg)](https://github.com/joaquinbejar/optfix/pulls)
 [![no_std](https://img.shields.io/badge/no__std-yes-green.svg)](https://github.com/joaquinbejar/optfix/blob/main/docs/PLAN.md)
 
-## optfix v0.2.0: Fixed-Point Option Pricing for Solana
+## optfix v0.2.1: Fixed-Point Option Pricing for Solana
 
 ### Table of Contents
 1. [Introduction](#introduction)
@@ -214,12 +214,12 @@ the Black-Scholes and implied-volatility rows still include decoding six argumen
 | --- | ---: | ---: |
 | `Fixed::mul_down` | 275 | 288 |
 | `Fixed::div_down` | 545 | 643 |
-| `Fixed::sqrt_down` | 2281 | 2383 |
+| `Fixed::sqrt_down` | 2218 | 2320 |
 | `exp` | 315 | 336 |
 | `ln` | 456 | 462 |
 | `norm_cdf` | 1321 | 1381 |
 | `norm_pdf` | 574 | 597 |
-| `wide::mul_shr` | 340 | 355 |
+| `wide::mul_shr` | 317 | 333 |
 | `price` | 9233 | 9553 |
 | `price`, near the money | 11100 | 11476 |
 | `price_and_greeks` | 14203 | 14597 |

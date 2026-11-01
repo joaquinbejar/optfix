@@ -4,6 +4,15 @@ All notable changes to `optfix` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the crate follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-11-01
+
+### Fixed
+
+- CU regression from 0.2.0: `U256::shr` gained a second caller (the `sqrt_down` seed) and stopped
+  being inlined into `wide::mul_shr`, so `mul_shr` cost 340 CU net instead of 317 and its callers
+  paid the difference. `shr` is now `#[inline(always)]`: `MulShr` is back to 317, and `SqrtDown`
+  drops from 2281 to 2218. Results are unchanged.
+
 ## [0.2.0] - 2026-10-31
 
 Milestones 8 to 14 of `docs/PLAN.md` (section 8).
