@@ -13,7 +13,7 @@ multiple of 100, in the same diff; a cheaper row is tightened the same way.
 | `Noop` | 200 | 200 |
 | `MulDown` | 300 | 400 |
 | `DivDown` | 600 | 700 |
-| `SqrtDown` | 2400 | 2600 |
+| `SqrtDown` | 2400 | 2500 |
 | `Exp` | 400 | 400 |
 | `Ln` | 500 | 500 |
 | `NormCdf` | 1400 | 1500 |

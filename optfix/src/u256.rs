@@ -113,6 +113,7 @@ impl U256 {
     /// `floor(self / 2^s)` and whether any dropped bit was set, for any `s`.
     ///
     /// `Overflow` if the quotient does not fit in a `u128`.
+    #[inline(always)]
     pub(crate) fn shr(self, s: u32) -> Result<(u128, bool), PricingError> {
         let words = [self.w0, self.w1, self.w2, self.w3];
         if s >= 256 {
