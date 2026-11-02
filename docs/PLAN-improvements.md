@@ -127,7 +127,9 @@ dependency):
    - Vanilla (`price`, `price_and_greeks`, strips, Black-76), with `E = price_error_bound`
      (`PRICE_ERR_REL × max(S, K) + PRICE_ERR_ABS`): a call within `[max(0, S Dq − K Dr) − E,
      S Dq + E]`, a put within `[max(0, K Dr − S Dq) − E, K Dr + E]`; `price_black76` and
-     `price_and_greeks_black76` bit-identical to the BSM calls with `S = F`, `q = r`; each strip
+     every field of `price_and_greeks_black76` except `rho` bit-identical to the BSM calls with
+     `S = F`, `q = r` (from milestone 19, Black-76 `rho` is checked on its own against
+     `−T × price` within its envelope); each strip
      leg bit-identical to the scalar call, and on an error the earlier legs written and the rest
      untouched.
    - Cash-or-nothing, with `Eb = BINARY_ERR_REL × payout + BINARY_ERR_ABS` (the undiscounted
@@ -189,9 +191,11 @@ sets, each with raw inputs, the exact native output bits or error code. Three co
 reproduce them bit for bit: a native test, a `wasm-bindgen-test` run under Node in CI, and the
 bench program on SBF for a subset (the LiteSVM harness already compares SBF with host). SDKs in other repos can use it as their test vector.
 
-Versioning: the file is `conformance/vectors-<optfix version>.json`, with a format version
-field and the generating commit. Milestones 19 (rho) and 20 (if it changes `implied_vol` bits)
-regenerate a new file for the new version and keep the previous one, which is still replayed
+Versioning: each generation is an immutable file `conformance/vectors-g<N>.json` (`g1` in
+milestone 17), carrying a format version, the optfix version and the generating commit; a
+generation is never edited after its merge. Milestones 19 (rho) and 20 (if it changes
+`implied_vol` bits) each add the next generation, although both are 0.3.0, and keep every
+earlier one, which is still replayed
 for every output those milestones did not agree to change (its `implied_vol` rows, after
 milestone 20, against the round trip envelope instead of bits), as the frozen 0.1 fixture is.
 
