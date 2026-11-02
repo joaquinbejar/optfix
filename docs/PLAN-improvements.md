@@ -171,10 +171,18 @@ targets, `make fuzz-smoke`, the required `fuzz-smoke` job and `.github/workflows
   `fuzz-smoke` in run 41423633103: `scaled` reaches `INITED`, then `arith` panics on
   `mul_up(92233720368547806959, 3)` while loading its seed corpus (150 files), before its
   `INITED`.
-- 30-minute local runs (Apple M-series, all five in parallel, nightly-2026-10-11): no
-  failure; runs and final coverage `scaled` 128,178,716 (735), `arith` 187,191,548 (973),
-  `wide` 209,139,220 (487), `pricing` 8,554,611 (964), `iv` 147,710,779 (410). `pricing` is
-  the slow one: each input evaluates the exact reference exponential several times.
+- 30-minute local runs (Apple M-series, nightly-2026-10-11, cargo-fuzz 0.13.2, each from its
+  committed corpus; libFuzzer seed, runs, final coverage):
+  - Before review R1, at 3136cfe/bf33a30 (all five in parallel), all clean: `scaled` seed
+    2808546469, 128,178,716 runs (735); `arith` 2808547223, 187,191,548 (973); `wide`
+    2808551338, 209,139,220 (487). These three targets do not use the shared contract, so
+    their runs stand. The `pricing` (2808552571, 8,554,611, 964) and `iv` (2808546515,
+    147,710,779, 410) runs of that round used the contract before R1's corrections and are
+    superseded by:
+  - After R1, at 18fc9c8 (the corrected contract, both in parallel), clean: `pricing` seed
+    3266004699, 10,045,472 runs (968); `iv` 3266004719, 54,402,152 runs (886).
+  `pricing` is the slow one: each input evaluates the exact reference exponential several
+  times.
 
 Complements the property tests (uniform or structured sampling, a million cases) with
 coverage-guided search at the boundaries the samplers rarely hit. `fuzz/` is a `cargo-fuzz`
