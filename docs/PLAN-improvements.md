@@ -50,6 +50,19 @@ The guards come first so every later milestone is checked by them on its own PR.
 
 ## Milestone 15: downstream CU guard and `cargo-semver-checks`
 
+(Built.) `tools/downstream.sh` (clone at the pin, requirement rewrite, `cargo tree` assertion,
+varswap's `make bench` or metalbook's `metalbook-maker` tests, ELF SHA-256),
+`tools/downstream_cu.py` (same rows, columns and text, then no numeric cell may grow),
+`ci/downstream.env`, and the `downstream` and `semver` jobs in `ci.yml`. Measured locally on
+0.2.1: one varswap run takes 90 to 160 seconds warm and metalbook-maker's tests 20; base and
+head give identical tables. Local failing control: optfix at 0dade38 with `#[inline(always)]`
+removed from `U256::shr` grows exactly the rows of the 0.2.0 regression (`sample` with
+neighbours +44, `finalize (complete)` +22, `open_swap` +46, `settle_swap` +46 and +69) and the
+compare step fails; cargo-semver-checks 0.51.0 on host Rust 1.99.1 passes on main and fails a
+public `rho` field on `Greeks` at 0.2.1 ("1 major ... checks failed"). The small-row rule also
+tightens `Digest, 1 leg` and `Digest, 2 legs` (net 146 and 267), which are under 1,000 too.
+The CI failing controls are recorded below once run.
+
 **Downstream job** (`downstream` in `ci.yml`, a new required check once green on main):
 
 - Pins in `ci/downstream.env`: varswap and metalbook commit SHAs, bumped deliberately in their
@@ -86,8 +99,9 @@ The guards come first so every later milestone is checked by them on its own PR.
   only edits a doc comment must pass.
 
 **Own budget.** The rule that let `MulShr` drift stays for big rows, but rows under 1,000 CU get
-the measurement plus 5% rounded up to a multiple of 10 instead of 100 (`MulDown`, `DivDown`,
-`Exp`, `Ln`, `NormPdf`, `MulShr`; `Noop` keeps 200). `MulShr` becomes 350 (333 × 1.05 = 350).
+the measurement plus 5% rounded up to a multiple of 10 instead of 100 while that stays at or
+under 1,000 (`MulDown`, `DivDown`, `Exp`, `Ln`, `NormPdf`, `MulShr`, `Digest, 1 leg`, `Digest, 2
+legs`; `Noop`, gross, keeps 200). `MulShr` becomes 340 / 350 (317 and 333 plus 5%).
 The checker's unit tests gain the small-row rounding.
 
 **`cargo-semver-checks`** (`semver` job, required): `cargo semver-checks check-release -p
