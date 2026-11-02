@@ -100,6 +100,9 @@ struct Limit {
 /// A row more than this fraction (in percent) under a limit is reported as loose.
 const LOOSE_PERCENT: u64 = 20;
 
+/// The largest limit [`rule_limit`] rounds to a multiple of 10 rather than 100.
+pub const SMALL_ROW_LIMIT: u64 = 1_000;
+
 /// Parses the budget's table rows. Lines that do not start with `|` are prose; the header
 /// and separator rows are skipped; every other `|` line must be a row.
 fn parse(text: &str) -> (BTreeMap<String, Limit>, Vec<Violation>) {
@@ -156,17 +159,23 @@ fn delta(measured: u64, limit: u64) -> String {
     format!("{ds}{} ({sign}{whole}.{tenth}%)", d.unsigned_abs())
 }
 
-/// The limit the budget rule gives a measurement: plus 5%, rounded up to a multiple of 100.
+/// The limit the budget rule gives a measurement: plus 5%, rounded up to a multiple of 10 while
+/// that stays at or under [`SMALL_ROW_LIMIT`], else to a multiple of 100. Rounding small rows to
+/// 100 let `MulShr` lose 23 CU in 0.2.0 unnoticed (`docs/PLAN-improvements.md`, milestone 15).
 #[must_use]
 pub fn rule_limit(measured: u64) -> u64 {
     let hundredths = u128::from(measured).saturating_mul(105);
+    let tens = hundredths.div_ceil(1_000).saturating_mul(10);
+    if tens <= u128::from(SMALL_ROW_LIMIT) {
+        return u64::try_from(tens).unwrap_or(u64::MAX);
+    }
     let hundreds = hundredths.div_ceil(10_000);
     u64::try_from(hundreds.saturating_mul(100)).unwrap_or(u64::MAX)
 }
 
 /// Whether `measured` is more than [`LOOSE_PERCENT`] under `limit` and the rule would give a
-/// lower limit. Without the second condition the rounding to 100 would mark small rows (such
-/// as `Exp`, 316 against 400) loose for ever.
+/// lower limit. Without the second condition the rounding would mark some rows (such as
+/// `Noop`, gross 174 against 200) loose for ever.
 fn loose(measured: u64, limit: u64) -> bool {
     let floor = u128::from(limit).saturating_mul(u128::from(100u64.saturating_sub(LOOSE_PERCENT)));
     u128::from(measured).saturating_mul(100) < floor && rule_limit(measured) < limit
@@ -325,17 +334,25 @@ mod tests {
     fn test_rule_limit() {
         assert_eq!(rule_limit(0), 0);
         assert_eq!(rule_limit(95), 100);
-        assert_eq!(rule_limit(96), 200);
-        assert_eq!(rule_limit(316), 400);
+        assert_eq!(rule_limit(96), 110);
+        assert_eq!(rule_limit(316), 340);
+        assert_eq!(rule_limit(333), 350);
+        assert_eq!(rule_limit(952), 1_000);
+        assert_eq!(rule_limit(953), 1_100);
         assert_eq!(rule_limit(14_641), 15_400);
         assert_eq!(rule_limit(14_666), 15_400);
         assert_eq!(rule_limit(14_667), 15_500);
     }
 
     #[test]
-    fn test_committed_limits_follow_the_rule_on_0_1_0() {
-        // The 0.1.0 measurement (docs/benchmarks.md at v0.1.0) the initial limits came from.
-        for (name, median, max) in [("PriceAndGreeks", 14_240, 14_641), ("Exp", 316, 337)] {
+    fn test_small_committed_limits_follow_the_rule() {
+        // The 0.2.1 measurements (docs/benchmarks.md): the small rows were tightened to them.
+        for (name, median, max) in [
+            ("MulShr", 317, 333),
+            ("Exp", 315, 336),
+            ("DivDown", 545, 643),
+            ("PriceAndGreeks", 14_203, 14_597),
+        ] {
             let (limits, _) = parse(BUDGET);
             let l = limits[name];
             assert_eq!(
@@ -349,11 +366,11 @@ mod tests {
     #[test]
     fn test_rounding_alone_is_not_loose() {
         let m = [Measured {
-            name: "Exp".into(),
-            median: 316,
-            max: 337,
+            name: "Noop".into(),
+            median: 174,
+            max: 174,
         }];
-        let r = check("| `Exp` | 400 | 400 |\n", &m);
+        let r = check("| `Noop` | 200 | 200 |\n", &m);
         assert!(!r.table.contains("loose"), "{}", r.table);
     }
 

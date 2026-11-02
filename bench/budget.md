@@ -5,20 +5,21 @@ measured row over either limit, a measured row without a budget, a budget row th
 measured, a duplicate row or a malformed row fails. Limits are net CU (the row's median or max
 minus the `Noop` median, as in `docs/benchmarks.md` and the README), except `Noop`'s own, which
 are gross. Edit by hand only: the bench never rewrites this file. Rules (`docs/PLAN.md`,
-milestone 8): a new or deliberately dearer row gets its measurement plus 5%, rounded up to a
-multiple of 100, in the same diff; a cheaper row is tightened the same way.
+milestone 8, and `docs/PLAN-improvements.md`, milestone 15): a new or deliberately dearer row
+gets its measurement plus 5%, rounded up to a multiple of 10 while that is at most 1,000 and to a
+multiple of 100 above, in the same diff; a cheaper row is tightened the same way.
 
 | Row | Median limit | Max limit |
 | --- | ---: | ---: |
 | `Noop` | 200 | 200 |
-| `MulDown` | 300 | 400 |
-| `DivDown` | 600 | 700 |
+| `MulDown` | 290 | 310 |
+| `DivDown` | 580 | 680 |
 | `SqrtDown` | 2400 | 2500 |
-| `Exp` | 400 | 400 |
-| `Ln` | 500 | 500 |
+| `Exp` | 340 | 360 |
+| `Ln` | 480 | 490 |
 | `NormCdf` | 1400 | 1500 |
-| `NormPdf` | 700 | 700 |
-| `MulShr` | 400 | 400 |
+| `NormPdf` | 610 | 630 |
+| `MulShr` | 340 | 350 |
 | `Price` | 9700 | 10100 |
 | `PriceAndGreeks` | 15000 | 15400 |
 | `Baseline (price, then each greek)` | 41300 | 42700 |
@@ -40,7 +41,7 @@ multiple of 100, in the same diff; a cheaper row is tightened the same way.
 | `PriceAndGreeksStrip, 2 legs` | 26000 | 26600 |
 | `PriceAndGreeksStrip, 8 legs` | 88100 | 93400 |
 | `PriceAndGreeksStrip, 16 legs` | 171200 | 179300 |
-| `Digest, 1 leg` | 200 | 200 |
-| `Digest, 2 legs` | 300 | 300 |
+| `Digest, 1 leg` | 160 | 160 |
+| `Digest, 2 legs` | 290 | 290 |
 | `Digest, 8 legs` | 1100 | 1100 |
 | `Digest, 16 legs` | 2100 | 2100 |
