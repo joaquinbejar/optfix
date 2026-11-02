@@ -4,9 +4,11 @@ All notable changes to `optfix` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the crate follows
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.3.0] - 2026-11-02
 
-Toward 0.3.0 (`docs/PLAN-improvements.md`); the workspace version is 0.3.0.
+Milestones 15 to 20 of `docs/PLAN-improvements.md`. The breaking changes are the two below,
+both in milestone 19; every other result is bit-identical to 0.2 except `implied_vol`'s, which
+may move within its round-trip envelope.
 
 ### Changed (breaking)
 
@@ -14,7 +16,8 @@ Toward 0.3.0 (`docs/PLAN-improvements.md`); the workspace version is 0.3.0.
   `−K T Dr N(−d2)` for a put; `price_and_greeks_black76` holds `F` fixed, so its rho is
   `−T × price`. Every other output is bit-identical to 0.2 (the frozen 0.1 fixture, the q = 0
   fixture and conformance generation 1 still match). Within `RHO_ERR_REL × T × max(S, K) +
-  RHO_ERR_ABS` (`2^-44`, 2,048 ulps; measured `4.6 × 10^-18` over 1,000,000 points).
+  RHO_ERR_ABS` (`2^-44`, 2,048 ulps; measured `4.6 × 10^-18` over 1,000,000 points). It costs
+  about 300 CU in `price_and_greeks` (14,203 to 14,497 net median) and as much per strip leg.
 - `Greeks` and `Priced` are `#[non_exhaustive]`, so later fields are not breaking. Outside the
   crate they are no longer built with struct literals: start from `Greeks::ZERO` or
   `Priced::ZERO` (new) and assign fields, for example to fill the `out` slice of
@@ -27,15 +30,37 @@ Toward 0.3.0 (`docs/PLAN-improvements.md`); the workspace version is 0.3.0.
   guess is within about 1.25% of the root wherever it answers (3.8% before) and two steps always
   suffice. Every target answers or fails exactly as before: per-point outcomes are identical over
   the 3,000,000-point grid and the mpmath and threshold fixtures. Answers may move within the
-  round-trip envelope; the worst case drops from 42,951 to about 33,600 CU, and the median is
-  unchanged. Programs embedding optfix grow by about 16 KB (the table).
+  round-trip envelope; the worst case drops from 42,951 to 33,585 CU net (about 22%), and the
+  median is unchanged. Programs embedding optfix grow by about 16 KB (the table).
 
 ### Added
 
+- `Fixed::from_decimal_str` (exact decimal text, any number of digits, explicit rounding) and
+  `Display` for `Fixed` (the exact value, at most 64 fractional digits).
 - `Fixed::from_bps`, `Rate::from_bps` and `Volatility::from_bps`: basis points with an explicit
   rounding (one basis point is not a binary fraction).
-- Conformance generation 2 (rho in every priced result, `from_bps`) and generation 3 (the new
-  `implied_vol` bits); earlier generations stay committed and replay under the agreed changes.
+- `optfix-wasm` (new crate, also on npm): WebAssembly bindings for JavaScript, every value an
+  exact `bigint` or decimal text, bit-identical to the Rust crate; out-of-range arguments throw
+  `DomainError` instead of wrapping.
+- Conformance vectors (`conformance/vectors-g*.json`, about 20,000 calls per generation with
+  their exact results): generation 1 (0.2's results), 2 (rho, `from_bps`) and 3 (the new
+  `implied_vol` bits). CI replays every generation natively, through the wasm package on Node.js,
+  and a subset on SBF; older generations replay under the agreed changes.
+- `examples/pricer-program`: a minimal Pinocchio program to copy, tested in LiteSVM (bit-for-bit
+  equal to the host, at most 16,000 CU per pricing), and "Using optfix On Chain" in the README.
+- Coverage-guided fuzzing (`fuzz/`, `make fuzz-smoke` in CI, a nightly run) against shared,
+  independent contracts (price bounds and parity, exact discounts, the implied-volatility round
+  trip and its error classification).
+- CI: a downstream guard (varswap and metalbook built against the PR's optfix, failing on any
+  CU growth), `cargo-semver-checks`, the wasm job and the fuzz smoke, all required; rows under
+  1,000 CU get a 10-CU budget rounding.
+- `make iv-profile`: the implied-volatility profile (seed error, steps, CU per step) behind the
+  `iv-profile` feature (bench only, not public API).
+
+### Fixed
+
+- The decimal parser reports malformed text as `DomainError` before any `Overflow` (found by the
+  decimal fuzz target), and its digit arithmetic is checked rather than wrapping.
 
 ## [0.2.1] - 2026-11-01
 
