@@ -101,6 +101,48 @@ fn kind(k: &str) -> R<OptionKind> {
     }
 }
 
+// Exact argument conversions. wasm-bindgen's own conversion of an `i128` (or `u8`, `u32`)
+// parameter wraps an out-of-range JavaScript value silently (`2n ** 127n` arrives as `−2^127`,
+// `2.7` as `2`), so every numeric parameter is a `JsValue` checked here: a `bigint` within the
+// Rust type's range, or for the small integers a `number` that is an integer in range.
+// Anything else is a `DomainError`.
+
+fn int(v: JsValue) -> R<i128> {
+    i128::try_from(v).map_err(|_| domain())
+}
+
+fn uint(v: JsValue) -> R<u128> {
+    u128::try_from(v).map_err(|_| domain())
+}
+
+fn long(v: JsValue) -> R<i64> {
+    i64::try_from(v).map_err(|_| domain())
+}
+
+/// A JavaScript `number` that is an integer in `[0, max]`.
+fn small(v: &JsValue, max: u32) -> R<u32> {
+    let n = v.as_f64().ok_or_else(domain)?;
+    if !(n >= 0.0 && n <= f64::from(max)) {
+        return Err(domain());
+    }
+    // In range, so the cast is exact iff `n` is an integer.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let i = n as u32;
+    if f64::from(i) == n {
+        Ok(i)
+    } else {
+        Err(domain())
+    }
+}
+
+fn small_u8(v: JsValue) -> R<u8> {
+    u8::try_from(small(&v, u32::from(u8::MAX))?).map_err(|_| domain())
+}
+
+fn small_u32(v: JsValue) -> R<u32> {
+    small(&v, u32::MAX)
+}
+
 fn fx(raw: i128) -> Fixed {
     Fixed::from_raw(raw)
 }
@@ -195,74 +237,128 @@ pub fn fixed_from_decimal(text: &str, rounding_: &str) -> R<i128> {
 
 /// The exact decimal text of a raw value (`Fixed`'s `Display`).
 #[wasm_bindgen(js_name = fixedToDecimal)]
-#[must_use]
-pub fn fixed_to_decimal(raw: i128) -> String {
-    fx(raw).to_string()
+pub fn fixed_to_decimal(
+    #[wasm_bindgen(unchecked_param_type = "bigint")] raw: JsValue,
+) -> R<String> {
+    let raw = int(raw)?;
+    Ok(fx(raw).to_string())
 }
 
 /// `a × b`, rounded down.
 #[wasm_bindgen(js_name = mulDown)]
-pub fn mul_down(a: i128, b: i128) -> R<i128> {
+pub fn mul_down(
+    #[wasm_bindgen(unchecked_param_type = "bigint")] a: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] b: JsValue,
+) -> R<i128> {
+    let a = int(a)?;
+    let b = int(b)?;
     Ok(fx(a).mul_down(fx(b))?.raw())
 }
 
 /// `a × b`, rounded up.
 #[wasm_bindgen(js_name = mulUp)]
-pub fn mul_up(a: i128, b: i128) -> R<i128> {
+pub fn mul_up(
+    #[wasm_bindgen(unchecked_param_type = "bigint")] a: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] b: JsValue,
+) -> R<i128> {
+    let a = int(a)?;
+    let b = int(b)?;
     Ok(fx(a).mul_up(fx(b))?.raw())
 }
 
 /// `a / b`, rounded down.
 #[wasm_bindgen(js_name = divDown)]
-pub fn div_down(a: i128, b: i128) -> R<i128> {
+pub fn div_down(
+    #[wasm_bindgen(unchecked_param_type = "bigint")] a: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] b: JsValue,
+) -> R<i128> {
+    let a = int(a)?;
+    let b = int(b)?;
     Ok(fx(a).div_down(fx(b))?.raw())
 }
 
 /// `a / b`, rounded up.
 #[wasm_bindgen(js_name = divUp)]
-pub fn div_up(a: i128, b: i128) -> R<i128> {
+pub fn div_up(
+    #[wasm_bindgen(unchecked_param_type = "bigint")] a: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] b: JsValue,
+) -> R<i128> {
+    let a = int(a)?;
+    let b = int(b)?;
     Ok(fx(a).div_up(fx(b))?.raw())
 }
 
 /// `sqrt(a)`, rounded down.
 #[wasm_bindgen(js_name = sqrtDown)]
-pub fn sqrt_down(a: i128) -> R<i128> {
+pub fn sqrt_down(#[wasm_bindgen(unchecked_param_type = "bigint")] a: JsValue) -> R<i128> {
+    let a = int(a)?;
     Ok(fx(a).sqrt_down()?.raw())
 }
 
 /// `sqrt(a)`, rounded up.
 #[wasm_bindgen(js_name = sqrtUp)]
-pub fn sqrt_up(a: i128) -> R<i128> {
+pub fn sqrt_up(#[wasm_bindgen(unchecked_param_type = "bigint")] a: JsValue) -> R<i128> {
+    let a = int(a)?;
     Ok(fx(a).sqrt_up()?.raw())
 }
 
 /// `num / den` as a raw value (`Fixed::from_ratio`).
 #[wasm_bindgen(js_name = fromRatio)]
-pub fn from_ratio(num: i128, den: i128, rounding_: &str) -> R<i128> {
+pub fn from_ratio(
+    #[wasm_bindgen(unchecked_param_type = "bigint")] num: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] den: JsValue,
+    rounding_: &str,
+) -> R<i128> {
+    let num = int(num)?;
+    let den = int(den)?;
     Ok(Fixed::from_ratio(num, den, rounding(rounding_)?)?.raw())
 }
 
 /// `amount / 10^decimals` as a raw value (`Fixed::from_scaled`).
 #[wasm_bindgen(js_name = fromScaled)]
-pub fn from_scaled(amount: i128, decimals: u8, rounding_: &str) -> R<i128> {
+pub fn from_scaled(
+    #[wasm_bindgen(unchecked_param_type = "bigint")] amount: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number")] decimals: JsValue,
+    rounding_: &str,
+) -> R<i128> {
+    let amount = int(amount)?;
+    let decimals = small_u8(decimals)?;
     Ok(Fixed::from_scaled(amount, decimals, rounding(rounding_)?)?.raw())
 }
 
 /// `value × 10^decimals` as an integer (`Fixed::to_scaled`).
 #[wasm_bindgen(js_name = toScaled)]
-pub fn to_scaled(raw: i128, decimals: u8, rounding_: &str) -> R<i128> {
+pub fn to_scaled(
+    #[wasm_bindgen(unchecked_param_type = "bigint")] raw: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number")] decimals: JsValue,
+    rounding_: &str,
+) -> R<i128> {
+    let raw = int(raw)?;
+    let decimals = small_u8(decimals)?;
     Ok(fx(raw).to_scaled(decimals, rounding(rounding_)?)?)
 }
 
 /// `a × b / 2^shift` (`optfix::wide::mul_shr`).
 #[wasm_bindgen(js_name = mulShr)]
-pub fn mul_shr(a: u128, b: u128, shift: u32, rounding_: &str) -> R<u128> {
+pub fn mul_shr(
+    #[wasm_bindgen(unchecked_param_type = "bigint")] a: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] b: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number")] shift: JsValue,
+    rounding_: &str,
+) -> R<u128> {
+    let a = uint(a)?;
+    let b = uint(b)?;
+    let shift = small_u32(shift)?;
     Ok(wide_mul_shr(a, b, shift, rounding(rounding_)?)?)
 }
 
 /// `seconds / 31,536,000` as raw years (`Years::from_seconds`).
 #[wasm_bindgen(js_name = yearsFromSeconds)]
-pub fn years_from_seconds(seconds: i64, rounding_: &str) -> R<i128> {
+pub fn years_from_seconds(
+    #[wasm_bindgen(unchecked_param_type = "bigint")] seconds: JsValue,
+    rounding_: &str,
+) -> R<i128> {
+    let seconds = long(seconds)?;
     Ok(Years::from_seconds(seconds, rounding(rounding_)?)?
         .get()
         .raw())
@@ -270,25 +366,29 @@ pub fn years_from_seconds(seconds: i64, rounding_: &str) -> R<i128> {
 
 /// `e^x`.
 #[wasm_bindgen]
-pub fn exp(x: i128) -> R<i128> {
+pub fn exp(#[wasm_bindgen(unchecked_param_type = "bigint")] x: JsValue) -> R<i128> {
+    let x = int(x)?;
     Ok(optfix::exp(fx(x))?.raw())
 }
 
 /// `ln x`.
 #[wasm_bindgen]
-pub fn ln(x: i128) -> R<i128> {
+pub fn ln(#[wasm_bindgen(unchecked_param_type = "bigint")] x: JsValue) -> R<i128> {
+    let x = int(x)?;
     Ok(optfix::ln(fx(x))?.raw())
 }
 
 /// The standard normal CDF.
 #[wasm_bindgen(js_name = normCdf)]
-pub fn norm_cdf(x: i128) -> R<i128> {
+pub fn norm_cdf(#[wasm_bindgen(unchecked_param_type = "bigint")] x: JsValue) -> R<i128> {
+    let x = int(x)?;
     Ok(optfix::norm_cdf(fx(x))?.raw())
 }
 
 /// The standard normal density.
 #[wasm_bindgen(js_name = normPdf)]
-pub fn norm_pdf(x: i128) -> R<i128> {
+pub fn norm_pdf(#[wasm_bindgen(unchecked_param_type = "bigint")] x: JsValue) -> R<i128> {
+    let x = int(x)?;
     Ok(optfix::norm_pdf(fx(x))?.raw())
 }
 
@@ -296,13 +396,19 @@ pub fn norm_pdf(x: i128) -> R<i128> {
 #[wasm_bindgen]
 pub fn price(
     kind_: &str,
-    spot: i128,
-    strike: i128,
-    expiry: i128,
-    vol: i128,
-    rate: i128,
-    carry: i128,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] spot: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] strike: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] expiry: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] vol: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] rate: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] carry: JsValue,
 ) -> R<i128> {
+    let spot = int(spot)?;
+    let strike = int(strike)?;
+    let expiry = int(expiry)?;
+    let vol = int(vol)?;
+    let rate = int(rate)?;
+    let carry = int(carry)?;
     let o = option(kind_, strike, expiry)?;
     Ok(optfix::price(&o, &market(spot, vol, rate, carry)?)?
         .get()
@@ -313,13 +419,19 @@ pub fn price(
 #[wasm_bindgen(js_name = priceAndGreeks)]
 pub fn price_and_greeks(
     kind_: &str,
-    spot: i128,
-    strike: i128,
-    expiry: i128,
-    vol: i128,
-    rate: i128,
-    carry: i128,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] spot: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] strike: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] expiry: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] vol: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] rate: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] carry: JsValue,
 ) -> R<Priced> {
+    let spot = int(spot)?;
+    let strike = int(strike)?;
+    let expiry = int(expiry)?;
+    let vol = int(vol)?;
+    let rate = int(rate)?;
+    let carry = int(carry)?;
     let o = option(kind_, strike, expiry)?;
     Ok(optfix::price_and_greeks(&o, &market(spot, vol, rate, carry)?)?.into())
 }
@@ -328,12 +440,17 @@ pub fn price_and_greeks(
 #[wasm_bindgen(js_name = priceBlack76)]
 pub fn price_black76(
     kind_: &str,
-    forward: i128,
-    strike: i128,
-    expiry: i128,
-    vol: i128,
-    rate: i128,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] forward: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] strike: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] expiry: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] vol: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] rate: JsValue,
 ) -> R<i128> {
+    let forward = int(forward)?;
+    let strike = int(strike)?;
+    let expiry = int(expiry)?;
+    let vol = int(vol)?;
+    let rate = int(rate)?;
     let o = option(kind_, strike, expiry)?;
     Ok(optfix::price_black76(&o, &futures(forward, vol, rate)?)?
         .get()
@@ -344,12 +461,17 @@ pub fn price_black76(
 #[wasm_bindgen(js_name = priceAndGreeksBlack76)]
 pub fn price_and_greeks_black76(
     kind_: &str,
-    forward: i128,
-    strike: i128,
-    expiry: i128,
-    vol: i128,
-    rate: i128,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] forward: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] strike: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] expiry: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] vol: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] rate: JsValue,
 ) -> R<Priced> {
+    let forward = int(forward)?;
+    let strike = int(strike)?;
+    let expiry = int(expiry)?;
+    let vol = int(vol)?;
+    let rate = int(rate)?;
     let o = option(kind_, strike, expiry)?;
     Ok(optfix::price_and_greeks_black76(&o, &futures(forward, vol, rate)?)?.into())
 }
@@ -359,14 +481,21 @@ pub fn price_and_greeks_black76(
 #[allow(clippy::too_many_arguments)]
 pub fn price_cash_or_nothing(
     kind_: &str,
-    spot: i128,
-    strike: i128,
-    expiry: i128,
-    vol: i128,
-    rate: i128,
-    carry: i128,
-    payout: i128,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] spot: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] strike: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] expiry: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] vol: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] rate: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] carry: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] payout: JsValue,
 ) -> R<i128> {
+    let spot = int(spot)?;
+    let strike = int(strike)?;
+    let expiry = int(expiry)?;
+    let vol = int(vol)?;
+    let rate = int(rate)?;
+    let carry = int(carry)?;
+    let payout = int(payout)?;
     let o = option(kind_, strike, expiry)?;
     let m = market(spot, vol, rate, carry)?;
     Ok(
@@ -380,13 +509,19 @@ pub fn price_cash_or_nothing(
 #[wasm_bindgen(js_name = priceAssetOrNothing)]
 pub fn price_asset_or_nothing(
     kind_: &str,
-    spot: i128,
-    strike: i128,
-    expiry: i128,
-    vol: i128,
-    rate: i128,
-    carry: i128,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] spot: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] strike: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] expiry: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] vol: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] rate: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] carry: JsValue,
 ) -> R<i128> {
+    let spot = int(spot)?;
+    let strike = int(strike)?;
+    let expiry = int(expiry)?;
+    let vol = int(vol)?;
+    let rate = int(rate)?;
+    let carry = int(carry)?;
     let o = option(kind_, strike, expiry)?;
     Ok(
         optfix::price_asset_or_nothing(&o, &market(spot, vol, rate, carry)?)?
@@ -399,13 +534,19 @@ pub fn price_asset_or_nothing(
 #[wasm_bindgen(js_name = impliedVol)]
 pub fn implied_vol(
     kind_: &str,
-    spot: i128,
-    strike: i128,
-    expiry: i128,
-    rate: i128,
-    carry: i128,
-    target: i128,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] spot: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] strike: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] expiry: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] rate: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] carry: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] target: JsValue,
 ) -> R<i128> {
+    let spot = int(spot)?;
+    let strike = int(strike)?;
+    let expiry = int(expiry)?;
+    let rate = int(rate)?;
+    let carry = int(carry)?;
+    let target = int(target)?;
     let o = option(kind_, strike, expiry)?;
     let m = IvInputs {
         spot: Spot::try_new(fx(spot))?,
@@ -438,14 +579,19 @@ fn strip_legs(kinds: &[String], strikes: Vec<JsValue>) -> R<Vec<StripLeg>> {
 /// the raw `bigint` `strikes[i]` per leg.
 #[wasm_bindgen(js_name = priceStrip)]
 pub fn price_strip(
-    expiry: i128,
-    spot: i128,
-    vol: i128,
-    rate: i128,
-    carry: i128,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] expiry: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] spot: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] vol: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] rate: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] carry: JsValue,
     kinds: Vec<String>,
     strikes: Vec<JsValue>,
 ) -> R<Vec<JsValue>> {
+    let expiry = int(expiry)?;
+    let spot = int(spot)?;
+    let vol = int(vol)?;
+    let rate = int(rate)?;
+    let carry = int(carry)?;
     let legs = strip_legs(&kinds, strikes)?;
     let mut out = vec![Price::MIN; legs.len()];
     optfix::price_strip(
@@ -460,14 +606,19 @@ pub fn price_strip(
 /// The premiums and greeks of a strip (`optfix::price_and_greeks_strip`).
 #[wasm_bindgen(js_name = priceAndGreeksStrip)]
 pub fn price_and_greeks_strip(
-    expiry: i128,
-    spot: i128,
-    vol: i128,
-    rate: i128,
-    carry: i128,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] expiry: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] spot: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] vol: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] rate: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] carry: JsValue,
     kinds: Vec<String>,
     strikes: Vec<JsValue>,
 ) -> R<Vec<Priced>> {
+    let expiry = int(expiry)?;
+    let spot = int(spot)?;
+    let vol = int(vol)?;
+    let rate = int(rate)?;
+    let carry = int(carry)?;
     let legs = strip_legs(&kinds, strikes)?;
     let zero = RsPriced {
         price: Price::MIN,

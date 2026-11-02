@@ -264,6 +264,14 @@ replay, before any random search; the same PR without the planted bug passes.
   `OptfixError { code, name, message }`. wasm-bindgen's generated glue contains `panic!` for a
   misused JavaScript handle, so the crate allows `clippy::disallowed_macros` at its root; the
   bindings themselves return `OptfixError`.
+- The JavaScript boundary is exact: wasm-bindgen's own conversion of an `i128`, `u128`, `u8`
+  or `u32` parameter wraps or truncates an out-of-range value silently (found while answering
+  codex's review question: `mulDown(2n ** 127n, ONE)` returned `−2^127`, `fromScaled(…, 2.7)`
+  ran with 2, a shift of `2^32 + 64` ran as 64). Every numeric parameter is a `JsValue`
+  (still typed `bigint` or `number` in the `.d.ts`), converted by the range-checked
+  `TryFrom<JsValue>` for `i128`, `u128` and `i64`, and for `decimals` and `shift` as a `number`
+  that is an integer in range; anything else throws `DomainError`
+  (`optfix-wasm/tests/boundary.test.mjs`).
 - Conformance: `conformance/` (`optfix-conformance`, a workspace crate): the format, the native
   evaluator that defines every result, the generator (`make conformance GENERATION=<N>`, which
   refuses an existing generation) and the native replay test. `vectors-g1.json` holds 20,877
@@ -316,6 +324,10 @@ GitHub release.
 
 *Done when* the three consumers match the vectors in CI, the README documents both crates, and
 the CI time stays under the threshold.
+
+(M16 evidence after its review R1, recorded here because M16 had merged its text: the
+30-minute `pricing` and `iv` runs on the corrected contract, 18fc9c8, were clean with
+10,045,472 and 54,402,152 runs, final coverage 968 and 886.)
 
 ## Milestone 18: Pinocchio example program
 
