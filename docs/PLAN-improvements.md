@@ -61,7 +61,14 @@ neighbours +44, `finalize (complete)` +22, `open_swap` +46, `settle_swap` +46 an
 compare step fails; cargo-semver-checks 0.51.0 on host Rust 1.99.1 passes on main and fails a
 public `rho` field on `Greeks` at 0.2.1 ("1 major ... checks failed"). The small-row rule also
 tightens `Digest, 1 leg` and `Digest, 2 legs` (net 146 and 267), which are under 1,000 too.
-The CI failing controls are recorded below once run.
+CI on the final workflow: `downstream` takes about 7.5 minutes and `semver` about 4, in
+parallel with the other jobs. On #29 itself the base (dea7adf) and head builds produce the same
+ELF SHA-256 and the compare reports no change. CI failing controls (scratch PRs on the M15
+branch, closed unmerged): #30 (`#[inline(always)]` removed from `U256::shr`) fails `downstream`
+on the same rows and amounts as the local control, base and head ELFs differing; #31 (a public
+`rho` field on `Greeks` at 0.2.1) fails `semver` with "semver requires new major version: 1
+major and 0 minor checks failed", while its `downstream` passes (varswap does not use `Greeks`,
+metalbook only reads its fields).
 
 **Downstream job** (`downstream` in `ci.yml`, a new required check once green on main):
 
