@@ -72,6 +72,13 @@ The guards come first so every later milestone is checked by them on its own PR.
   migrated to the new API (opened in that repo through the coordinator); the job stays required.
   If a downstream migration is not ready, the coordinator decides whether to wait or to merge
   with the job temporarily non-required (recorded in the PR).
+- Comparable measurements: `tools/downstream_cu.py` first checks that the base and head tables
+  have the same scenario rows and the same columns, in the same order, and fails on any
+  difference (a renamed, added or missing row is not a CU result). Base and head build in
+  separate checkouts with separate target directories; for each, the job records `cargo tree -i
+  optfix` (the path source and the optfix commit it points at) and the SHA-256 of the program
+  ELF it built, and the `cu` test is pointed at that ELF explicitly, so a run can never load the
+  other build's artifact. Both are printed in the job summary.
 - Toolchain: the same pinned Agave, platform-tools and host Rust as the other jobs (the
   composite action), so the CU numbers are comparable between base and head.
 - Failing control (a scratch PR, closed unmerged, as in milestone 9): removing
@@ -115,13 +122,34 @@ dependency):
    up, at most one ulp apart, equal when exact, errors exactly when the oracle says so.
 3. `wide`: `wide::mul_shr` for every shift and both roundings, and the 256-bit division kernel
    through `div_*`, against `num-bigint`.
-4. `pricing`: `price`, `price_and_greeks`, Black-76 and binaries never panic on any valid
-   input; the price lies within the arbitrage bounds widened by `price_error_bound`;
-   `price_black76` is bit-identical to `price` with `q = r`; each strip leg is bit-identical to
-   the scalar call; for a call, `asset_or_nothing` minus `cash_or_nothing` with payout `K` matches `price`
-   within the sum of the published envelopes.
-5. `iv`: `implied_vol(price(σ))` returns `σ` within the published round trip envelope or
-   `IllConditioned`, never another error on an in-domain target.
+4. `pricing`: no panic on any input, valid or not, and each family checked against its own
+   bounds and envelope (the families' envelopes differ, `optfix/src/bsm.rs` 343 to 351):
+   - Vanilla (`price`, `price_and_greeks`, strips, Black-76), with `E = price_error_bound`
+     (`PRICE_ERR_REL × max(S, K) + PRICE_ERR_ABS`): a call within `[max(0, S Dq − K Dr) − E,
+     S Dq + E]`, a put within `[max(0, K Dr − S Dq) − E, K Dr + E]`; `price_black76` and
+     `price_and_greeks_black76` bit-identical to the BSM calls with `S = F`, `q = r`; each strip
+     leg bit-identical to the scalar call, and on an error the earlier legs written and the rest
+     untouched.
+   - Cash-or-nothing, with `Eb = BINARY_ERR_REL × payout + BINARY_ERR_ABS` (the undiscounted
+     payout, independent of `S` and `K`): within `[0, payout Dr + Eb]`; for `T > 0` call + put
+     equals `payout Dr` within `2 Eb` plus one rounding of `Dr`. Payouts drawn with extra weight
+     on `0`, raw `1` and `Spot::MAX`; a payout above `Spot::MAX` must return `DomainError`.
+   - Asset-or-nothing, with `Ea = BINARY_ERR_REL × S + BINARY_ERR_ABS`: within `[0, S Dq + Ea]`.
+   - `T = 0` for both binaries: exactly the payoff, paid only strictly in the money (`payout`
+     or `S`), zero at and out of the money, with extra weight on `S = K`.
+   - Identity for `T > 0`: asset call minus `K` times the unit-payout cash call equals `price`
+     of the call within `Ea + K × Eb(1) + E` plus two roundings, the bound
+     `optfix/tests/binary_props.rs` (`test_identities`) already uses.
+5. `iv`: the contract of the existing round trip oracle (`optfix/tests/common/iv.rs`,
+   `round_trip`), included by `#[path]` so there is one definition. For a valid `σ` and
+   `target = price(σ)`: `T = 0` must return `DomainError`; `Ok(iv)` must sit within the `σ`
+   envelope and the price round trip envelope and must not be below the conditioning threshold;
+   `IllConditioned` must not be above it; `ArbitrageBound` is accepted only where the
+   out-of-the-money value rounded to zero (the target has no representable time value) and
+   never at a well-conditioned point; `DomainError` only where the input fails a documented
+   domain check, recomputed independently; `NoConvergence`, `Overflow` or any other result is a
+   failure. Conditioning is judged by the oracle's `conditioned` with its uncertainty band
+   (`GRID_LOWER`), inside which either answer is accepted.
 6. `decimal` (added by milestone 17): parsing never panics on arbitrary bytes, and
    `parse(format(x)) == x` for every `Fixed`.
 
@@ -132,8 +160,10 @@ The corpora are minimized (`cargo fuzz cmin`) before committing and kept small (
 inlined), fixed in the same PR. `make fuzz-smoke` runs the PR job locally.
 
 *Done when* the six targets (five here, the sixth with milestone 17) run clean for 30 minutes
-each, the smoke job is required, and a planted bug (a scratch PR making `mul_up` round down
-once in `2^20` inputs) is found by the smoke job.
+each, the smoke job is required, and the failing control is deterministic: a scratch PR plants
+a bug (`mul_up` rounding down on inputs whose low raw bits match a fixed pattern) together with
+a committed corpus entry that triggers it, and the smoke job fails on that entry during corpus
+replay, before any random search; the same PR without the planted bug passes.
 
 ## Milestone 17: decimal strings and `optfix-wasm`
 
@@ -157,8 +187,13 @@ crate): about 2,000 cases per function, drawn from the existing oracle fixtures
 (`bsm_fixture.csv`, `iv_fixture.csv`, `binary_fixture.csv`, `frozen_0_1.csv`) plus the edge
 sets, each with raw inputs, the exact native output bits or error code. Three consumers must
 reproduce them bit for bit: a native test, a `wasm-bindgen-test` run under Node in CI, and the
-bench program on SBF for a subset (the LiteSVM harness already compares SBF with host). The
-file is versioned with the crate; SDKs in other repos can use it as their test vector.
+bench program on SBF for a subset (the LiteSVM harness already compares SBF with host). SDKs in other repos can use it as their test vector.
+
+Versioning: the file is `conformance/vectors-<optfix version>.json`, with a format version
+field and the generating commit. Milestones 19 (rho) and 20 (if it changes `implied_vol` bits)
+regenerate a new file for the new version and keep the previous one, which is still replayed
+for every output those milestones did not agree to change (its `implied_vol` rows, after
+milestone 20, against the round trip envelope instead of bits), as the frozen 0.1 fixture is.
 
 Distribution (coordinator, msg 43356): `optfix-wasm` is published on crates.io with `optfix`,
 and the `wasm-pack` package tarball (pinned `wasm-pack`) is attached to the GitHub release. No
