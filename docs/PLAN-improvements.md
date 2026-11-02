@@ -484,6 +484,12 @@ points, seed `0x2f60`, 777,321 answered.
   between 0.2's tables with three steps and the new tables with two. That covers 3,035,763
   points: the grid, `iv_fixture.csv`, `iv_threshold.csv` and `iv_threshold_codex.csv`. No point
   is reclassified, so no `δ` discussion arises.
+  - The guard is `optfix/tests/iv_classification.rs` (`make iv-classification`, run in CI's
+    bench job). It pins the outcome counts and the FNV-1a 64 of the outcome bytes taken at
+    a250ed9: `0x4814a49ca2c8116e`, with the bytes' sha256 `d9bed921…9c71`. Its header gives the
+    command that reproduces the baseline from that commit.
+  - A lost or gained answer anywhere fails the guard, not only a wrong answer where one is
+    still given (review of #37).
 - Accuracy:
   - the round trip stays within 1.08% of its envelope;
   - the mpmath fixture's worst error goes from 0.80% to 0.76% of the envelope.

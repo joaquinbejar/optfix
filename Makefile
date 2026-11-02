@@ -67,7 +67,7 @@ bench: program
 # `make program`, whose rows it would perturb) and its CU split on SBF.
 IV_PROFILE_SAMPLES ?= 1000000
 .PHONY: iv-profile
-iv-profile:
+iv-profile: iv-classification
 	OPTFIX_IV_SAMPLES=$(IV_PROFILE_SAMPLES) cargo test $(CARGO_FLAGS) -p optfix --release \
 		--features iv-profile --test iv_profile -- --nocapture
 	cargo build-sbf --manifest-path bench-program/Cargo.toml --arch $(SBF_ARCH) \
@@ -78,6 +78,13 @@ iv-profile:
 		cargo test $(CARGO_FLAGS) -p optfix-bench --release --features iv-profile --test cu \
 		test_iv_profile_on_sbf \
 		-- --ignored --nocapture
+
+# implied_vol's outcome (answer or error code) at 3,035,763 grid and fixture points, against the
+# digest of a250ed9 (optfix/tests/iv_classification.rs); release build, a few seconds. In CI's
+# bench job.
+.PHONY: iv-classification
+iv-classification:
+	cargo test $(CARGO_FLAGS) -p optfix --release --test iv_classification -- --ignored --nocapture
 
 # Maximum exp and ln errors over a deterministic sample; regenerates docs/precision.md
 PRECISION_SAMPLES ?= 200000
