@@ -1,0 +1,21 @@
+[package]
+name = "optfix-wasm"
+description = "WebAssembly bindings for optfix: exact Q64.64 option pricing in JavaScript, bit-identical to the Rust crate"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["options", "fixed-point", "black-scholes", "wasm", "solana"]
+categories = ["finance", "mathematics", "wasm"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+optfix = { workspace = true }
+wasm-bindgen = { workspace = true }
+
+[lints]
+workspace = true

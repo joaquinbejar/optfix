@@ -1,0 +1,17 @@
+[package]
+name = "optfix-conformance"
+description = "Conformance vectors for optfix: generation, the native evaluator and its replay"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+optfix = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

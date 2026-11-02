@@ -70,7 +70,7 @@ precision:
 # part of pre-push. To grow the committed corpus, minimize with `cargo fuzz cmin` first.
 FUZZ_NIGHTLY ?= nightly-2026-10-11
 FUZZ_SECONDS ?= 60
-FUZZ_TARGETS ?= scaled arith wide pricing iv
+FUZZ_TARGETS ?= scaled arith wide pricing iv decimal
 .PHONY: fuzz-smoke
 fuzz-smoke:
 	@cd fuzz && for t in $(FUZZ_TARGETS); do \
@@ -79,6 +79,27 @@ fuzz-smoke:
 		cargo +$(FUZZ_NIGHTLY) fuzz run -a $$t target/corpus-work/$$t corpus/$$t \
 			-- -max_total_time=$(FUZZ_SECONDS) || exit 1; \
 	done
+
+# optfix-wasm (docs/PLAN-improvements.md, milestone 17): the Node.js package built by wasm-pack
+# into optfix-wasm/pkg, and every conformance generation replayed through it. Needs the
+# wasm32-unknown-unknown target, wasm-pack and Node.js (CI installs them); not part of pre-push.
+.PHONY: wasm
+wasm:
+	wasm-pack build optfix-wasm --target nodejs --release --out-dir pkg
+
+.PHONY: wasm-test
+wasm-test: wasm
+	node --test optfix-wasm/tests/*.test.mjs
+
+# A new conformance generation (docs/PLAN-improvements.md, milestone 17): only for a milestone
+# that agrees a change of results; earlier generations are never edited.
+.PHONY: conformance
+conformance:
+	@test -n "$(GENERATION)" || { echo "conformance: set GENERATION=<N>"; exit 1; }
+	@test ! -e conformance/vectors-g$(GENERATION).json || \
+		{ echo "conformance: generation $(GENERATION) exists and is immutable"; exit 1; }
+	cargo run $(CARGO_FLAGS) --release -p optfix-conformance --bin gen -- $(GENERATION) \
+		$$(git rev-parse HEAD) conformance/vectors-g$(GENERATION).json
 
 # Regenerate README.md's example and tables from the constants and docs/benchmarks.md
 # (`make test` fails while it is stale)
