@@ -207,17 +207,23 @@ The points it shows:
 Its LiteSVM test (`make program`, then `make test`) checks the return data against the host bit
 for bit and the error codes; one pricing takes at most about 15,200 CU.
 
-How many legs fit in one instruction, from the strip rows of `docs/benchmarks.md` at 0.2.1
-(worst case per extra leg: 5,209 CU for prices, 10,381 with greeks; 9,968 and 15,208 for the
-first):
+The example prices one option. For a strip in one instruction, a linear projection from the
+strip rows of `docs/benchmarks.md` at 0.2.1 gives a first idea (the largest per-leg increment
+measured between 1 and 16 legs: 5,209 CU for prices, 10,381 with greeks; 9,968 and 15,208 for
+the first leg):
 
-| Budget | `price_strip` legs | `price_and_greeks_strip` legs |
+| Budget | `price_strip` legs (projected) | `price_and_greeks_strip` legs (projected) |
 | --- | ---: | ---: |
 | 200,000 CU (default per instruction) | 37 | 18 |
 | 1,400,000 CU (the most a transaction can request) | 267 | 134 |
 
-A transaction is at most 1,232 bytes, so legs passed in instruction data (a kind byte and a
-16-byte strike each) stop near 60; above that, read the strikes from an account.
+These are illustrative projections, not bounds: only 1- and 16-leg strips are measured, and the
+figures leave nothing for your program's own work (entrypoint, account reads, decoding,
+serialization, return data). Reserve that overhead, and benchmark your actual largest
+instruction in LiteSVM (as `examples/pricer-program/tests/pricer.rs` does for one option)
+before relying on a size fitting. A transaction is at most 1,232 bytes, so legs passed in
+instruction data (a kind byte and a 16-byte strike each) stop near 60; above that, read the
+strikes from an account.
 
 ### Error Bounds
 

@@ -336,9 +336,10 @@ check as the bench program (so `checks`, `test` and `budget-control` build it), 
 test (`tests/pricer.rs`) checks five inputs across the domain against the host bit for bit,
 the error codes for an out-of-range `S/K`, an out-of-range `σ`, a short buffer and a bad kind
 byte, and at most 16,000 CU per pricing (measured 15,207). The README gains "Using optfix On
-Chain" with the legs-per-budget table: 37 priced legs or 18 with greeks in the default 200,000
-CU, 267 or 134 in 1,400,000, from the worst-case strip rows, and the 1,232-byte transaction
-limit (about 60 legs in instruction data).
+Chain" with a legs-per-budget table: 37 priced legs or 18 with greeks in the default 200,000
+CU, 267 or 134 in 1,400,000, labelled as linear projections from the 1- and 16-leg strip rows
+(review M18-01: not bounds; a consumer reserves its own overhead and benchmarks its largest
+instruction), and the 1,232-byte transaction limit (about 60 legs in instruction data).
 
 `examples/pricer-program/`: a minimal on-chain consumer to copy, separate from the bench
 harness. One instruction reads a Pyth-free set of inputs from instruction data (`FixedBytes`
