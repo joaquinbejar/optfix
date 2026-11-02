@@ -66,6 +66,8 @@ pub struct Greeks {
     pub vega: Fixed,
     /// `dV/dt` in calendar time, per year (`−dV/dT`); either sign.
     pub theta: Fixed,
+    /// Failing control (do not merge).
+    pub rho: Fixed,
 }
 
 /// A price with its greeks.
@@ -589,6 +591,7 @@ impl Shared {
         Ok(Priced {
             price,
             greeks: Greeks {
+                rho: Fixed::ZERO,
                 delta,
                 gamma,
                 vega,
@@ -714,6 +717,7 @@ const NEAR_MONEY_FACTOR: u128 = 256;
 
 /// All-zero greeks, for `price` (which does not compute them).
 const ZERO_GREEKS: Greeks = Greeks {
+    rho: Fixed::ZERO,
     delta: Fixed::ZERO,
     gamma: Fixed::ZERO,
     vega: Fixed::ZERO,
@@ -755,6 +759,7 @@ fn degenerate(
     Ok(Priced {
         price: Price::try_new(value)?,
         greeks: Greeks {
+            rho: Fixed::ZERO,
             delta,
             gamma: Fixed::ZERO,
             vega: Fixed::ZERO,
@@ -818,6 +823,7 @@ pub mod baseline {
         Ok(Priced {
             price: price(opt, m)?,
             greeks: Greeks {
+                rho: Fixed::ZERO,
                 delta: delta(opt, m)?,
                 gamma: gamma(opt, m)?,
                 vega: vega(opt, m)?,
