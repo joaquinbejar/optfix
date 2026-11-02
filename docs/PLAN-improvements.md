@@ -154,6 +154,10 @@ targets, `make fuzz-smoke`, the required `fuzz-smoke` job and `.github/workflows
   `0xBEEF` by 3), kept as a regular entry. Locally, `mul_up` patched to round down on that
   pattern fails `make fuzz-smoke` on that entry during the corpus replay, before libFuzzer's
   `INITED`; unpatched, every target passes.
+- 30-minute local runs (Apple M-series, all five in parallel, nightly-2026-10-11): no
+  failure; runs and final coverage `scaled` 128,178,716 (735), `arith` 187,191,548 (973),
+  `wide` 209,139,220 (487), `pricing` 8,554,611 (964), `iv` 147,710,779 (410). `pricing` is
+  the slow one: each input evaluates the exact reference exponential several times.
 
 Complements the property tests (uniform or structured sampling, a million cases) with
 coverage-guided search at the boundaries the samplers rarely hit. `fuzz/` is a `cargo-fuzz`
