@@ -32,8 +32,16 @@ fuzz_target!(|data: &[u8]| {
     let raw = b.i128();
     let x = Fixed::from_raw(raw);
     let shown = x.to_string();
-    assert_eq!(Fixed::from_decimal_str(&shown, Rounding::Down), Ok(x), "{shown}");
-    assert_eq!(Fixed::from_decimal_str(&shown, Rounding::Up), Ok(x), "{shown}");
+    assert_eq!(
+        Fixed::from_decimal_str(&shown, Rounding::Down),
+        Ok(x),
+        "{shown}"
+    );
+    assert_eq!(
+        Fixed::from_decimal_str(&shown, Rounding::Up),
+        Ok(x),
+        "{shown}"
+    );
 
     let Ok(text) = std::str::from_utf8(b.0) else {
         return;
