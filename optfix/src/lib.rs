@@ -40,6 +40,7 @@
 #![cfg_attr(not(test), no_std)]
 
 mod bsm;
+mod decimal;
 #[cfg(feature = "bench-internals")]
 #[doc(hidden)]
 pub use bsm::baseline;

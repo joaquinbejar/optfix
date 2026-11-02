@@ -1151,3 +1151,149 @@ fn test_implied_vol_matches_host_on_edge_inputs() {
         );
     }
 }
+
+/// Cases of each function replayed on SBF from the latest conformance generation.
+const CONFORMANCE_PER_FUNCTION: usize = 100;
+
+/// The latest `conformance/vectors-g<N>.json` replayed on SBF for every function the bench
+/// program exposes (`docs/PLAN-improvements.md`, milestone 17): the first
+/// [`CONFORMANCE_PER_FUNCTION`] cases of each, its return data equal to the vector's result or
+/// error code, encoded here independently of the program.
+#[test]
+fn test_conformance_vectors_on_sbf() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../conformance/");
+    let mut latest: Option<(u32, PathBuf)> = None;
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if let Some(n) = name
+            .strip_prefix("vectors-g")
+            .and_then(|r| r.strip_suffix(".json"))
+        {
+            let n: u32 = n.parse().unwrap();
+            if latest.as_ref().is_none_or(|(m, _)| n > *m) {
+                latest = Some((n, path));
+            }
+        }
+    }
+    let (_, path) = latest.expect("no conformance generation");
+    let v = optfix_conformance::load(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let raw = |s: &String| s.parse::<i128>().unwrap().to_le_bytes();
+    let kind = |s: &String| match s.as_str() {
+        "call" => 0u8,
+        "put" => 1u8,
+        _ => panic!("kind {s}"),
+    };
+    let mut vm = Vm::new();
+    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for c in &v.cases {
+        let a = &c.a;
+        let (data, values): (Vec<u8>, usize) = match c.f.as_str() {
+            "mul_down" | "div_down" | "sqrt_down" | "exp" | "ln" | "norm_cdf" | "norm_pdf" => {
+                let tag = match c.f.as_str() {
+                    "mul_down" => Ix::MulDown,
+                    "div_down" => Ix::DivDown,
+                    "sqrt_down" => Ix::SqrtDown,
+                    "exp" => Ix::Exp,
+                    "ln" => Ix::Ln,
+                    "norm_cdf" => Ix::NormCdf,
+                    _ => Ix::NormPdf,
+                };
+                let mut d = vec![tag as u8];
+                for x in a {
+                    d.extend_from_slice(&raw(x));
+                }
+                (d, 1)
+            }
+            "mul_shr" if a[2] == "64" && a[3] == "down" => {
+                let mut d = vec![Ix::MulShr as u8];
+                for x in &a[..2] {
+                    d.extend_from_slice(&x.parse::<u128>().unwrap().to_le_bytes());
+                }
+                d.extend_from_slice(&64u32.to_le_bytes());
+                d.push(0);
+                (d, 1)
+            }
+            "price"
+            | "price_and_greeks"
+            | "price_cash_or_nothing"
+            | "price_asset_or_nothing"
+            | "price_black76"
+            | "price_and_greeks_black76" => {
+                let (tag, values) = match c.f.as_str() {
+                    "price" => (Ix::Price, 1),
+                    "price_and_greeks" => (Ix::PriceAndGreeks, 5),
+                    "price_cash_or_nothing" => (Ix::CashOrNothing, 1),
+                    "price_asset_or_nothing" => (Ix::AssetOrNothing, 1),
+                    "price_black76" => (Ix::PriceBlack76, 1),
+                    _ => (Ix::PriceAndGreeksBlack76, 5),
+                };
+                // Arguments after the kind, in the program's order: S (or F), K, T, σ, r, q,
+                // then the payout.
+                let mut d = vec![tag as u8, kind(&a[0])];
+                for x in &a[1..] {
+                    d.extend_from_slice(&raw(x));
+                }
+                (d, values)
+            }
+            "implied_vol" => {
+                // The program reads S, K, T, target, r, q; the vector has S, K, T, r, q, target.
+                let mut d = vec![Ix::ImpliedVol as u8, kind(&a[0])];
+                for i in [1, 2, 3, 6, 4, 5] {
+                    d.extend_from_slice(&raw(&a[i]));
+                }
+                (d, 1)
+            }
+            _ => continue,
+        };
+        let n = counts.entry(c.f.as_str()).or_default();
+        if *n >= CONFORMANCE_PER_FUNCTION {
+            continue;
+        }
+        *n += 1;
+        let mut want = vec![0u8; 1 + 16 * values];
+        match (&c.r, c.e) {
+            (Some(r), None) => {
+                for (i, x) in r.iter().enumerate() {
+                    let bytes = if c.f == "mul_shr" {
+                        x.parse::<u128>().unwrap().to_le_bytes()
+                    } else {
+                        raw(x)
+                    };
+                    want[1 + 16 * i..17 + 16 * i].copy_from_slice(&bytes);
+                }
+            }
+            (None, Some(code)) => want[0] = 1 + code,
+            _ => panic!("malformed case {c:?}"),
+        }
+        let (_, got) = vm.run_raw(&data);
+        let mut got = got;
+        got.resize(want.len(), 0);
+        assert_eq!(
+            got, want,
+            "{}({:?}) on SBF differs from the vector",
+            c.f, c.a
+        );
+    }
+    for f in [
+        "mul_down",
+        "div_down",
+        "sqrt_down",
+        "exp",
+        "ln",
+        "norm_cdf",
+        "norm_pdf",
+        "mul_shr",
+        "price",
+        "price_and_greeks",
+        "price_cash_or_nothing",
+        "price_asset_or_nothing",
+        "price_black76",
+        "price_and_greeks_black76",
+        "implied_vol",
+    ] {
+        let n = counts.get(f).copied().unwrap_or(0);
+        assert!(n >= 50, "{f}: only {n} cases replayed on SBF");
+    }
+    println!("conformance on SBF ({}): {counts:?}", path.display());
+}

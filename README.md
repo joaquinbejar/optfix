@@ -44,6 +44,8 @@ measured in LiteSVM.
   `Rounding` argument for `from_ratio`, `from_scaled` and `to_scaled` (token units).
 - `wide::mul_shr`: a full 256-bit product shifted right with exact directed rounding.
 - `FixedBytes`: an alignment-1 storage form for account data.
+- Exact decimal text: `Fixed::from_decimal_str` (any number of digits, explicit rounding) and
+  `Display`, which prints the exact value (at most 64 fractional digits).
 
 #### 2. **Elementary functions**
 - `exp` (3 ulps) and `ln` (2 ulps).
@@ -80,6 +82,13 @@ measured in LiteSVM.
 | `bench-program` | A Pinocchio SBF program that exists only to measure compute units; nobody deploys it. |
 | `bench` (`optfix-bench`) | Runs `bench-program` in LiteSVM and writes `docs/benchmarks.md`. |
 | `lint-control` | A failing control proving the workspace lints fire. |
+| `optfix-wasm` | WebAssembly bindings for JavaScript: every value an exact `bigint` (or decimal text), bit-identical to the Rust crate. |
+| `conformance` (`optfix-conformance`) | The conformance vectors (`conformance/vectors-g*.json`): generator, native evaluator and replay. |
+
+The conformance vectors list about 20,000 calls with their exact results (raw values as decimal
+strings, errors as `PricingError` codes). CI replays every generation natively, through the
+wasm package on Node.js, and a subset on SBF; another implementation or SDK can use them as its
+test vectors. A generation is never edited: a release that changes results adds the next one.
 
 ### Numbers and Rounding
 `Fixed` is binary Q64.64 (`raw / 2^64`, an `i128`), chosen by measurement against a decimal
@@ -250,6 +259,8 @@ make bench       # build bench-program for SBF, run it in LiteSVM, regenerate do
                  # (fails when a row is over its limit in bench/budget.md)
 make precision   # measured exp and ln errors; regenerates docs/precision.md
 make readme      # regenerate this README's example and tables
+make wasm-test   # build optfix-wasm with wasm-pack and replay the conformance vectors on Node.js
+make fuzz-smoke  # each fuzz target: corpus replay, then 60 s of search (pinned nightly)
 make pre-push    # fmt, clippy, lint controls, tests and docs, as required before a push
 ```
 

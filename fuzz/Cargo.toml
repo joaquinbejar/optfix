@@ -52,3 +52,10 @@ path = "fuzz_targets/iv.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "decimal"
+path = "fuzz_targets/decimal.rs"
+test = false
+doc = false
+bench = false

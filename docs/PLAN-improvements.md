@@ -248,6 +248,38 @@ replay, before any random search; the same PR without the planted bug passes.
 
 ## Milestone 17: decimal strings and `optfix-wasm`
 
+(Built.) As built, with the differences from the text below:
+
+- `Fixed::from_decimal_str`, `Fixed::write_decimal` and `Display` (`optfix/src/decimal.rs`):
+  the integer part, the first 64 fractional digits exactly (doubled 64 times on a fixed digit
+  buffer) and only the nonzeroness of later digits, which is enough for the floor and the
+  ceiling (proof in the module comment). Checked by `decimal_props.rs` (100,000 cases each:
+  `Display` exact and parsed back, parsing brackets the exact value of random text) and by the
+  sixth fuzz target, `decimal`, which found one bug before merge: text that was malformed and
+  also too large (`"922337203685477580036854775807.999999999999997.99..."`) returned
+  `Overflow` instead of `DomainError`. The syntax is now checked before any digit is
+  accumulated; the input is a unit test.
+- `optfix-wasm` (`wasm-bindgen` 0.2, `wasm-pack` 0.15.1): the whole public surface, values as
+  raw `bigint`s or decimal text, kinds and roundings as strings, errors thrown as
+  `OptfixError { code, name, message }`. wasm-bindgen's generated glue contains `panic!` for a
+  misused JavaScript handle, so the crate allows `clippy::disallowed_macros` at its root; the
+  bindings themselves return `OptfixError`.
+- Conformance: `conformance/` (`optfix-conformance`, a workspace crate): the format, the native
+  evaluator that defines every result, the generator (`make conformance GENERATION=<N>`, which
+  refuses an existing generation) and the native replay test. `vectors-g1.json` holds 20,877
+  cases over 26 functions (up to 1,000 each rather than the 2,000 planned, to keep the file at
+  3.4 MB): the frozen 0.1 rows, the binary fixture, cases derived from them (Black-76, strips,
+  multiplications) and a seeded sampler with edges.
+- The second consumer replays the vectors through the JavaScript package itself
+  (`optfix-wasm/tests/conformance.test.mjs`, `node --test` after `wasm-pack build`), not
+  `wasm-bindgen-test`: that checks the bindings' conversions too. Corrupting two cases in a
+  copy of the file makes it fail on exactly those two. The third, `test_conformance_vectors_on_sbf`
+  in `bench/tests/cu.rs`, replays the first 100 cases of each of the 15 functions the bench
+  program exposes on SBF.
+- CI job `wasm`: `make wasm-test` and `npm publish --dry-run` (Node.js 24.22.0 LTS). npm
+  publication is authorized by the coordinator (msg 44379): the unscoped name `optfix-wasm` was
+  free on 2026-11-02; it is published at milestone 21 once the Studio is logged in to npm.
+
 **Decimal strings in the core crate** (additive, `no_std`, no allocation):
 `Fixed::from_decimal_str(&str, Rounding) -> Result<Fixed, PricingError>` (optional sign,
 digits, optional fraction, no exponent; `DomainError` on malformed input, `Overflow` out of
@@ -278,9 +310,9 @@ earlier one, which is still replayed
 for every output those milestones did not agree to change (its `implied_vol` rows, after
 milestone 20, against the round trip envelope instead of bits), as the frozen 0.1 fixture is.
 
-Distribution (coordinator, msg 43356): `optfix-wasm` is published on crates.io with `optfix`,
-and the `wasm-pack` package tarball (pinned `wasm-pack`) is attached to the GitHub release. No
-npm publication for now; the coordinator will say if that changes.
+Distribution (coordinator, msgs 43356 and 44379): `optfix-wasm` is published on crates.io with
+`optfix`, on npm, and the `wasm-pack` package tarball (pinned `wasm-pack`) is attached to the
+GitHub release.
 
 *Done when* the three consumers match the vectors in CI, the README documents both crates, and
 the CI time stays under the threshold.
@@ -314,6 +346,12 @@ PR.
   binary greeks) are not breaking. The input structs (`EuropeanOption`, `MarketInputs`,
   `FuturesInputs`, `IvInputs`, `StripLeg`) stay exhaustive: callers build them with literals,
   as the README does (the decision of section 8, "Version").
+- **Constructing outputs once they are `#[non_exhaustive]`** (found in milestone 17): a caller
+  of `price_and_greeks_strip` must fill its `out: &mut [Priced]` before the call, and
+  `optfix-wasm`, `optfix-conformance` and `bench/` do it with a `Priced { .., greeks: Greeks {
+  .. } }` literal, which `#[non_exhaustive]` forbids outside the crate. This milestone adds
+  `Greeks::ZERO` and `Priced::ZERO` (or `Default`) in the same PR and moves those callers to
+  them.
 - **`from_bps`** (additive, here for the release notes): `Fixed::from_bps(bps: i64, Rounding)`,
   and `Rate::from_bps`, `Volatility::from_bps` wrapping `try_new`. One basis point is not exact
   in binary, hence the explicit rounding.
@@ -357,11 +395,12 @@ above, or the gate's failure is recorded.
 
 `CHANGELOG.md` [0.3.0], README (install `optfix = "0.3"`, the wasm crate, the example, rho),
 publish dry run of both crates, then on the coordinator's go: merge, signed tag `v0.3.0`,
-`cargo publish -p optfix` and `-p optfix-wasm`, GitHub release with the wasm package tarball attached (no npm).
+`cargo publish -p optfix` and `-p optfix-wasm`, GitHub release with the wasm package tarball attached, and `npm publish` of `optfix-wasm`.
 Downstream bumps to `"0.3"` follow through the coordinator.
 
 ## Decisions from the coordinator
 
-1. npm publication of `optfix-wasm`: not now; GitHub release asset only (msg 43356).
+1. npm publication of `optfix-wasm`: first not (msg 43356), then authorized by the user (msg
+   44379), at milestone 21, as `optfix-wasm`.
 2. `optfix-wasm` on crates.io: yes, under the existing crates authorization (msg 43356).
 3. Downstream pins for breaking milestones: coordinated through the coordinator (msg 43356).

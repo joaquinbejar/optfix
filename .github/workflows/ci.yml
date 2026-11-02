@@ -14,7 +14,8 @@
 # - host Rust 1.99.1 with rustfmt and clippy;
 # - cargo-semver-checks 0.51.0 (installed with --locked);
 # - the varswap and metalbook commits in ci/downstream.env;
-# - nightly-2026-10-11 and cargo-fuzz 0.13.2 for the fuzz jobs (fuzz/Cargo.lock).
+# - nightly-2026-10-11 and cargo-fuzz 0.13.2 for the fuzz jobs (fuzz/Cargo.lock);
+# - wasm-pack 0.15.1 and Node.js 24.22.0 (LTS) for the wasm job (wasm-bindgen from Cargo.lock).
 # SHA-256 values are the digests GitHub publishes for the release assets.
 
 name: CI
@@ -42,6 +43,8 @@ env:
   SEMVER_CHECKS_VERSION: "0.51.0"
   FUZZ_NIGHTLY: nightly-2026-10-11
   CARGO_FUZZ_VERSION: "0.13.2"
+  WASM_PACK_VERSION: "0.15.1"
+  NODE_VERSION: "24.22.0"
 
 jobs:
   checks:
@@ -158,3 +161,24 @@ jobs:
         with:
           name: fuzz-artifacts
           path: fuzz/artifacts
+
+  # docs/PLAN-improvements.md, milestone 17: the wasm package built by wasm-pack, every
+  # conformance generation replayed through it on Node.js, and the npm package as it would be
+  # published (dry run; publishing happens at the release).
+  wasm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Host Rust, wasm32 target and wasm-pack
+        run: |
+          rustup toolchain install "$RUST_PIN" --profile minimal --target wasm32-unknown-unknown
+          echo "RUSTUP_TOOLCHAIN=$RUST_PIN" >> "$GITHUB_ENV"
+          cargo +"$RUST_PIN" install wasm-pack --version "$WASM_PACK_VERSION" --locked
+      - run: make wasm-test
+      - name: npm package (dry run)
+        working-directory: optfix-wasm/pkg
+        run: npm publish --dry-run

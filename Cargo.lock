@@ -1861,6 +1861,7 @@ dependencies = [
  "libm",
  "litesvm",
  "optfix",
+ "optfix-conformance",
  "solana-address 2.7.0",
  "solana-instruction 3.5.1",
  "solana-keypair",
@@ -1875,6 +1876,23 @@ dependencies = [
  "bytemuck",
  "optfix",
  "pinocchio",
+]
+
+[[package]]
+name = "optfix-conformance"
+version = "0.2.1"
+dependencies = [
+ "optfix",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "optfix-wasm"
+version = "0.2.1"
+dependencies = [
+ "optfix",
+ "wasm-bindgen",
 ]
 
 [[package]]

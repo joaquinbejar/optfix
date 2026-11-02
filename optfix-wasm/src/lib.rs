@@ -1,0 +1,489 @@
+//! WebAssembly bindings for [`optfix`] (`docs/PLAN-improvements.md`, milestone 17).
+//!
+//! Every value crosses the boundary exactly: a Q64.64 number as its raw `bigint` (`raw / 2^64`;
+//! `fixedFromDecimal` and `fixedToDecimal` convert from and to exact decimal text), never as a
+//! JavaScript `number`. An option kind is `"call"` or `"put"`, a rounding `"down"` (toward
+//! negative infinity) or `"up"`. A failure throws an [`OptfixError`] carrying the
+//! `PricingError` code (`e as u8` in Rust) and name. The functions are optfix's, so their
+//! results are bit-identical to the Rust crate's, as `conformance/vectors-g*.json` checks.
+
+// wasm-bindgen's generated glue for the exported structs contains `panic!` (a misused
+// JavaScript handle: a freed or foreign object), outside this crate's control and emitted at
+// crate level; the bindings themselves return `OptfixError` and never panic.
+#![allow(clippy::disallowed_macros)]
+
+use optfix::wide::mul_shr as wide_mul_shr;
+use optfix::{
+    EuropeanOption, Fixed, FuturesInputs, IvInputs, MarketInputs, OptionKind, Price,
+    Priced as RsPriced, PricingError, Rate, Rounding, Spot, Strike, StripLeg, Volatility, Years,
+};
+use wasm_bindgen::prelude::*;
+
+/// A failed optfix call: `code` is the `PricingError` discriminant, `name` its variant.
+#[wasm_bindgen]
+#[derive(Debug, Clone)]
+pub struct OptfixError {
+    code: u8,
+    name: String,
+}
+
+#[wasm_bindgen]
+impl OptfixError {
+    /// The `PricingError` code: 0 `Overflow`, 1 `DomainError`, 2 `NoConvergence`,
+    /// 3 `ArbitrageBound`, 4 `IllConditioned`.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn code(&self) -> u8 {
+        self.code
+    }
+
+    /// The variant name, for example `"DomainError"`.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    /// A readable message.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn message(&self) -> String {
+        let mut m = self.name.clone();
+        m.push_str(" (optfix error ");
+        m.push_str(match self.code {
+            0 => "0)",
+            1 => "1)",
+            2 => "2)",
+            3 => "3)",
+            4 => "4)",
+            _ => "?)",
+        });
+        m
+    }
+}
+
+impl From<PricingError> for OptfixError {
+    fn from(e: PricingError) -> Self {
+        let name = match e {
+            PricingError::Overflow => "Overflow",
+            PricingError::DomainError => "DomainError",
+            PricingError::NoConvergence => "NoConvergence",
+            PricingError::ArbitrageBound => "ArbitrageBound",
+            PricingError::IllConditioned => "IllConditioned",
+            _ => "PricingError",
+        };
+        Self {
+            code: e as u8,
+            name: name.into(),
+        }
+    }
+}
+
+type R<T> = Result<T, OptfixError>;
+
+fn domain() -> OptfixError {
+    PricingError::DomainError.into()
+}
+
+fn rounding(r: &str) -> R<Rounding> {
+    match r {
+        "down" => Ok(Rounding::Down),
+        "up" => Ok(Rounding::Up),
+        _ => Err(domain()),
+    }
+}
+
+fn kind(k: &str) -> R<OptionKind> {
+    match k {
+        "call" => Ok(OptionKind::Call),
+        "put" => Ok(OptionKind::Put),
+        _ => Err(domain()),
+    }
+}
+
+fn fx(raw: i128) -> Fixed {
+    Fixed::from_raw(raw)
+}
+
+fn option(k: &str, strike: i128, expiry: i128) -> R<EuropeanOption> {
+    Ok(EuropeanOption {
+        kind: kind(k)?,
+        strike: Strike::try_new(fx(strike))?,
+        expiry: Years::try_new(fx(expiry))?,
+    })
+}
+
+fn market(spot: i128, vol: i128, rate: i128, carry: i128) -> R<MarketInputs> {
+    Ok(MarketInputs {
+        spot: Spot::try_new(fx(spot))?,
+        vol: Volatility::try_new(fx(vol))?,
+        rate: Rate::try_new(fx(rate))?,
+        carry: Rate::try_new(fx(carry))?,
+    })
+}
+
+fn futures(forward: i128, vol: i128, rate: i128) -> R<FuturesInputs> {
+    Ok(FuturesInputs {
+        forward: Spot::try_new(fx(forward))?,
+        vol: Volatility::try_new(fx(vol))?,
+        rate: Rate::try_new(fx(rate))?,
+    })
+}
+
+/// A premium and its greeks, each a raw Q64.64 `bigint` (the units of `optfix::Greeks`).
+#[wasm_bindgen]
+#[derive(Debug, Clone, Copy)]
+pub struct Priced {
+    price: i128,
+    delta: i128,
+    gamma: i128,
+    vega: i128,
+    theta: i128,
+}
+
+#[wasm_bindgen]
+impl Priced {
+    /// The premium.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn price(&self) -> i128 {
+        self.price
+    }
+    /// `∂price/∂S`.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn delta(&self) -> i128 {
+        self.delta
+    }
+    /// `∂²price/∂S²`.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn gamma(&self) -> i128 {
+        self.gamma
+    }
+    /// `∂price/∂σ`.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn vega(&self) -> i128 {
+        self.vega
+    }
+    /// `∂price/∂t`, per year.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn theta(&self) -> i128 {
+        self.theta
+    }
+}
+
+impl From<RsPriced> for Priced {
+    fn from(p: RsPriced) -> Self {
+        Self {
+            price: p.price.get().raw(),
+            delta: p.greeks.delta.raw(),
+            gamma: p.greeks.gamma.raw(),
+            vega: p.greeks.vega.raw(),
+            theta: p.greeks.theta.raw(),
+        }
+    }
+}
+
+/// Parses exact decimal text (`Fixed::from_decimal_str`), rounded in direction `rounding`.
+#[wasm_bindgen(js_name = fixedFromDecimal)]
+pub fn fixed_from_decimal(text: &str, rounding_: &str) -> R<i128> {
+    Ok(Fixed::from_decimal_str(text, rounding(rounding_)?)?.raw())
+}
+
+/// The exact decimal text of a raw value (`Fixed`'s `Display`).
+#[wasm_bindgen(js_name = fixedToDecimal)]
+#[must_use]
+pub fn fixed_to_decimal(raw: i128) -> String {
+    fx(raw).to_string()
+}
+
+/// `a × b`, rounded down.
+#[wasm_bindgen(js_name = mulDown)]
+pub fn mul_down(a: i128, b: i128) -> R<i128> {
+    Ok(fx(a).mul_down(fx(b))?.raw())
+}
+
+/// `a × b`, rounded up.
+#[wasm_bindgen(js_name = mulUp)]
+pub fn mul_up(a: i128, b: i128) -> R<i128> {
+    Ok(fx(a).mul_up(fx(b))?.raw())
+}
+
+/// `a / b`, rounded down.
+#[wasm_bindgen(js_name = divDown)]
+pub fn div_down(a: i128, b: i128) -> R<i128> {
+    Ok(fx(a).div_down(fx(b))?.raw())
+}
+
+/// `a / b`, rounded up.
+#[wasm_bindgen(js_name = divUp)]
+pub fn div_up(a: i128, b: i128) -> R<i128> {
+    Ok(fx(a).div_up(fx(b))?.raw())
+}
+
+/// `sqrt(a)`, rounded down.
+#[wasm_bindgen(js_name = sqrtDown)]
+pub fn sqrt_down(a: i128) -> R<i128> {
+    Ok(fx(a).sqrt_down()?.raw())
+}
+
+/// `sqrt(a)`, rounded up.
+#[wasm_bindgen(js_name = sqrtUp)]
+pub fn sqrt_up(a: i128) -> R<i128> {
+    Ok(fx(a).sqrt_up()?.raw())
+}
+
+/// `num / den` as a raw value (`Fixed::from_ratio`).
+#[wasm_bindgen(js_name = fromRatio)]
+pub fn from_ratio(num: i128, den: i128, rounding_: &str) -> R<i128> {
+    Ok(Fixed::from_ratio(num, den, rounding(rounding_)?)?.raw())
+}
+
+/// `amount / 10^decimals` as a raw value (`Fixed::from_scaled`).
+#[wasm_bindgen(js_name = fromScaled)]
+pub fn from_scaled(amount: i128, decimals: u8, rounding_: &str) -> R<i128> {
+    Ok(Fixed::from_scaled(amount, decimals, rounding(rounding_)?)?.raw())
+}
+
+/// `value × 10^decimals` as an integer (`Fixed::to_scaled`).
+#[wasm_bindgen(js_name = toScaled)]
+pub fn to_scaled(raw: i128, decimals: u8, rounding_: &str) -> R<i128> {
+    Ok(fx(raw).to_scaled(decimals, rounding(rounding_)?)?)
+}
+
+/// `a × b / 2^shift` (`optfix::wide::mul_shr`).
+#[wasm_bindgen(js_name = mulShr)]
+pub fn mul_shr(a: u128, b: u128, shift: u32, rounding_: &str) -> R<u128> {
+    Ok(wide_mul_shr(a, b, shift, rounding(rounding_)?)?)
+}
+
+/// `seconds / 31,536,000` as raw years (`Years::from_seconds`).
+#[wasm_bindgen(js_name = yearsFromSeconds)]
+pub fn years_from_seconds(seconds: i64, rounding_: &str) -> R<i128> {
+    Ok(Years::from_seconds(seconds, rounding(rounding_)?)?
+        .get()
+        .raw())
+}
+
+/// `e^x`.
+#[wasm_bindgen]
+pub fn exp(x: i128) -> R<i128> {
+    Ok(optfix::exp(fx(x))?.raw())
+}
+
+/// `ln x`.
+#[wasm_bindgen]
+pub fn ln(x: i128) -> R<i128> {
+    Ok(optfix::ln(fx(x))?.raw())
+}
+
+/// The standard normal CDF.
+#[wasm_bindgen(js_name = normCdf)]
+pub fn norm_cdf(x: i128) -> R<i128> {
+    Ok(optfix::norm_cdf(fx(x))?.raw())
+}
+
+/// The standard normal density.
+#[wasm_bindgen(js_name = normPdf)]
+pub fn norm_pdf(x: i128) -> R<i128> {
+    Ok(optfix::norm_pdf(fx(x))?.raw())
+}
+
+/// The Black-Scholes-Merton premium (`optfix::price`).
+#[wasm_bindgen]
+pub fn price(
+    kind_: &str,
+    spot: i128,
+    strike: i128,
+    expiry: i128,
+    vol: i128,
+    rate: i128,
+    carry: i128,
+) -> R<i128> {
+    let o = option(kind_, strike, expiry)?;
+    Ok(optfix::price(&o, &market(spot, vol, rate, carry)?)?
+        .get()
+        .raw())
+}
+
+/// The premium and greeks (`optfix::price_and_greeks`).
+#[wasm_bindgen(js_name = priceAndGreeks)]
+pub fn price_and_greeks(
+    kind_: &str,
+    spot: i128,
+    strike: i128,
+    expiry: i128,
+    vol: i128,
+    rate: i128,
+    carry: i128,
+) -> R<Priced> {
+    let o = option(kind_, strike, expiry)?;
+    Ok(optfix::price_and_greeks(&o, &market(spot, vol, rate, carry)?)?.into())
+}
+
+/// The Black-76 premium (`optfix::price_black76`).
+#[wasm_bindgen(js_name = priceBlack76)]
+pub fn price_black76(
+    kind_: &str,
+    forward: i128,
+    strike: i128,
+    expiry: i128,
+    vol: i128,
+    rate: i128,
+) -> R<i128> {
+    let o = option(kind_, strike, expiry)?;
+    Ok(optfix::price_black76(&o, &futures(forward, vol, rate)?)?
+        .get()
+        .raw())
+}
+
+/// The Black-76 premium and greeks (`optfix::price_and_greeks_black76`).
+#[wasm_bindgen(js_name = priceAndGreeksBlack76)]
+pub fn price_and_greeks_black76(
+    kind_: &str,
+    forward: i128,
+    strike: i128,
+    expiry: i128,
+    vol: i128,
+    rate: i128,
+) -> R<Priced> {
+    let o = option(kind_, strike, expiry)?;
+    Ok(optfix::price_and_greeks_black76(&o, &futures(forward, vol, rate)?)?.into())
+}
+
+/// The cash-or-nothing premium (`optfix::price_cash_or_nothing`).
+#[wasm_bindgen(js_name = priceCashOrNothing)]
+#[allow(clippy::too_many_arguments)]
+pub fn price_cash_or_nothing(
+    kind_: &str,
+    spot: i128,
+    strike: i128,
+    expiry: i128,
+    vol: i128,
+    rate: i128,
+    carry: i128,
+    payout: i128,
+) -> R<i128> {
+    let o = option(kind_, strike, expiry)?;
+    let m = market(spot, vol, rate, carry)?;
+    Ok(
+        optfix::price_cash_or_nothing(&o, &m, Price::try_new(fx(payout))?)?
+            .get()
+            .raw(),
+    )
+}
+
+/// The asset-or-nothing premium (`optfix::price_asset_or_nothing`).
+#[wasm_bindgen(js_name = priceAssetOrNothing)]
+pub fn price_asset_or_nothing(
+    kind_: &str,
+    spot: i128,
+    strike: i128,
+    expiry: i128,
+    vol: i128,
+    rate: i128,
+    carry: i128,
+) -> R<i128> {
+    let o = option(kind_, strike, expiry)?;
+    Ok(
+        optfix::price_asset_or_nothing(&o, &market(spot, vol, rate, carry)?)?
+            .get()
+            .raw(),
+    )
+}
+
+/// The implied volatility of `target` (`optfix::implied_vol`).
+#[wasm_bindgen(js_name = impliedVol)]
+pub fn implied_vol(
+    kind_: &str,
+    spot: i128,
+    strike: i128,
+    expiry: i128,
+    rate: i128,
+    carry: i128,
+    target: i128,
+) -> R<i128> {
+    let o = option(kind_, strike, expiry)?;
+    let m = IvInputs {
+        spot: Spot::try_new(fx(spot))?,
+        rate: Rate::try_new(fx(rate))?,
+        carry: Rate::try_new(fx(carry))?,
+    };
+    Ok(optfix::implied_vol(&o, &m, Price::try_new(fx(target))?)?
+        .get()
+        .raw())
+}
+
+fn strip_legs(kinds: &[String], strikes: Vec<JsValue>) -> R<Vec<StripLeg>> {
+    if kinds.len() != strikes.len() {
+        return Err(domain());
+    }
+    kinds
+        .iter()
+        .zip(strikes)
+        .map(|(k, s)| {
+            let raw = i128::try_from(s).map_err(|_| domain())?;
+            Ok(StripLeg {
+                kind: kind(k)?,
+                strike: Strike::try_new(fx(raw))?,
+            })
+        })
+        .collect()
+}
+
+/// The premiums of a strip sharing `T` and the market (`optfix::price_strip`): `kinds[i]` and
+/// the raw `bigint` `strikes[i]` per leg.
+#[wasm_bindgen(js_name = priceStrip)]
+pub fn price_strip(
+    expiry: i128,
+    spot: i128,
+    vol: i128,
+    rate: i128,
+    carry: i128,
+    kinds: Vec<String>,
+    strikes: Vec<JsValue>,
+) -> R<Vec<JsValue>> {
+    let legs = strip_legs(&kinds, strikes)?;
+    let mut out = vec![Price::MIN; legs.len()];
+    optfix::price_strip(
+        Years::try_new(fx(expiry))?,
+        &market(spot, vol, rate, carry)?,
+        &legs,
+        &mut out,
+    )?;
+    Ok(out.iter().map(|p| JsValue::from(p.get().raw())).collect())
+}
+
+/// The premiums and greeks of a strip (`optfix::price_and_greeks_strip`).
+#[wasm_bindgen(js_name = priceAndGreeksStrip)]
+pub fn price_and_greeks_strip(
+    expiry: i128,
+    spot: i128,
+    vol: i128,
+    rate: i128,
+    carry: i128,
+    kinds: Vec<String>,
+    strikes: Vec<JsValue>,
+) -> R<Vec<Priced>> {
+    let legs = strip_legs(&kinds, strikes)?;
+    let zero = RsPriced {
+        price: Price::MIN,
+        greeks: optfix::Greeks {
+            delta: Fixed::ZERO,
+            gamma: Fixed::ZERO,
+            vega: Fixed::ZERO,
+            theta: Fixed::ZERO,
+        },
+    };
+    let mut out = vec![zero; legs.len()];
+    optfix::price_and_greeks_strip(
+        Years::try_new(fx(expiry))?,
+        &market(spot, vol, rate, carry)?,
+        &legs,
+        &mut out,
+    )?;
+    Ok(out.into_iter().map(Priced::from).collect())
+}
