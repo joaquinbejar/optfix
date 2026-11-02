@@ -233,16 +233,18 @@ impl Rng {
     }
 }
 
-/// Black-Scholes-Merton in Q.P: `(price, delta, gamma, vega, theta)` with the formulas of
+/// Black-Scholes-Merton in Q.P: `(price, delta, gamma, vega, theta, rho)` with the formulas of
 /// `docs/PLAN.md` 4.5 evaluated exactly (for `T > 0` the true formula even when `σ√T` is tiny,
 /// so the degenerate branch's error is measured too). `T = 0` follows the documented
-/// convention: intrinsic value, delta `±1` strictly in the money, theta `q S − r K` (call).
+/// convention: intrinsic value, delta `±1` strictly in the money, theta `q S − r K` (call),
+/// rho 0.
 pub struct BsmRef {
     pub price: BigInt,
     pub delta: BigInt,
     pub gamma: BigInt,
     pub vega: BigInt,
     pub theta: BigInt,
+    pub rho: BigInt,
     /// `e^{−qT}`, `e^{−rT}`, `S Dq`, `K Dr`, and `σ√T` and `√T` (zero at `T = 0`).
     pub dq: BigInt,
     pub dr: BigInt,
@@ -297,6 +299,7 @@ pub fn bsm_ref(
         gamma: BigInt::from(0),
         vega: BigInt::from(0),
         theta,
+        rho: BigInt::from(0),
         dq: dq.clone(),
         dr: dr.clone(),
         s_dq: s_dq.clone(),
@@ -344,12 +347,18 @@ pub fn bsm_ref(
     } else {
         -decay + mul(r, &mul(&k_dr, &nmd2)) - mul(q, &mul(&s_dq, &nmd1))
     };
+    let rho = if call {
+        mul(t, &mul(&k_dr, &nd2))
+    } else {
+        -mul(t, &mul(&k_dr, &nmd2))
+    };
     BsmRef {
         price,
         delta,
         gamma,
         vega,
         theta,
+        rho,
         dq,
         dr,
         s_dq,

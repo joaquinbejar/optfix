@@ -30,7 +30,8 @@ use optfix::{
     Fixed, Price, PricingError, Spot, BINARY_ERR_ABS, BINARY_ERR_REL, DELTA_ERR,
     EXP_MAX_ERROR_ULPS, GAMMA_ERR_REL, GREEK_ERR_ABS, IV_ERR_PRICE_FACTOR, IV_ERR_REL,
     IV_VEGA_MIN_FACTOR, LN_MAX_ERROR_ULPS, NORM_CDF_MAX_ERROR_ULPS, NORM_CDF_TAIL_REL_ERROR,
-    NORM_PDF_MAX_ERROR_ULPS, PRICE_ERR_ABS, PRICE_ERR_REL, THETA_ERR_REL, VEGA_ERR_REL,
+    NORM_PDF_MAX_ERROR_ULPS, PRICE_ERR_ABS, PRICE_ERR_REL, RHO_ERR_ABS, RHO_ERR_REL, THETA_ERR_REL,
+    VEGA_ERR_REL,
 };
 use rust_decimal::Decimal;
 
@@ -241,9 +242,9 @@ fn oracle(n: usize) -> [(f64, f64, Option<f64>); 2] {
 /// `(|error| − abs) / scale` with the envelope's own absolute part and scale, and the largest
 /// `|error| / scale` measured against `S Dq` instead of `max(S, K)` for the price (question 4);
 /// plus the number of `Overflow`s (a theta beyond the representation).
-fn bsm_errors(n: usize) -> ([f64; 6], usize) {
+fn bsm_errors(n: usize) -> ([f64; 7], usize) {
     let mut g = Rng(0x0F7F_1C5E_B5B5_0002);
-    let mut worst = [0f64; 6];
+    let mut worst = [0f64; 7];
     let mut overflow = 0;
     let f = |x: &BigInt| ratio(x).abs();
     for _ in 0..n {
@@ -285,6 +286,9 @@ fn bsm_errors(n: usize) -> ([f64; 6], usize) {
                 worst[4].max(beyond(err(v.greeks.vega, &rf.vega), GREEK_ERR_ABS) / f(&vega_scale));
             worst[5] = worst[5]
                 .max(beyond(err(v.greeks.theta, &rf.theta), GREEK_ERR_ABS) / f(&theta_scale));
+            let rho_scale = mul(&to_ref(t), &to_ref(s.max(k)));
+            worst[6] =
+                worst[6].max(beyond(err(v.greeks.rho, &rf.rho), RHO_ERR_ABS) / f(&rho_scale));
         }
     }
     (worst, overflow)
@@ -475,7 +479,10 @@ fn test_precision_report() {
          | delta | 1 | {:.3e} | {:.3e} (absolute) | |\n\
          | gamma | `Dq / (S σ√T)` | {:.3e} | {:.3e} | 64 ulps |\n\
          | vega | `S Dq √T` | {:.3e} | {:.3e} | 64 ulps |\n\
-         | theta | `S Dq σ / √T + abs(r) K Dr + abs(q) S Dq` | {:.3e} | {:.3e} | 64 ulps |\n\n\
+         | theta | `S Dq σ / √T + abs(r) K Dr + abs(q) S Dq` | {:.3e} | {:.3e} | 64 ulps |\n\
+         | rho | `T max(S, K)` | {:.3e} | {:.3e} | 2,048 ulps |\n\n\
+         Rho (0.3) is `T K Dr N(±d2)`; Black-76 rho, `−T × price`, is checked against the exact \
+         `−T × price` over the same envelope in `black76.rs`. \
          Question 4 (carry scale): the price error beyond 64 ulps divided by `max(S Dq, K Dr)` \
          instead of `max(S, K)` reaches {:.3e}, because `S Dq` falls to `e^{{−15}} S`; \
          `max(S, K)` is the scale that holds over the carry range. `Overflow`: {overflow} of {n} \
@@ -490,6 +497,8 @@ fn test_precision_report() {
         b(VEGA_ERR_REL),
         w[5],
         b(THETA_ERR_REL),
+        w[6],
+        b(RHO_ERR_REL),
         w[1]
     )
     .unwrap();

@@ -63,7 +63,7 @@ pub use bsm::{
     price_asset_or_nothing, price_black76, price_cash_or_nothing, price_error_bound, price_strip,
     EuropeanOption, FuturesInputs, Greeks, MarketInputs, OptionKind, Priced, StripLeg,
     BINARY_ERR_ABS, BINARY_ERR_REL, DELTA_ERR, GAMMA_ERR_REL, GREEK_ERR_ABS, PRICE_ERR_ABS,
-    PRICE_ERR_REL, THETA_ERR_REL, VEGA_ERR_REL,
+    PRICE_ERR_REL, RHO_ERR_ABS, RHO_ERR_REL, THETA_ERR_REL, VEGA_ERR_REL,
 };
 pub use error::PricingError;
 pub use explog::{exp, ln, EXP_MAX_ERROR_ULPS, LN_MAX_ERROR_ULPS};

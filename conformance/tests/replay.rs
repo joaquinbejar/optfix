@@ -5,7 +5,7 @@
 
 #![allow(clippy::unwrap_used, clippy::panic, clippy::disallowed_macros)]
 
-use optfix_conformance::{eval, load, Case, FORMAT, SIGNATURES};
+use optfix_conformance::{eval, is_priced, load, priced_width, Case, FORMAT, SIGNATURES};
 
 fn generations() -> Vec<(u32, String)> {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/");
@@ -26,10 +26,28 @@ fn generations() -> Vec<(u32, String)> {
     out
 }
 
-/// A change agreed by a later milestone for `case` of generation `generation`: `Some(())` if
-/// the case is checked here instead of exactly (none yet).
-fn agreed_change(_generation: u32, _case: &Case) -> Option<()> {
-    None
+/// A change agreed by a later milestone for `case` of generation `generation`: `Some(ok)` if
+/// the case is checked here instead of exactly.
+///
+/// - Milestone 19 adds rho to every priced result: a generation-1 priced case (five values per
+///   option) must equal today's result with rho dropped, so every other output stays exact.
+fn agreed_change(generation: u32, case: &Case) -> Option<bool> {
+    if !is_priced(&case.f) || priced_width(generation) == priced_width(u32::MAX) {
+        return None;
+    }
+    let got = eval(&case.f, &case.a).ok()?;
+    Some(match (got, &case.r, case.e) {
+        (Ok(now), Some(want), None) => {
+            let old = priced_width(generation);
+            let kept: Vec<String> = now
+                .chunks(priced_width(u32::MAX))
+                .flat_map(|p| p.iter().take(old).cloned())
+                .collect();
+            &kept == want
+        }
+        (Err(e), None, Some(code)) => e as u8 == code,
+        _ => false,
+    })
 }
 
 #[test]
@@ -47,7 +65,10 @@ fn test_every_generation_replays_exactly() {
         assert_eq!(v.generation, *n);
         let mut mismatches = Vec::new();
         for c in &v.cases {
-            if agreed_change(*n, c).is_some() {
+            if let Some(ok) = agreed_change(*n, c) {
+                if !ok {
+                    mismatches.push(format!("{c:?}\n  agreed change does not hold"));
+                }
                 continue;
             }
             let got = eval(&c.f, &c.a).unwrap_or_else(|e| panic!("g{n} malformed {c:?}: {e:?}"));

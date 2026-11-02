@@ -41,11 +41,13 @@ function call(f, signature, args) {
   return fn(...args.map((a, i) => convert(signature[i], a)));
 }
 
-const PRICED = ["price", "delta", "gamma", "vega", "theta"];
+// A priced result's fields: five in generation 1, rho added from generation 2 (milestone 19).
+const PRICED = ["price", "delta", "gamma", "vega", "theta", "rho"];
+const pricedFields = (generation) => PRICED.slice(0, generation < 2 ? 5 : 6);
 
-function flatten(out) {
-  if (Array.isArray(out)) return out.flatMap(flatten);
-  if (typeof out === "object" && out !== null) return PRICED.map((k) => String(out[k]));
+function flatten(out, fields) {
+  if (Array.isArray(out)) return out.flatMap((o) => flatten(o, fields));
+  if (typeof out === "object" && out !== null) return fields.map((k) => String(out[k]));
   return [String(out)];
 }
 
@@ -63,7 +65,7 @@ for (const file of files) {
     for (const c of v.cases) {
       let got;
       try {
-        got = { r: flatten(call(c.f, signatures[c.f], c.a)) };
+        got = { r: flatten(call(c.f, signatures[c.f], c.a), pricedFields(v.generation)) };
       } catch (e) {
         if (typeof e?.code !== "number") throw e;
         got = { e: e.code };

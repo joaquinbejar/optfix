@@ -1,5 +1,6 @@
 """Writes the committed fixture optfix/tests/data/bsm_fixture.csv: each input row of
-gen_sweep.py followed by the exact Black-Scholes-Merton price, delta, gamma, vega and theta,
+gen_sweep.py followed by the exact Black-Scholes-Merton price, delta, gamma, vega, theta and
+rho (the rho column added by docs/PLAN-improvements.md milestone 19),
 evaluated with mpmath at 100 digits (as in check_mpmath.py) and rounded to the nearest raw
 Q64.64 value. Needs mpmath (a local dev venv; not a crate dependency).
 
@@ -37,11 +38,13 @@ def main():
             price = k * dr * N(-d2) - s * dq * N(-d1)
             delta = -dq * N(-d1)
             theta = -s * dq * pdf * sig / (2 * rt) + r * k * dr * N(-d2) - q * s * dq * N(-d1)
+            rho = -k * t * dr * N(-d2)
         else:
             price = s * dq * N(d1) - k * dr * N(d2)
             delta = dq * N(d1)
             theta = -s * dq * pdf * sig / (2 * rt) - r * k * dr * N(d2) + q * s * dq * N(d1)
-        wants = [price, delta, dq * pdf / (s * a), s * dq * pdf * rt, theta]
+            rho = k * t * dr * N(d2)
+        wants = [price, delta, dq * pdf / (s * a), s * dq * pdf * rt, theta, rho]
         out.append(",".join(map(str, raw + [int(mp.nint(w * S)) for w in wants])))
     open(sys.argv[2], "w").write("\n".join(out) + "\n")
     print(len(out))

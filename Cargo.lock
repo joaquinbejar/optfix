@@ -1615,7 +1615,7 @@ dependencies = [
 
 [[package]]
 name = "lint-control"
-version = "0.2.1"
+version = "0.3.0"
 
 [[package]]
 name = "linux-raw-sys"
@@ -1845,7 +1845,7 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "optfix"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "bytemuck",
  "num-bigint 0.5.1",
@@ -1856,7 +1856,7 @@ dependencies = [
 
 [[package]]
 name = "optfix-bench"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "libm",
  "litesvm",
@@ -1871,7 +1871,7 @@ dependencies = [
 
 [[package]]
 name = "optfix-bench-program"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "bytemuck",
  "optfix",
@@ -1880,7 +1880,7 @@ dependencies = [
 
 [[package]]
 name = "optfix-conformance"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "optfix",
  "serde",
@@ -1889,7 +1889,7 @@ dependencies = [
 
 [[package]]
 name = "optfix-example-pricer"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "bytemuck",
  "litesvm",
@@ -1904,7 +1904,7 @@ dependencies = [
 
 [[package]]
 name = "optfix-wasm"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "optfix",
  "wasm-bindgen",

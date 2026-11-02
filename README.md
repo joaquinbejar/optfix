@@ -42,7 +42,8 @@ measured in LiteSVM.
 - `Fixed`: binary Q64.64 (`raw / 2^64` in an `i128`), one ulp is `2^-64`.
 - Checked arithmetic everywhere; nothing panics.
 - Directed rounding: `mul_down`/`mul_up`, `div_down`/`div_up`, `sqrt_down`/`sqrt_up`, and a
-  `Rounding` argument for `from_ratio`, `from_scaled` and `to_scaled` (token units).
+  `Rounding` argument for `from_ratio`, `from_bps` (basis points; also `Rate::from_bps` and
+  `Volatility::from_bps`), `from_scaled` and `to_scaled` (token units).
 - `wide::mul_shr`: a full 256-bit product shifted right with exact directed rounding.
 - `FixedBytes`: an alignment-1 storage form for account data.
 - Exact decimal text: `Fixed::from_decimal_str` (any number of digits, explicit rounding) and
@@ -54,7 +55,9 @@ measured in LiteSVM.
 
 #### 3. **Black-Scholes-Merton**
 - European calls and puts with a risk-free rate `r` and a continuous carry `q`.
-- `intrinsic`, `price`, and `price_and_greeks` (delta, gamma, vega, theta from one evaluation).
+- `intrinsic`, `price`, and `price_and_greeks` (delta, gamma, vega, theta and rho from one
+  evaluation). `Greeks` and `Priced` are `#[non_exhaustive]`; start from `Greeks::ZERO` or
+  `Priced::ZERO`.
 - `price_strip` and `price_and_greeks_strip`: a strip of strikes sharing one expiry and market,
   each leg bit-identical to the scalar call; an extra leg costs about half a `price` call.
 - Black-76 (`price_black76`, `price_and_greeks_black76`) for options on futures and forwards.

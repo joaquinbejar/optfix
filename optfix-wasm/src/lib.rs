@@ -181,6 +181,7 @@ pub struct Priced {
     gamma: i128,
     vega: i128,
     theta: i128,
+    rho: i128,
 }
 
 #[wasm_bindgen]
@@ -215,6 +216,12 @@ impl Priced {
     pub fn theta(&self) -> i128 {
         self.theta
     }
+    /// `∂price/∂r`, per 1.00 of the rate (Black-76: holding `F` fixed).
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn rho(&self) -> i128 {
+        self.rho
+    }
 }
 
 impl From<RsPriced> for Priced {
@@ -225,6 +232,7 @@ impl From<RsPriced> for Priced {
             gamma: p.greeks.gamma.raw(),
             vega: p.greeks.vega.raw(),
             theta: p.greeks.theta.raw(),
+            rho: p.greeks.rho.raw(),
         }
     }
 }
@@ -300,6 +308,16 @@ pub fn sqrt_down(#[wasm_bindgen(unchecked_param_type = "bigint")] a: JsValue) ->
 pub fn sqrt_up(#[wasm_bindgen(unchecked_param_type = "bigint")] a: JsValue) -> R<i128> {
     let a = int(a)?;
     Ok(fx(a).sqrt_up()?.raw())
+}
+
+/// `bps / 10_000` as a raw value (`Fixed::from_bps`); `bps` is a signed 64-bit `bigint`.
+#[wasm_bindgen(js_name = fromBps)]
+pub fn from_bps(
+    #[wasm_bindgen(unchecked_param_type = "bigint")] bps: JsValue,
+    rounding_: &str,
+) -> R<i128> {
+    let bps = long(bps)?;
+    Ok(Fixed::from_bps(bps, rounding(rounding_)?)?.raw())
 }
 
 /// `num / den` as a raw value (`Fixed::from_ratio`).
@@ -620,16 +638,7 @@ pub fn price_and_greeks_strip(
     let rate = int(rate)?;
     let carry = int(carry)?;
     let legs = strip_legs(&kinds, strikes)?;
-    let zero = RsPriced {
-        price: Price::MIN,
-        greeks: optfix::Greeks {
-            delta: Fixed::ZERO,
-            gamma: Fixed::ZERO,
-            vega: Fixed::ZERO,
-            theta: Fixed::ZERO,
-        },
-    };
-    let mut out = vec![zero; legs.len()];
+    let mut out = vec![RsPriced::ZERO; legs.len()];
     optfix::price_and_greeks_strip(
         Years::try_new(fx(expiry))?,
         &market(spot, vol, rate, carry)?,

@@ -5,7 +5,9 @@
 //! function, its arguments and its result: raw Q64.64 values and other integers as decimal
 //! strings (JSON numbers cannot hold an `i128`), `call`/`put` for the option kind,
 //! `down`/`up` for a rounding, and an error as its `PricingError` code (`e as u8`). The
-//! argument order of every function is in [`SIGNATURES`], which the file repeats.
+//! argument order of every function is in [`SIGNATURES`], which the file repeats. A priced
+//! result (`price_and_greeks`, its Black-76 and strip forms) is [`priced_width`] values per
+//! option: price, delta, gamma, vega, theta, and from generation 2 rho.
 
 #![allow(clippy::indexing_slicing, clippy::missing_errors_doc)]
 
@@ -13,8 +15,8 @@ use optfix::wide::mul_shr;
 use optfix::{
     exp, implied_vol, ln, norm_cdf, norm_pdf, price, price_and_greeks, price_and_greeks_black76,
     price_and_greeks_strip, price_asset_or_nothing, price_black76, price_cash_or_nothing,
-    price_strip, EuropeanOption, Fixed, FuturesInputs, Greeks, IvInputs, MarketInputs, OptionKind,
-    Price, Priced, PricingError, Rate, Rounding, Spot, Strike, StripLeg, Volatility, Years,
+    price_strip, EuropeanOption, Fixed, FuturesInputs, IvInputs, MarketInputs, OptionKind, Price,
+    Priced, PricingError, Rate, Rounding, Spot, Strike, StripLeg, Volatility, Years,
 };
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +33,7 @@ pub const SIGNATURES: &[(&str, &[&str])] = &[
     ("sqrt_down", &["a"]),
     ("sqrt_up", &["a"]),
     ("from_ratio", &["num", "den", "rounding"]),
+    ("from_bps", &["bps", "rounding"]),
     ("from_scaled", &["amount", "decimals", "rounding"]),
     ("to_scaled", &["value", "decimals", "rounding"]),
     ("from_decimal_str", &["text", "rounding"]),
@@ -166,6 +169,27 @@ fn one(r: Result<Fixed, PricingError>) -> Result<Vec<String>, PricingError> {
     r.map(|x| raws(&[x]))
 }
 
+/// Values per priced result in generation `generation`: five (price, delta, gamma, vega,
+/// theta) in generation 1, six (rho added, `docs/PLAN-improvements.md` milestone 19) from
+/// generation 2. [`eval`] always returns six.
+#[must_use]
+pub const fn priced_width(generation: u32) -> usize {
+    if generation < 2 {
+        5
+    } else {
+        6
+    }
+}
+
+/// Whether `f` returns priced results ([`priced_width`] values per option).
+#[must_use]
+pub fn is_priced(f: &str) -> bool {
+    matches!(
+        f,
+        "price_and_greeks" | "price_and_greeks_black76" | "price_and_greeks_strip"
+    )
+}
+
 fn priced(p: &Priced) -> Vec<String> {
     raws(&[
         p.price.get(),
@@ -173,6 +197,7 @@ fn priced(p: &Priced) -> Vec<String> {
         p.greeks.gamma,
         p.greeks.vega,
         p.greeks.theta,
+        p.greeks.rho,
     ])
 }
 
@@ -225,6 +250,7 @@ pub fn eval(f: &str, a: &[String]) -> Out {
         "sqrt_down" => one(fx(a, 0)?.sqrt_down()),
         "sqrt_up" => one(fx(a, 0)?.sqrt_up()),
         "from_ratio" => one(Fixed::from_ratio(int(a, 0)?, int(a, 1)?, rounding(a, 2)?)),
+        "from_bps" => one(Fixed::from_bps(int(a, 0)?, rounding(a, 1)?)),
         "from_scaled" => one(Fixed::from_scaled(int(a, 0)?, int(a, 1)?, rounding(a, 2)?)),
         "to_scaled" => fx(a, 0)?
             .to_scaled(int(a, 1)?, rounding(a, 2)?)
@@ -288,16 +314,7 @@ pub fn eval(f: &str, a: &[String]) -> Out {
                 price_strip(expiry, &m, &legs, &mut out)
                     .map(|()| out.iter().map(|p| p.get().raw().to_string()).collect())
             } else {
-                let zero = Priced {
-                    price: Price::MIN,
-                    greeks: Greeks {
-                        delta: Fixed::ZERO,
-                        gamma: Fixed::ZERO,
-                        vega: Fixed::ZERO,
-                        theta: Fixed::ZERO,
-                    },
-                };
-                let mut out = vec![zero; legs.len()];
+                let mut out = vec![Priced::ZERO; legs.len()];
                 price_and_greeks_strip(expiry, &m, &legs, &mut out)
                     .map(|()| out.iter().flat_map(priced).collect())
             }

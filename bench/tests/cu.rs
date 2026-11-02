@@ -25,8 +25,8 @@ use std::path::PathBuf;
 use litesvm::LiteSVM;
 use optfix::{
     implied_vol, price_and_greeks, price_and_greeks_strip, price_strip, EuropeanOption, Fixed,
-    Greeks, IvInputs, MarketInputs, OptionKind, Price, Priced, PricingError, Rate, Rounding, Spot,
-    Strike, StripLeg, Volatility, Years,
+    IvInputs, MarketInputs, OptionKind, Price, Priced, PricingError, Rate, Rounding, Spot, Strike,
+    StripLeg, Volatility, Years,
 };
 use optfix_bench::{check, Measured};
 use solana_address::Address;
@@ -341,15 +341,7 @@ struct Measurement {
 type BsmFn = fn(&EuropeanOption, &MarketInputs) -> Result<Priced, PricingError>;
 
 fn price_only(o: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingError> {
-    Ok(Priced {
-        price: optfix::price(o, m)?,
-        greeks: Greeks {
-            delta: Fixed::ZERO,
-            gamma: Fixed::ZERO,
-            vega: Fixed::ZERO,
-            theta: Fixed::ZERO,
-        },
-    })
+    optfix::price(o, m).map(zero_greeks)
 }
 
 /// The Black-Scholes rows: instruction, name, host function, and whether the strikes are near
@@ -389,15 +381,9 @@ const BSM_ROWS: [(Ix, &str, BsmFn, bool); 9] = [
 ];
 
 fn zero_greeks(price: Price) -> Priced {
-    Priced {
-        price,
-        greeks: Greeks {
-            delta: Fixed::ZERO,
-            gamma: Fixed::ZERO,
-            vega: Fixed::ZERO,
-            theta: Fixed::ZERO,
-        },
-    }
+    let mut p = Priced::ZERO;
+    p.price = price;
+    p
 }
 
 fn cash_only(o: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingError> {
@@ -419,15 +405,7 @@ fn futures_of(m: &MarketInputs) -> optfix::FuturesInputs {
 }
 
 fn black76_price_only(o: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingError> {
-    Ok(Priced {
-        price: optfix::price_black76(o, &futures_of(m))?,
-        greeks: Greeks {
-            delta: Fixed::ZERO,
-            gamma: Fixed::ZERO,
-            vega: Fixed::ZERO,
-            theta: Fixed::ZERO,
-        },
-    })
+    optfix::price_black76(o, &futures_of(m)).map(zero_greeks)
 }
 
 fn black76_greeks(o: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingError> {
@@ -509,12 +487,12 @@ fn bsm_data(ix: Ix, o: &EuropeanOption, m: &MarketInputs) -> Vec<u8> {
     d
 }
 
-/// Expected return data: `Price` as one value, the others as status plus five values.
+/// Expected return data: `Price` as one value, the others as status plus six values.
 fn bsm_expected(ix: Ix, r: Result<Priced, PricingError>) -> Vec<u8> {
     if let Ix::Price | Ix::PriceBlack76 | Ix::CashOrNothing | Ix::AssetOrNothing = ix {
         return encode_result(r.map(|p| p.price.get())).to_vec();
     }
-    let mut out = vec![0u8; 81];
+    let mut out = vec![0u8; 97];
     match r {
         Ok(p) => {
             for (i, v) in [
@@ -523,6 +501,7 @@ fn bsm_expected(ix: Ix, r: Result<Priced, PricingError>) -> Vec<u8> {
                 p.greeks.gamma,
                 p.greeks.vega,
                 p.greeks.theta,
+                p.greeks.rho,
             ]
             .iter()
             .enumerate()
@@ -669,6 +648,7 @@ fn digest(values: &[Priced]) -> [u8; 32] {
             p.greeks.gamma,
             p.greeks.vega,
             p.greeks.theta,
+            p.greeks.rho,
         ] {
             let x = v.raw() as u128;
             let (lo, hi) = (x as u64, (x >> 64) as u64);
@@ -687,15 +667,7 @@ fn digest(values: &[Priced]) -> [u8; 32] {
 
 /// Expected return data of a strip row, from the host's strip functions.
 fn strip_expected(ix: Ix, t: Years, m: &MarketInputs, legs: &[StripLeg]) -> Vec<u8> {
-    let zero = Priced {
-        price: Price::MIN,
-        greeks: Greeks {
-            delta: Fixed::ZERO,
-            gamma: Fixed::ZERO,
-            vega: Fixed::ZERO,
-            theta: Fixed::ZERO,
-        },
-    };
+    let zero = Priced::ZERO;
     match ix {
         Ix::PriceStrip => {
             let mut out = vec![Price::MIN; legs.len()];
@@ -1222,11 +1194,11 @@ fn test_conformance_vectors_on_sbf() {
             | "price_and_greeks_black76" => {
                 let (tag, values) = match c.f.as_str() {
                     "price" => (Ix::Price, 1),
-                    "price_and_greeks" => (Ix::PriceAndGreeks, 5),
+                    "price_and_greeks" => (Ix::PriceAndGreeks, 6),
                     "price_cash_or_nothing" => (Ix::CashOrNothing, 1),
                     "price_asset_or_nothing" => (Ix::AssetOrNothing, 1),
                     "price_black76" => (Ix::PriceBlack76, 1),
-                    _ => (Ix::PriceAndGreeksBlack76, 5),
+                    _ => (Ix::PriceAndGreeksBlack76, 6),
                 };
                 // Arguments after the kind, in the program's order: S (or F), K, T, σ, r, q,
                 // then the payout.

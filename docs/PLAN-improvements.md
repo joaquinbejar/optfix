@@ -330,7 +330,7 @@ the CI time stays under the threshold.
 (Built.) `examples/pricer-program` (`optfix-example-pricer`, a workspace member, `publish =
 false`): one instruction, data a kind byte and six `FixedBytes` read through
 `bytemuck::try_cast_slice` (alignment 1), return data the price, the four greeks and
-`price_error_bound` (96 bytes); malformed data fails with `InvalidInstructionData`, an optfix
+`price_error_bound` (96 bytes; 112 with rho from milestone 19); malformed data fails with `InvalidInstructionData`, an optfix
 error with `Custom(6000 + e as u8)`. `make program` now builds it for SBF with the same stack
 check as the bench program (so `checks`, `test` and `budget-control` build it), and its LiteSVM
 test (`tests/pricer.rs`) checks five inputs across the domain against the host bit for bit,

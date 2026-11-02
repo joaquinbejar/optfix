@@ -29,8 +29,8 @@ use common::{bsm_inputs, bsm_ref, bsm_sample, config_with, div, mul, ratio, to_r
 use num_bigint::BigInt;
 use optfix::{
     price, price_and_greeks, EuropeanOption, Fixed, OptionKind, PricingError, Rate, Spot, Strike,
-    Years, DELTA_ERR, GAMMA_ERR_REL, GREEK_ERR_ABS, PRICE_ERR_ABS, PRICE_ERR_REL, THETA_ERR_REL,
-    VEGA_ERR_REL,
+    Years, DELTA_ERR, GAMMA_ERR_REL, GREEK_ERR_ABS, PRICE_ERR_ABS, PRICE_ERR_REL, RHO_ERR_ABS,
+    RHO_ERR_REL, THETA_ERR_REL, VEGA_ERR_REL,
 };
 use proptest::prelude::*;
 
@@ -105,6 +105,33 @@ fn check_point(p: (i128, i128, i128, i128, i128, i128, bool)) -> Result<bool, Te
         "delta {}",
         ctx()
     );
+    // Rho (milestone 19): within its envelope, a call's >= 0 and a put's <= 0 (exactly zero at
+    // T = 0).
+    prop_assert!(
+        within(
+            g.rho,
+            &rf.rho,
+            RHO_ERR_REL,
+            &mul(&to_ref(t), &max_sk),
+            RHO_ERR_ABS
+        ),
+        "rho {} vs {} {}",
+        g.rho.raw(),
+        rf.rho,
+        ctx()
+    );
+    prop_assert!(
+        if call {
+            g.rho >= Fixed::ZERO
+        } else {
+            g.rho <= Fixed::ZERO
+        },
+        "rho sign {}",
+        ctx()
+    );
+    if t == 0 {
+        prop_assert_eq!(g.rho, Fixed::ZERO);
+    }
     // Delta bounds: [0, Dq] for a call, [−Dq, 0] for a put, within the envelope.
     let dq = &rf.dq + r(DELTA_ERR);
     if call {
