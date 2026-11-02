@@ -64,6 +64,22 @@ precision:
 	OPTFIX_PRECISION_SAMPLES=$(PRECISION_SAMPLES) OPTFIX_PRECISION_OUT=$(CURDIR)/docs/precision.md \
 	cargo test $(CARGO_FLAGS) -p optfix --release --features bench-internals --test precision -- --nocapture
 
+# Coverage-guided fuzzing (docs/PLAN-improvements.md, milestone 16): each target replays its
+# committed corpus (fuzz/corpus, read only), then searches for FUZZ_SECONDS, writing new inputs
+# to fuzz/target/corpus-work. Needs the pinned nightly and cargo-fuzz (CI installs both); not
+# part of pre-push. To grow the committed corpus, minimize with `cargo fuzz cmin` first.
+FUZZ_NIGHTLY ?= nightly-2026-10-11
+FUZZ_SECONDS ?= 60
+FUZZ_TARGETS ?= scaled arith wide pricing iv
+.PHONY: fuzz-smoke
+fuzz-smoke:
+	@cd fuzz && for t in $(FUZZ_TARGETS); do \
+		echo "fuzz: $$t"; \
+		mkdir -p target/corpus-work/$$t; \
+		cargo +$(FUZZ_NIGHTLY) fuzz run -a $$t target/corpus-work/$$t corpus/$$t \
+			-- -max_total_time=$(FUZZ_SECONDS) || exit 1; \
+	done
+
 # Regenerate README.md's example and tables from the constants and docs/benchmarks.md
 # (`make test` fails while it is stale)
 .PHONY: readme
@@ -99,11 +115,13 @@ test-shard:
 .PHONY: fmt
 fmt:
 	cargo +$(RUST_TOOLCHAIN) fmt --all
+	cargo +$(RUST_TOOLCHAIN) fmt --manifest-path fuzz/Cargo.toml --all
 
-# Check formatting
+# Check formatting, the fuzz crate included (its own workspace, so `--all` does not reach it)
 .PHONY: fmt-check
 fmt-check:
 	cargo +$(RUST_TOOLCHAIN) fmt --all --check
+	cargo +$(RUST_TOOLCHAIN) fmt --manifest-path fuzz/Cargo.toml --all --check
 
 # Clippy with every warning denied
 .PHONY: lint

@@ -209,17 +209,12 @@ fn test_identities() {
         assert!(err <= bound, "cash call + put at {p:?}");
 
         let unit = Price::try_new(Fixed::ONE).unwrap();
-        let a = price_asset_or_nothing(&call, &m).unwrap().get().raw();
-        let cu = price_cash_or_nothing(&call, &m, unit).unwrap().get();
-        let k_cu = o.strike.get().mul_down(cu).unwrap().raw();
-        let vanilla = price(&call, &m).unwrap().get().raw();
-        let err = BigInt::from((q(a - k_cu) - q(vanilla)).magnitude().clone());
-        // asset bound + K × (cash bound at unit payout) + the price envelope + 2 roundings.
-        let k = q(p.1);
-        let price_env = mul(&q(optfix::PRICE_ERR_REL.raw()), &q(p.0).max(k.clone()))
-            + q(optfix::PRICE_ERR_ABS.raw());
-        let bound = mul(&rel, &q(p.0)) + &abs + mul(&k, &(rel.clone() + &abs)) + price_env + 4;
-        assert!(err <= bound, "asset call − K cash call vs vanilla at {p:?}");
+        let a = price_asset_or_nothing(&call, &m).unwrap();
+        let cu = price_cash_or_nothing(&call, &m, unit).unwrap();
+        let vanilla = price(&call, &m).unwrap();
+        if let Err(why) = common::contract::binary_identity(&call, &m, a, cu, vanilla) {
+            panic!("{why} at {p:?}");
+        }
     }
 }
 

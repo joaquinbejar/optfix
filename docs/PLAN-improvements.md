@@ -126,6 +126,64 @@ their uploaded tables).
 
 ## Milestone 16: fuzzing
 
+(Built.) `fuzz/` (own workspace and lockfile; `libfuzzer-sys` 0.4, `num-bigint` 0.5), five
+targets, `make fuzz-smoke`, the required `fuzz-smoke` job and `.github/workflows/fuzz-nightly.yml`
+(30 minutes per target, nightly and on demand). As built:
+
+- One definition of the contracts: `optfix/tests/common/contract.rs` depends on `optfix`,
+  `std` and `num-bigint` only, is included by `#[path]` in `fuzz/`, and is what
+  `common::iv::round_trip` (`iv_round_trip.rs`, `make precision`) and `binary_props.rs`'s
+  identity now call. `optfix/tests/contract.rs` tests it on stable: its exponential against
+  the 256-bit reference of `common` (within `2^-100`), its bounds accepting optfix over 20,000
+  grid points, and rejecting a shifted price.
+- Bounds that need `Dr` or `Dq` use an exact reference (`e^x` at 192 fractional bits from the
+  exact products `rT`, `qT`), compared in units of `2^-128` with a 2 raw unit margin. A first
+  version in `f64` failed on a valid deep in-the-money call (`S = 1.6 × 10^8`, `q = −0.1`, `T =
+  29.5`, so `S Dq ≈ 3.06 × 10^9`): `f64` holds only about `5 × 10^-7` there, against an
+  envelope of `5.7 × 10^-7` relative to `max(S, K)`. Exact, the point is inside.
+- The round trip's `DomainError` is now accepted only where `σ` is within its envelope of a
+  `Volatility` range end (the third documented case); the grid had none anyway.
+- Inputs are fixed little-endian fields (`fuzz/src/lib.rs`, `Bytes`), not `arbitrary`
+  structures, so an entry can be written by hand. The pricing target takes half its inputs as
+  any in-range raw quantities (then `DomainError` exactly outside `S/K` in `[0.05, 20]`) and
+  half from a sampler weighted toward the edges.
+- Review R1 (codex, #32): two classifier holes in the round trip contract, both harness
+  issues: `ArbitrageBound` was accepted on low conditioning alone, so an interior target
+  (`S = 2^-19`, `K = 3 S`, `T = 1`, `σ = 0.2`, `r = q = 0`) whose real answer is
+  `IllConditioned` passed with `ArbitrageBound`; and `DomainError` was accepted through an
+  infinite envelope (vega zero at `T = 0.01`). Now `ArbitrageBound` requires
+  `no_time_value`: the target within `96 ulps × (S + K) + 8` raw units of an exact arbitrage
+  bound (optfix's discount rounding: exp's 3 ulps and the `rT` rounding, relative to a
+  discount factor below `e^3`; the fuzzer measured 33 ulps on a deep in-the-money put with
+  `Dr ≈ e^2.87`, failing a first slack of 32), and `DomainError` requires a finite envelope, positive
+  vega and a target with time value. Both probes are `contract.rs` tests; the grid round trip
+  still passes at 300,000 points per carry set. Also from R1: `test_exp_w` now covers
+  `[−16, 16]` with both ends and zero (it drew only `[−16, 0)`), and `make fmt-check` (in the
+  `checks` job, pinned host rustfmt) checks the fuzz crate, which `--all` does not reach.
+- Findings: none in optfix. Two in the harness, both fixed before commit: the `f64` bound
+  above, and a payout generator that exceeded `Spot::MAX` (where `DomainError` is correct).
+- Corpora minimized with `cargo fuzz cmin`: about 21 KB over 705 files, plus the control entry
+  `fuzz/corpus/arith/planted-control-mul-up` (`mul_up` of a raw value whose low 16 bits are
+  `0xBEEF` by 3), kept as a regular entry. Locally, `mul_up` patched to round down on that
+  pattern fails `make fuzz-smoke` on that entry during the corpus replay, before libFuzzer's
+  `INITED`; unpatched, every target passes.
+- CI failing control: scratch PR #33 (the planted `mul_up` bug, closed unmerged) fails
+  `fuzz-smoke` in run 41423633103: `scaled` reaches `INITED`, then `arith` panics on
+  `mul_up(92233720368547806959, 3)` while loading its seed corpus (150 files), before its
+  `INITED`.
+- 30-minute local runs (Apple M-series, nightly-2026-10-11, cargo-fuzz 0.13.2, each from its
+  committed corpus; libFuzzer seed, runs, final coverage):
+  - Before review R1, at 3136cfe/bf33a30 (all five in parallel), all clean: `scaled` seed
+    2808546469, 128,178,716 runs (735); `arith` 2808547223, 187,191,548 (973); `wide`
+    2808551338, 209,139,220 (487). These three targets do not use the shared contract, so
+    their runs stand. The `pricing` (2808552571, 8,554,611, 964) and `iv` (2808546515,
+    147,710,779, 410) runs of that round used the contract before R1's corrections and are
+    superseded by:
+  - After R1, at 18fc9c8 (the corrected contract, both in parallel), clean: `pricing` seed
+    3266004699, 10,045,472 runs (968); `iv` 3266004719, 54,402,152 runs (886).
+  `pricing` is the slow one: each input evaluates the exact reference exponential several
+  times.
+
 Complements the property tests (uniform or structured sampling, a million cases) with
 coverage-guided search at the boundaries the samplers rarely hit. `fuzz/` is a `cargo-fuzz`
 crate outside the workspace, with its own lockfile and a pinned nightly (`cargo-fuzz` needs

@@ -1,0 +1,43 @@
+# Long fuzzing runs (docs/PLAN-improvements.md, milestone 16): each target 30 minutes from its
+# committed corpus, every night on main and on demand. A crash fails the run and uploads its
+# input; it becomes a regression test in optfix/tests/ in the PR that fixes it. Pins as in
+# ci.yml.
+
+name: Fuzz nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FUZZ_NIGHTLY: nightly-2026-10-11
+  CARGO_FUZZ_VERSION: "0.13.2"
+  CARGO_TERM_COLOR: never
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [scaled, arith, wide, pricing, iv]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Pinned nightly and cargo-fuzz
+        run: |
+          rustup toolchain install "$FUZZ_NIGHTLY" --profile minimal
+          cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
+      - run: |
+          make fuzz-smoke FUZZ_NIGHTLY="$FUZZ_NIGHTLY" FUZZ_SECONDS=1800 \
+            FUZZ_TARGETS=${{ matrix.target }}
+      - name: Crash inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts
