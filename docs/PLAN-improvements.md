@@ -423,6 +423,90 @@ non-rho output, `cargo-semver-checks` passes at 0.3.0, and the downstream job is
 
 ## Milestone 20: implied volatility, profile then seed
 
+(Built. The gate passed on its second criterion.)
+
+**Profile.** These are 0.3's solve with 0.2's tables, over the milestone 5 grid: 3,000,000
+points, seed `0x2f60`, 777,321 answered.
+
+- How to reproduce it: `make iv-profile`.
+  - The host part is `optfix/tests/iv_profile.rs`, through the `iv_bench::trace` hook.
+  - The SBF part is `test_iv_profile_on_sbf`, through `iv_bench::steps_only`.
+  - Both hooks sit behind the optfix feature `iv-profile`, not `bench-internals`. Even
+    unreferenced, a second copy of the loop changes how LLVM inlines the solve's helpers,
+    which cost about 20 CU on the `ImpliedVol` rows. Behind the feature, `make bench`
+    reproduces `docs/benchmarks.md` byte for byte.
+  - The loop is one macro body, `define_iterate!`, expanded with and without the hooks, so the
+    two copies cannot drift. The trace's result is asserted equal to `implied_vol`'s on every
+    point.
+- Seed error `|v0 − ln σ|`:
+
+  | Table | Median | 99% | Max |
+  | --- | ---: | ---: | ---: |
+  | Near | 6.0e-3 | 2.7e-2 | 3.84e-2 |
+  | Deep | 1.5e-3 | 7.7e-3 | 1.25e-2 |
+
+- Steps taken: 1,869 / 766,980 / 8,472 solves took one, two and three steps. Almost every
+  solve is one large step plus one confirming step (last step's median `|Δ|` 9.8e-8). All
+  8,472 three-step solves come from the near table. The largest seed error answered within two
+  steps was 2.65e-2, and the smallest that needed three was 2.14e-2.
+- CU on SBF, net medians on the `ImpliedVol` inputs (the `iv-profile` build):
+
+  | Part | CU |
+  | --- | ---: |
+  | Setup and guess | 6,792 |
+  | Step 1 | 7,472 |
+  | Step 2 | 7,399 |
+  | Step 3 | 7,374 |
+  | Final conditioning check | 5,619 |
+
+**Gate.**
+
+- **Stopping-rule candidate: rejected.** Replaying "stop after the first step with `|Δ| <= τ`"
+  on the recorded steps:
+  - `τ = 2^-14` leaves an error of 3.0e-9 in `ln σ`;
+  - `τ = 2^-8` leaves 5.3e-7 and would answer 309,602 targets in one step.
+
+  Both are far above `IV_ERR_REL` (9.1e-13): the confirming step carries the accuracy, so
+  dropping it would mean widening the envelope, which this milestone excludes.
+- **Finer tables: accepted.** In prototypes, halving the near table's `u` and `Z` steps
+  (5,175 entries instead of 1,334) cuts its worst seed error from 3.8% to 1.1%; refining either
+  direction alone is not enough. The deep table is unchanged: its worst on the domain (6.8%, at
+  the seam with `s ≈ 10^-12`) lies where `implied_vol` rejects the target as ill-conditioned.
+  - `tools/gen_iv_tables.py` gains `NEAR_U_DIV = 2`, `NEAR_ZC_DIV = 2` and `NEAR_ZF_DIV = 8`;
+    `make tables-check` still regenerates the table byte for byte.
+  - On the grid the worst seed is now 1.08e-2 near and 1.25e-2 deep (guarded:
+    `GUESS_BOUND = 2^-6` in `iv_internals.rs`).
+  - No solve takes three steps, and `IV_MAX_ITERATIONS` is 2.
+
+**Result.**
+
+- Classification: every point's outcome (answer or error code) is identical, byte for byte,
+  between 0.2's tables with three steps and the new tables with two. That covers 3,035,763
+  points: the grid, `iv_fixture.csv`, `iv_threshold.csv` and `iv_threshold_codex.csv`. No point
+  is reclassified, so no `δ` discussion arises.
+- Accuracy:
+  - the round trip stays within 1.08% of its envelope;
+  - the mpmath fixture's worst error goes from 0.80% to 0.76% of the envelope.
+- CU (net):
+
+  | Row | Before | After |
+  | --- | ---: | ---: |
+  | `ImpliedVol` max | 34,724 | 32,895 |
+  | `ImpliedVol, near the money` max | 42,080 | 33,592 |
+  | Worst case (`all iterations`) max | 42,227 | 32,888 |
+  | Worst case near the money, max | 42,951 | 33,585 |
+
+  The worst case is about −22%. The `ImpliedVol` median is unchanged (27,132 to 27,126). The
+  budget is tightened by the rule.
+- Cost: the program grows by 16 KB (the table, 191 KB to 207 KB for the bench program).
+- Agreed changes for the moved answer bits:
+  - 692 `implied_vol` rows of the frozen 0.1 fixture move, the worst by 0.27% of twice the
+    round-trip envelope (`frozen_0_1.rs`), with every error variant unchanged;
+  - conformance generations 1 and 2 replay with the same rule natively, and the JS replay
+    checks their outcome only;
+  - generation 3 is exact.
+- Downstream: neither varswap nor metalbook calls `implied_vol`.
+
 Profiling first, then a gate. Section 8 recorded that 0.1's solve answers after 1 step for
 1,869 grid points, 2 steps for 766,980 and 3 for 8,472 (of 3,000,000 grid points), about 5,200
 CU per step, from a table seed within 6% of the root.

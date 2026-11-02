@@ -51,6 +51,16 @@ function flatten(out, fields) {
   return [String(out)];
 }
 
+// Milestone 20 refined implied_vol's guess and capped it at two steps: before generation 3 an
+// implied_vol answer may move within the round-trip envelope, which the native replay checks
+// (conformance/tests/replay.rs). Here such a case must keep its outcome: an answer, or the same
+// error code. From generation 3 every case is bit for bit, implied_vol included.
+const IV_EXACT_FROM = 3;
+const ivMoved = (generation, c, got) =>
+  c.f === "implied_vol" &&
+  generation < IV_EXACT_FROM &&
+  (c.e !== undefined ? got.e === c.e : got.r !== undefined);
+
 const files = readdirSync(vectorsDir)
   .filter((n) => /^vectors-g\d+\.json$/.test(n))
   .sort((a, b) => Number(a.match(/\d+/)[0]) - Number(b.match(/\d+/)[0]));
@@ -70,7 +80,8 @@ for (const file of files) {
         if (typeof e?.code !== "number") throw e;
         got = { e: e.code };
       }
-      const ok = c.e !== undefined ? got.e === c.e : JSON.stringify(got.r) === JSON.stringify(c.r);
+      const exact = c.e !== undefined ? got.e === c.e : JSON.stringify(got.r) === JSON.stringify(c.r);
+      const ok = exact || ivMoved(v.generation, c, got);
       if (!ok) mismatches.push(`${JSON.stringify(c)}\n  now: ${JSON.stringify(got)}`);
     }
     assert.equal(mismatches.length, 0, `${mismatches.length} of ${v.cases.length} differ:\n${mismatches.slice(0, 5).join("\n")}`);

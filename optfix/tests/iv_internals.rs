@@ -31,9 +31,12 @@ use optfix::{
     IV_MAX_ITERATIONS,
 };
 
-/// The guess is within this of `ln σ` wherever `implied_vol` answers (the generator measures
-/// at most 0.06 over the normalized domain).
-const GUESS_BOUND: f64 = 0.0625;
+/// The guess is within this of `ln σ` wherever `implied_vol` answers: `2^-6`. Two steps always
+/// suffice below about `2.1 × 10^-2` (`docs/PLAN-improvements.md`, milestone 20: the smallest
+/// seed error that needed a third step with 0.2's tables), and the refined tables measure at
+/// most `1.25 × 10^-2` on the grid. Over the whole normalized domain, including targets
+/// `implied_vol` rejects as ill-conditioned, the generator measures up to 0.06.
+const GUESS_BOUND: f64 = 0.015_625;
 
 /// `SWITCH` of `iv_tables.rs`: the guess comes from the deep table above it.
 const SWITCH: f64 = 10.0;
@@ -53,8 +56,14 @@ fn test_iteration_cap_and_distribution() {
     for (name, h) in ["Ok", "IllConditioned", "other"].iter().zip(hist) {
         println!("  {name:<15} {:>8} {:>8} {:>8}", h[1], h[2], h[3]);
     }
-    let at_cap: usize = hist.iter().map(|h| h[3]).sum();
+    let cap = IV_MAX_ITERATIONS as usize;
+    let at_cap: usize = hist.iter().map(|h| h[cap]).sum();
     assert!(at_cap > 0, "no solve reached the cap");
+    let beyond: usize = hist
+        .iter()
+        .map(|h| h[cap + 1..].iter().sum::<usize>())
+        .sum();
+    assert_eq!(beyond, 0, "a solve went past the cap");
 }
 
 /// With every step taken (no early exit, the worst-case CU row), each answer is still within

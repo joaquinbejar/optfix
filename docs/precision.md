@@ -70,20 +70,20 @@ The scale is the undiscounted notional, as `max(S, K)` is for the price: over th
 
 | Carry | Points | `T = 0` | No time value | Answered | Worst σ error / envelope | Worst price error / envelope | Worst relative σ error | `IllConditioned` | `NoConvergence` | `DomainError` |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `q > 0` | 1000000 | 100111 | 525903 | 253992 | 1.10e-2 | 6.15e-3 | 4.25e-9 | 119994 | 0 | 0 |
-| `q < 0` | 1000000 | 100231 | 542721 | 256992 | 1.04e-2 | 6.15e-3 | 6.14e-9 | 100056 | 0 | 0 |
-| `q = 0` | 1000000 | 100185 | 531902 | 265296 | 1.04e-2 | 6.15e-3 | 5.50e-9 | 102617 | 0 | 0 |
+| `q > 0` | 1000000 | 100111 | 525903 | 253992 | 1.06e-2 | 6.15e-3 | 4.25e-9 | 119994 | 0 | 0 |
+| `q < 0` | 1000000 | 100231 | 542721 | 256992 | 1.08e-2 | 6.15e-3 | 6.14e-9 | 100056 | 0 | 0 |
+| `q = 0` | 1000000 | 100185 | 531902 | 265296 | 1.08e-2 | 6.15e-3 | 5.50e-9 | 102617 | 0 | 0 |
 
-Steps taken (at most `IV_MAX_ITERATIONS` = 3; a solve stops once a step is below `IV_TOLERANCE`, `2^-16` in `ln σ`), over the same 3000000 points by outcome:
+Steps taken (at most `IV_MAX_ITERATIONS` = 2; a solve stops once a step is below `IV_TOLERANCE`, `2^-16` in `ln σ`), over the same 3000000 points by outcome:
 
-| Outcome | 1 step | 2 steps | 3 steps |
-| --- | ---: | ---: | ---: |
-| answered | 1869 | 766980 | 8472 |
-| `IllConditioned` | 8638 | 250184 | 63901 |
+| Outcome | 1 step | 2 steps |
+| --- | ---: | ---: |
+| answered | 5709 | 771612 |
+| `IllConditioned` | 10965 | 311758 |
 
-Initial guess (`tools/gen_iv_tables.py`), largest `|ln σ0 − ln σ|` where `implied_vol` answers: 0.0384 from the near-the-money table (706468 points), 0.0086 from the deep out-of-the-money table (69177 points).
+Initial guess (`tools/gen_iv_tables.py`), largest `|ln σ0 − ln σ|` where `implied_vol` answers: 0.0108 from the near-the-money table (706468 points), 0.0086 from the deep out-of-the-money table (69177 points).
 
-Against the independent mpmath reference (`tests/data/iv_fixture.csv`, `tools/iv_fixture/gen_iv_fixture.py`: 20754 exact targets on a boundary set with `d1` from −9 to 9, near the money at ±1/4 and 0, `T` from `10^-12` s to a year): 8228 answered, the largest error 8.004e-3 of the envelope around the exact implied volatility of each rounded target; the other 12526 rejected (`IllConditioned`, or no root inside the bounds).
+Against the independent mpmath reference (`tests/data/iv_fixture.csv`, `tools/iv_fixture/gen_iv_fixture.py`: 20754 exact targets on a boundary set with `d1` from −9 to 9, near the money at ±1/4 and 0, `T` from `10^-12` s to a year): 8228 answered, the largest error 7.598e-3 of the envelope around the exact implied volatility of each rounded target; the other 12526 rejected (`IllConditioned`, or no root inside the bounds).
 
 At the conditioning threshold (`tests/data/iv_threshold.csv`, `tools/iv_fixture/gen_iv_threshold.py`: 5004 targets whose exact root's vega is the threshold times `1 + ε`, `ε` from `−2^-6` to `2^-6` down to `±2^-26` and 0): no target below the threshold is answered, every one at `1 + 2^-8` or above is; 1484 answered (worst 6.287e-3 of the envelope), 3520 rejected, of which 1105 answered and 998 rejected in `[thr, thr (1 + 2^-8))`, where `implied_vol` widens the threshold by its own `δ`.
 

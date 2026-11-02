@@ -6,7 +6,9 @@
 //! and `K Dr` for a put; an in-the-money target is moved there by put-call parity, which `price`
 //! applies exactly the other way. In normalized form (`a = |ln(S Dq / K Dr)|`, `s = σ√T`,
 //! `y = p / bound`, `L = −ln y`) the initial guess of `ln s` is a bilinear interpolation in the
-//! tables of `tools/gen_iv_tables.py`, within 6% of the root over the supported domain.
+//! tables of `tools/gen_iv_tables.py`: within 6% of the root over the whole normalized domain,
+//! and within about 1.25% wherever `implied_vol` answers (measured over the milestone 5 grid,
+//! `docs/PLAN-improvements.md` milestone 20), close enough that two steps always suffice.
 //!
 //! Up to [`IV_MAX_ITERATIONS`] third-order (Chebyshev) steps then refine `v = ln σ` on a log
 //! objective: `g = ln p(v) − ln p` below the inflection point `s = √(2a)`, where the price is
@@ -27,7 +29,8 @@ use crate::bsm::{
 };
 use crate::explog::{exp, ln};
 use crate::iv_tables::{
-    DEEP, DEEP_W_MIN, DEEP_Z_MIN, NEAR, NEAR_U_MIN, NEAR_Z_MIN, SWITCH, Z_FINE,
+    DEEP, DEEP_W_MIN, DEEP_Z_MIN, NEAR, NEAR_U_DIV, NEAR_U_MIN, NEAR_ZC_DIV, NEAR_ZF_DIV,
+    NEAR_Z_MIN, SWITCH, Z_FINE,
 };
 use crate::norm::norm_cdf;
 use crate::{Fixed, OptionKind, Price, PricingError, Rate, Spot, Volatility};
@@ -44,8 +47,11 @@ pub struct IvInputs {
 }
 
 /// The most refinement steps [`implied_vol`] takes; it stops earlier once a step is below
-/// [`IV_TOLERANCE`]. A fixed cap keeps the CU cost bounded (`docs/benchmarks.md`).
-pub const IV_MAX_ITERATIONS: u32 = 3;
+/// [`IV_TOLERANCE`]. A fixed cap keeps the CU cost bounded (`docs/benchmarks.md`). 2 since 0.3
+/// (3 before): with the finer guess tables, every target the milestone 5 grid answers takes at
+/// most two steps, and each target answers or fails exactly as with three
+/// (`docs/PLAN-improvements.md`, milestone 20).
+pub const IV_MAX_ITERATIONS: u32 = 2;
 
 /// Convergence: a step in `ln σ` of at most `2^-16`. The steps converge cubically, so the error
 /// left after such a step is of order `2^-48` in relative `σ`, below the round-trip envelope's
@@ -496,21 +502,32 @@ fn guess(ln_a: Fixed, big_l: Fixed) -> Result<(Fixed, bool), PricingError> {
         let row = quadruple(z.checked_sub(Fixed::from_int(i64::from(DEEP_Z_MIN)))?)?;
         return Ok((bilinear(&DEEP, col, row)?.checked_add(w)?, true));
     }
-    let col = u.checked_sub(Fixed::from_int(i64::from(NEAR_U_MIN)))?;
+    let col = times(
+        u.checked_sub(Fixed::from_int(i64::from(NEAR_U_MIN)))?,
+        NEAR_U_DIV,
+    )?;
     let z_fine = Fixed::from_int(i64::from(Z_FINE));
     let row = if z <= z_fine {
-        z.checked_sub(Fixed::from_int(i64::from(NEAR_Z_MIN)))?
+        times(
+            z.checked_sub(Fixed::from_int(i64::from(NEAR_Z_MIN)))?,
+            NEAR_ZC_DIV,
+        )?
     } else {
-        Fixed::from_int(i64::from(Z_FINE - NEAR_Z_MIN))
-            .checked_add(quadruple(z.checked_sub(z_fine)?)?)?
+        Fixed::from_int(i64::from((Z_FINE - NEAR_Z_MIN) * NEAR_ZC_DIV))
+            .checked_add(times(z.checked_sub(z_fine)?, NEAR_ZF_DIV)?)?
     };
     Ok((bilinear(&NEAR, col, row)?.checked_sub(big_l)?, false))
 }
 
 /// `4x`, exact.
 fn quadruple(x: Fixed) -> Result<Fixed, PricingError> {
+    times(x, 4)
+}
+
+/// `n x`, exact: a table coordinate in units of its step.
+fn times(x: Fixed, n: i32) -> Result<Fixed, PricingError> {
     x.raw()
-        .checked_mul(4)
+        .checked_mul(i128::from(n))
         .map(Fixed::from_raw)
         .ok_or(PricingError::Overflow)
 }
@@ -635,7 +652,7 @@ mod profile {
     }
 
     /// Most steps a [`Trace`] holds: [`IV_MAX_ITERATIONS`] (`tests/iv_profile.rs` checks it).
-    pub const TRACE_STEPS: usize = 3;
+    pub const TRACE_STEPS: usize = 2;
 
     /// One solve as [`implied_vol`](super::implied_vol) runs it (milestone 20 of
     /// `docs/PLAN-improvements.md`, the profile): the initial guess, each step in `ln σ`, and

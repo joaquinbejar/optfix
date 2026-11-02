@@ -181,6 +181,12 @@ pub const fn priced_width(generation: u32) -> usize {
     }
 }
 
+/// The first generation whose `implied_vol` results are exact today: milestone 20
+/// (`docs/PLAN-improvements.md`) refined the initial guess and lowered `IV_MAX_ITERATIONS` to 2,
+/// so earlier generations' answers may move within the round-trip envelope (error codes are
+/// unchanged).
+pub const IV_EXACT_FROM: u32 = 3;
+
 /// Whether `f` returns priced results ([`priced_width`] values per option).
 #[must_use]
 pub fn is_priced(f: &str) -> bool {

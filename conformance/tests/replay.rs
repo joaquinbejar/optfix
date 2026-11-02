@@ -3,9 +3,20 @@
 //! milestone that agrees a change to some outputs lists it in [`agreed_change`], which then
 //! checks those cases its own way; every other case of every generation stays exact.
 
-#![allow(clippy::unwrap_used, clippy::panic, clippy::disallowed_macros)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::disallowed_macros
+)]
 
-use optfix_conformance::{eval, is_priced, load, priced_width, Case, FORMAT, SIGNATURES};
+use optfix::{
+    price_and_greeks, price_error_bound, EuropeanOption, Fixed, MarketInputs, OptionKind, Rate,
+    Spot, Strike, Volatility, Years, IV_ERR_PRICE_FACTOR, IV_ERR_REL,
+};
+use optfix_conformance::{
+    eval, is_priced, load, priced_width, Case, FORMAT, IV_EXACT_FROM, SIGNATURES,
+};
 
 fn generations() -> Vec<(u32, String)> {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/");
@@ -31,7 +42,14 @@ fn generations() -> Vec<(u32, String)> {
 ///
 /// - Milestone 19 adds rho to every priced result: a generation-1 priced case (five values per
 ///   option) must equal today's result with rho dropped, so every other output stays exact.
+/// - Milestone 20 refines `implied_vol`'s initial guess and caps it at two steps: before
+///   [`IV_EXACT_FROM`], an `implied_vol` case keeps its error code, and an answer may move by
+///   at most twice the round-trip envelope at the recorded `σ` (both are within one envelope of
+///   the exact root).
 fn agreed_change(generation: u32, case: &Case) -> Option<bool> {
+    if case.f == "implied_vol" && generation < IV_EXACT_FROM {
+        return Some(iv_moved_within_envelope(case));
+    }
     if !is_priced(&case.f) || priced_width(generation) == priced_width(u32::MAX) {
         return None;
     }
@@ -48,6 +66,44 @@ fn agreed_change(generation: u32, case: &Case) -> Option<bool> {
         (Err(e), None, Some(code)) => e as u8 == code,
         _ => false,
     })
+}
+
+/// The milestone 20 rule for one `implied_vol` case (arguments `kind, spot, strike, expiry,
+/// rate, carry, target`).
+#[allow(clippy::float_arithmetic, clippy::cast_precision_loss)]
+fn iv_moved_within_envelope(case: &Case) -> bool {
+    let Ok(now) = eval(&case.f, &case.a) else {
+        return false;
+    };
+    match (now, &case.r, case.e) {
+        (Err(e), None, Some(code)) => e as u8 == code,
+        (Ok(now), Some(was), None) => {
+            let raw = |s: &String| Fixed::from_raw(s.parse().unwrap());
+            let (now, was) = (raw(&now[0]), raw(&was[0]));
+            let a = &case.a;
+            let opt = EuropeanOption {
+                kind: if a[0] == "call" {
+                    OptionKind::Call
+                } else {
+                    OptionKind::Put
+                },
+                strike: Strike::try_new(raw(&a[2])).unwrap(),
+                expiry: Years::try_new(raw(&a[3])).unwrap(),
+            };
+            let m = MarketInputs {
+                spot: Spot::try_new(raw(&a[1])).unwrap(),
+                vol: Volatility::try_new(was).unwrap(),
+                rate: Rate::try_new(raw(&a[4])).unwrap(),
+                carry: Rate::try_new(raw(&a[5])).unwrap(),
+            };
+            let f = |x: Fixed| x.raw() as f64 / 18_446_744_073_709_551_616.0;
+            let vega = price_and_greeks(&opt, &m).unwrap().greeks.vega;
+            let e = price_error_bound(&opt, &m).unwrap();
+            let bound = 2.0 * (f(IV_ERR_PRICE_FACTOR) * f(e) / f(vega) + f(IV_ERR_REL) * f(was));
+            f(now.checked_sub(was).unwrap()).abs() <= bound
+        }
+        _ => false,
+    }
 }
 
 #[test]

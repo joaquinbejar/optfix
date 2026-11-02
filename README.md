@@ -276,9 +276,9 @@ the Black-Scholes and implied-volatility rows still include decoding six argumen
 | `price`, near the money | 11092 | 11468 |
 | `price_and_greeks` | 14497 | 14897 |
 | `price_and_greeks`, near the money | 16377 | 16822 |
-| `implied_vol` | 27132 | 34724 |
-| `implied_vol`, near the money | 32765 | 42080 |
-| `implied_vol`, worst case (every step taken) | 42003 | 42951 |
+| `implied_vol` | 27126 | 32895 |
+| `implied_vol`, near the money | 32759 | 33592 |
+| `implied_vol`, worst case (every step taken) | 32755 | 33585 |
 | `price_black76` | 9261 | 9534 |
 | `price_cash_or_nothing` | 7253 | 7526 |
 | `price_asset_or_nothing` | 6876 | 7145 |
@@ -288,7 +288,7 @@ the Black-Scholes and implied-volatility rows still include decoding six argumen
 | `price_and_greeks_strip`, 1 leg | 14772 | 15170 |
 | `price_and_greeks_strip`, 16 legs | 165579 | 173383 |
 
-`implied_vol` takes at most 3 steps. A strip shares one expiry and market: each extra leg costs about 4767 CU in `price_strip` and 10053 in `price_and_greeks_strip` (medians, from 1 to 16 legs).
+`implied_vol` takes at most 2 steps. A strip shares one expiry and market: each extra leg costs about 4767 CU in `price_strip` and 10053 in `price_and_greeks_strip` (medians, from 1 to 16 legs).
 <!-- /generated:cu -->
 
 `price_and_greeks` computes the shared intermediates once and costs about a third of pricing

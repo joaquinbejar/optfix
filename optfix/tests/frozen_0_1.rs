@@ -2,7 +2,11 @@
 //! inputs and outputs of the published optfix 0.1.0 (`tools/frozen_0_1`, which depends on
 //! `optfix = "=0.1.0"`), and this crate must reproduce every row bit for bit, results and
 //! error variants alike: `div_*`, `from_ratio`, `from_scaled`, `sqrt_*`, `price`,
-//! `price_and_greeks` and `implied_vol`.
+//! `price_and_greeks` and `implied_vol`, with one agreed change: since milestone 20 of
+//! `docs/PLAN-improvements.md` (finer guess tables, at most two steps) an `implied_vol` row
+//! keeps its error variant, and an answer may move within the round-trip envelope (both 0.1.0's
+//! and today's answer are within `IV_ERR_PRICE_FACTOR × E / vega + IV_ERR_REL × σ` of the exact
+//! root, so they are within twice that of each other).
 
 #![allow(
     clippy::unwrap_used,
@@ -14,8 +18,9 @@
 )]
 
 use optfix::{
-    implied_vol, price, price_and_greeks, EuropeanOption, Fixed, IvInputs, MarketInputs,
-    OptionKind, Price, PricingError, Rate, Rounding, Spot, Strike, Volatility, Years,
+    implied_vol, price, price_and_greeks, price_error_bound, EuropeanOption, Fixed, IvInputs,
+    MarketInputs, OptionKind, Price, PricingError, Rate, Rounding, Spot, Strike, Volatility, Years,
+    IV_ERR_PRICE_FACTOR, IV_ERR_REL,
 };
 
 const FIXTURE: &str = include_str!("data/frozen_0_1.csv");
@@ -113,10 +118,38 @@ fn evaluate(op: &str, a: &[&str]) -> String {
     }
 }
 
+/// The agreed change for an `implied_vol` row whose answer moved: both answers, and today's
+/// within twice the round-trip envelope of 0.1.0's (vega and `E` at 0.1.0's `σ`). Returns the
+/// distance over that bound, or `None` if the row does not qualify.
+#[allow(clippy::float_arithmetic, clippy::cast_precision_loss)]
+fn moved_answer(a: &[&str], expected: &str, got: &str) -> Option<f64> {
+    if expected.starts_with('E') || got.starts_with('E') {
+        return None;
+    }
+    let f = |x: Fixed| x.raw() as f64 / 18_446_744_073_709_551_616.0;
+    let (was, now) = (fx(expected), fx(got));
+    let opt = EuropeanOption {
+        kind: kind(a[0]),
+        strike: Strike::try_new(fx(a[2])).unwrap(),
+        expiry: Years::try_new(fx(a[3])).unwrap(),
+    };
+    let m = MarketInputs {
+        spot: Spot::try_new(fx(a[1])).unwrap(),
+        vol: Volatility::try_new(was).unwrap(),
+        rate: Rate::try_new(fx(a[4])).unwrap(),
+        carry: Rate::try_new(fx(a[5])).unwrap(),
+    };
+    let vega = price_and_greeks(&opt, &m).unwrap().greeks.vega;
+    let e = price_error_bound(&opt, &m).unwrap();
+    let bound = 2.0 * (f(IV_ERR_PRICE_FACTOR) * f(e) / f(vega) + f(IV_ERR_REL) * f(was));
+    Some(f(now.checked_sub(was).unwrap()).abs() / bound)
+}
+
 #[test]
 fn test_every_fixture_row_matches_0_1_0() {
     let mut rows = 0usize;
     let mut mismatches = Vec::new();
+    let (mut moved, mut worst) = (0usize, 0f64);
     for line in FIXTURE.lines() {
         let (inputs, expected) = line.split_once(",=,").expect("row without ,=,");
         let mut fields = inputs.split(',');
@@ -124,10 +157,20 @@ fn test_every_fixture_row_matches_0_1_0() {
         let args: Vec<&str> = fields.collect();
         let got = evaluate(op, &args);
         if got != expected {
-            mismatches.push(format!("{line}\n  now: {got}"));
+            match (op, moved_answer(&args, expected, &got)) {
+                ("implied_vol", Some(r)) if r <= 1.0 => {
+                    moved += 1;
+                    worst = worst.max(r);
+                }
+                _ => mismatches.push(format!("{line}\n  now: {got}")),
+            }
         }
         rows += 1;
     }
+    println!(
+        "implied_vol rows moved within the envelope (milestone 20): {moved}, worst {worst:.3e} of \
+         twice the round-trip envelope"
+    );
     assert!(rows >= 14_000, "{rows} rows");
     assert!(
         mismatches.is_empty(),

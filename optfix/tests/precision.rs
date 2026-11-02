@@ -570,17 +570,19 @@ fn implied_vol_section(n: usize) -> String {
         let hist = common::iv::iteration_histogram(n, 0x2f60);
         write!(
             s,
-            "\nSteps taken (at most `IV_MAX_ITERATIONS` = 3; a solve stops once a step is below \
+            "\nSteps taken (at most `IV_MAX_ITERATIONS` = {}; a solve stops once a step is below \
              `IV_TOLERANCE`, `2^-16` in `ln σ`), over the same {} points by outcome:\n\n\
-             | Outcome | 1 step | 2 steps | 3 steps |\n\
-             | --- | ---: | ---: | ---: |\n",
+             | Outcome | 1 step | 2 steps |\n\
+             | --- | ---: | ---: |\n",
+            optfix::IV_MAX_ITERATIONS,
             3 * n
         )
         .unwrap();
         for (name, h) in ["answered", "`IllConditioned`"].iter().zip(hist) {
-            writeln!(s, "| {name} | {} | {} | {} |", h[1], h[2], h[3]).unwrap();
+            assert_eq!(h[3], 0, "a solve past IV_MAX_ITERATIONS");
+            writeln!(s, "| {name} | {} | {} |", h[1], h[2]).unwrap();
         }
-        let (worst, count) = common::iv::guess_errors(n, 0x3f60, 0.0625);
+        let (worst, count) = common::iv::guess_errors(n, 0x3f60, 0.015_625);
         write!(
             s,
             "\nInitial guess (`tools/gen_iv_tables.py`), largest `|ln σ0 − ln σ|` where \
