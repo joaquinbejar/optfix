@@ -76,10 +76,17 @@ impl Fixed {
         for _ in 0..64 {
             let mut carry = 0u8;
             for slot in buf.iter_mut().rev() {
-                // slot <= 9, so 2 slot + carry <= 19.
-                let v = slot.wrapping_mul(2).wrapping_add(carry);
+                // slot <= 9, so 2 slot + carry <= 19: the checks never fail.
+                let v = slot
+                    .checked_mul(2)
+                    .and_then(|v| v.checked_add(carry))
+                    .ok_or(PricingError::Overflow)?;
                 carry = u8::from(v >= 10);
-                *slot = if v >= 10 { v.wrapping_sub(10) } else { v };
+                *slot = if v >= 10 {
+                    v.checked_sub(10).ok_or(PricingError::Overflow)?
+                } else {
+                    v
+                };
             }
             frac = (frac << 1) | u64::from(carry);
         }
@@ -123,9 +130,9 @@ impl Fixed {
             w.write_char('.')?;
             while frac != 0 {
                 // frac × 10 < 10 × 2^64: the high word is the next digit.
-                let v = u128::from(frac).wrapping_mul(10);
+                let v = u128::from(frac).checked_mul(10).ok_or(fmt::Error)?;
                 let d = u8::try_from(v >> 64).map_err(|_| fmt::Error)?;
-                w.write_char(char::from(b'0'.wrapping_add(d)))?;
+                w.write_char(char::from(b'0'.checked_add(d).ok_or(fmt::Error)?))?;
                 frac = u64::try_from(v & u128::from(u64::MAX)).map_err(|_| fmt::Error)?;
             }
         }
@@ -142,7 +149,7 @@ impl fmt::Display for Fixed {
 /// The value of an ASCII digit.
 fn digit(c: u8) -> Result<u8, PricingError> {
     if c.is_ascii_digit() {
-        Ok(c.wrapping_sub(b'0'))
+        c.checked_sub(b'0').ok_or(PricingError::DomainError)
     } else {
         Err(PricingError::DomainError)
     }
@@ -156,7 +163,7 @@ fn write_u64<W: fmt::Write>(w: &mut W, n: u64) -> fmt::Result {
     loop {
         let d = u8::try_from(n.checked_rem(10).ok_or(fmt::Error)?).map_err(|_| fmt::Error)?;
         start = start.checked_sub(1).ok_or(fmt::Error)?;
-        *buf.get_mut(start).ok_or(fmt::Error)? = b'0'.wrapping_add(d);
+        *buf.get_mut(start).ok_or(fmt::Error)? = b'0'.checked_add(d).ok_or(fmt::Error)?;
         n = n.checked_div(10).ok_or(fmt::Error)?;
         if n == 0 {
             break;
