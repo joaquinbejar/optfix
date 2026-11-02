@@ -325,10 +325,6 @@ GitHub release.
 *Done when* the three consumers match the vectors in CI, the README documents both crates, and
 the CI time stays under the threshold.
 
-(M16 evidence after its review R1, recorded here because M16 had merged its text: the
-30-minute `pricing` and `iv` runs on the corrected contract, 18fc9c8, were clean with
-10,045,472 and 54,402,152 runs, final coverage 968 and 886.)
-
 ## Milestone 18: Pinocchio example program
 
 `examples/pricer-program/`: a minimal on-chain consumer to copy, separate from the bench
