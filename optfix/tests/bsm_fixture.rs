@@ -1,7 +1,8 @@
 //! Codex's #11 sweep as a committed fixture (`tests/data/bsm_fixture.csv`, from
 //! `tools/bsm_fixture/gen_sweep.py` and `expected.py`): 19,106 inputs with `d1` from −9 to 9 at
 //! expiries from `10^-12` s to a year, and their Black-Scholes-Merton values from mpmath at 100
-//! digits, rounded to raw Q64.64. Every row checks that
+//! digits, rounded to raw Q64.64 (rho, the last column, added by milestone 19 of
+//! `docs/PLAN-improvements.md`). Every row checks that
 //!
 //! - the 256-bit reference in `common/` agrees with mpmath (within one raw unit), and
 //! - `price_and_greeks` is within its envelopes of the reference.
@@ -30,7 +31,7 @@ use common::{bsm_inputs, bsm_ref, div, mul, ratio, to_ref};
 use num_bigint::BigInt;
 use optfix::{
     price_and_greeks, Fixed, DELTA_ERR, GAMMA_ERR_REL, GREEK_ERR_ABS, PRICE_ERR_ABS, PRICE_ERR_REL,
-    THETA_ERR_REL, VEGA_ERR_REL,
+    RHO_ERR_ABS, RHO_ERR_REL, THETA_ERR_REL, VEGA_ERR_REL,
 };
 
 /// `|got − want| <= rel × scale + abs` in Q.P, and the ratio of the two.
@@ -45,8 +46,8 @@ fn test_fixture_within_envelopes() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/bsm_fixture.csv");
     let text = std::fs::read_to_string(path).unwrap();
     let mut export = String::new();
-    let mut worst = [0f64; 5];
-    let mut violations = [0usize; 5];
+    let mut worst = [0f64; 6];
+    let mut violations = [0usize; 6];
     let mut rows = 0;
     for line in text.lines() {
         let f: Vec<i128> = line.split(',').map(|v| v.parse().unwrap()).collect();
@@ -62,9 +63,11 @@ fn test_fixture_within_envelopes() {
             &to_ref(q),
         );
         // The reference against mpmath: each value rounded to raw Q64.64 within one unit.
-        for (i, want) in [&rf.price, &rf.delta, &rf.gamma, &rf.vega, &rf.theta]
-            .iter()
-            .enumerate()
+        for (i, want) in [
+            &rf.price, &rf.delta, &rf.gamma, &rf.vega, &rf.theta, &rf.rho,
+        ]
+        .iter()
+        .enumerate()
         {
             let got: BigInt = (*want + (BigInt::from(1) << 191)) >> 192u32;
             let diff = (got - BigInt::from(f[7 + i])).magnitude().clone();
@@ -78,7 +81,7 @@ fn test_fixture_within_envelopes() {
         let g = v.greeks;
         writeln!(
             export,
-            "{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{}",
             f[0],
             f[1],
             f[2],
@@ -90,7 +93,8 @@ fn test_fixture_within_envelopes() {
             g.delta.raw(),
             g.gamma.raw(),
             g.vega.raw(),
-            g.theta.raw()
+            g.theta.raw(),
+            g.rho.raw()
         )
         .unwrap();
         let gamma_scale = div(&rf.dq, &mul(&to_ref(s), &rf.sst));
@@ -122,6 +126,13 @@ fn test_fixture_within_envelopes() {
                 &theta_scale,
                 GREEK_ERR_ABS,
             ),
+            ratio_to_envelope(
+                g.rho,
+                &rf.rho,
+                RHO_ERR_REL,
+                &mul(&to_ref(t), &to_ref(s.max(k))),
+                RHO_ERR_ABS,
+            ),
         ];
         for (i, x) in ratios.iter().enumerate() {
             worst[i] = worst[i].max(*x);
@@ -134,9 +145,9 @@ fn test_fixture_within_envelopes() {
     if let Ok(out) = std::env::var("OPTFIX_FIXTURE_EXPORT") {
         std::fs::write(out, export).unwrap();
     }
-    println!("{rows} rows; worst envelope ratios price/delta/gamma/vega/theta {worst:?}; violations {violations:?}");
+    println!("{rows} rows; worst envelope ratios price/delta/gamma/vega/theta/rho {worst:?}; violations {violations:?}");
     assert_eq!(
-        violations, [0; 5],
+        violations, [0; 6],
         "envelope violations (worst ratios {worst:?})"
     );
     assert!(rows >= 19_000);

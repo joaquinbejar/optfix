@@ -42,7 +42,8 @@ measured in LiteSVM.
 - `Fixed`: binary Q64.64 (`raw / 2^64` in an `i128`), one ulp is `2^-64`.
 - Checked arithmetic everywhere; nothing panics.
 - Directed rounding: `mul_down`/`mul_up`, `div_down`/`div_up`, `sqrt_down`/`sqrt_up`, and a
-  `Rounding` argument for `from_ratio`, `from_scaled` and `to_scaled` (token units).
+  `Rounding` argument for `from_ratio`, `from_bps` (basis points; also `Rate::from_bps` and
+  `Volatility::from_bps`), `from_scaled` and `to_scaled` (token units).
 - `wide::mul_shr`: a full 256-bit product shifted right with exact directed rounding.
 - `FixedBytes`: an alignment-1 storage form for account data.
 - Exact decimal text: `Fixed::from_decimal_str` (any number of digits, explicit rounding) and
@@ -54,7 +55,9 @@ measured in LiteSVM.
 
 #### 3. **Black-Scholes-Merton**
 - European calls and puts with a risk-free rate `r` and a continuous carry `q`.
-- `intrinsic`, `price`, and `price_and_greeks` (delta, gamma, vega, theta from one evaluation).
+- `intrinsic`, `price`, and `price_and_greeks` (delta, gamma, vega, theta and rho from one
+  evaluation). `Greeks` and `Priced` are `#[non_exhaustive]`; start from `Greeks::ZERO` or
+  `Priced::ZERO`.
 - `price_strip` and `price_and_greeks_strip`: a strip of strikes sharing one expiry and market,
   each leg bit-identical to the scalar call; an extra leg costs about half a `price` call.
 - Black-76 (`price_black76`, `price_and_greeks_black76`) for options on futures and forwards.
@@ -208,14 +211,14 @@ Its LiteSVM test (`make program`, then `make test`) checks the return data again
 for bit and the error codes; one pricing takes at most about 15,200 CU.
 
 The example prices one option. For a strip in one instruction, a linear projection from the
-strip rows of `docs/benchmarks.md` at 0.2.1 gives a first idea (the largest per-leg increment
-measured between 1 and 16 legs: 5,209 CU for prices, 10,381 with greeks; 9,968 and 15,208 for
-the first leg):
+strip rows of `docs/benchmarks.md` at 0.3.0 gives a first idea (from the worst-case rows, the
+increment per leg between 1 and 16 legs: 5,215 CU for prices, 10,676 with greeks, which include
+rho; 9,969 and 15,497 for the first leg):
 
 | Budget | `price_strip` legs (projected) | `price_and_greeks_strip` legs (projected) |
 | --- | ---: | ---: |
 | 200,000 CU (default per instruction) | 37 | 18 |
-| 1,400,000 CU (the most a transaction can request) | 267 | 134 |
+| 1,400,000 CU (the most a transaction can request) | 267 | 130 |
 
 These are illustrative projections, not bounds: only 1- and 16-leg strips are measured, and the
 figures leave nothing for your program's own work (entrypoint, account reads, decoding,
@@ -245,7 +248,8 @@ Generated from the crate's constants (the tests assert each one; measured maxima
 | gamma | `2^-40` × `Dq / (S σ√T)` + 64 ulps |
 | vega | `2^-43` × `S Dq √T` + 64 ulps |
 | theta | `2^-42` × `(S Dq σ / √T + abs(r) K Dr + abs(q) S Dq)` + 64 ulps |
-| `price_black76`, `price_and_greeks_black76` | as `price` and `price_and_greeks`, with `F` for `S` |
+| rho | `2^-44` × `T max(S, K)` + 2048 ulps |
+| `price_black76`, `price_and_greeks_black76` | as `price` and `price_and_greeks`, with `F` for `S`; Black-76 rho is `−T × price`, within the rho envelope |
 | `price_cash_or_nothing` | `2^-48` × `payout` + 64 ulps |
 | `price_asset_or_nothing` | `2^-48` × `S` + 64 ulps |
 | `implied_vol` | 4 × `E / vega` + `2^-40` × `σ`, where vega at the root is at least `2^28` × `E` (`E` the price bound); `IllConditioned` below that |
@@ -268,23 +272,23 @@ the Black-Scholes and implied-volatility rows still include decoding six argumen
 | `norm_cdf` | 1321 | 1381 |
 | `norm_pdf` | 574 | 597 |
 | `wide::mul_shr` | 317 | 333 |
-| `price` | 9233 | 9553 |
-| `price`, near the money | 11100 | 11476 |
-| `price_and_greeks` | 14203 | 14597 |
-| `price_and_greeks`, near the money | 16079 | 16521 |
+| `price` | 9224 | 9544 |
+| `price`, near the money | 11092 | 11468 |
+| `price_and_greeks` | 14497 | 14897 |
+| `price_and_greeks`, near the money | 16377 | 16822 |
 | `implied_vol` | 27132 | 34724 |
 | `implied_vol`, near the money | 32765 | 42080 |
 | `implied_vol`, worst case (every step taken) | 42003 | 42951 |
-| `price_black76` | 9242 | 9514 |
-| `price_cash_or_nothing` | 7266 | 7538 |
-| `price_asset_or_nothing` | 6889 | 7158 |
-| `price_and_greeks_black76` | 14224 | 14557 |
+| `price_black76` | 9261 | 9534 |
+| `price_cash_or_nothing` | 7253 | 7526 |
+| `price_asset_or_nothing` | 6876 | 7145 |
+| `price_and_greeks_black76` | 14847 | 15181 |
 | `price_strip`, 1 leg | 9465 | 9794 |
-| `price_strip`, 16 legs | 80902 | 87933 |
-| `price_and_greeks_strip`, 1 leg | 14488 | 14888 |
-| `price_and_greeks_strip`, 16 legs | 161005 | 168788 |
+| `price_strip`, 16 legs | 80977 | 88008 |
+| `price_and_greeks_strip`, 1 leg | 14772 | 15170 |
+| `price_and_greeks_strip`, 16 legs | 165579 | 173383 |
 
-`implied_vol` takes at most 3 steps. A strip shares one expiry and market: each extra leg costs about 4762 CU in `price_strip` and 9767 in `price_and_greeks_strip` (medians, from 1 to 16 legs).
+`implied_vol` takes at most 3 steps. A strip shares one expiry and market: each extra leg costs about 4767 CU in `price_strip` and 10053 in `price_and_greeks_strip` (medians, from 1 to 16 legs).
 <!-- /generated:cu -->
 
 `price_and_greeks` computes the shared intermediates once and costs about a third of pricing

@@ -56,7 +56,12 @@ pub struct MarketInputs {
 ///
 /// With `Dq = e^{−qT}` in `[e^{−15}, e^3]` over the supported domain, `|delta|` can reach
 /// about 20.1.
+///
+/// `#[non_exhaustive]`: later releases may add fields without a breaking change, so outside
+/// this crate a value starts from [`Greeks::ZERO`] (or comes from a pricing function) rather
+/// than from a struct literal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct Greeks {
     /// `dV/dS`: a call's in `[0, Dq]`, a put's in `[−Dq, 0]`.
     pub delta: Fixed,
@@ -66,15 +71,43 @@ pub struct Greeks {
     pub vega: Fixed,
     /// `dV/dt` in calendar time, per year (`−dV/dT`); either sign.
     pub theta: Fixed,
+    /// `dV/dr` per 1.00 of the rate `r` (divide by 100 for "per rate point"), holding the
+    /// other inputs fixed: `K T Dr N(d2)` for a call, `−K T Dr N(−d2)` for a put. For Black-76
+    /// it holds `F` fixed, so it is `−T × price` ([`price_and_greeks_black76`]).
+    pub rho: Fixed,
+}
+
+impl Greeks {
+    /// All five greeks zero: what [`price`] would leave, and a starting value for the `out`
+    /// slots of [`price_and_greeks_strip`].
+    pub const ZERO: Self = Self {
+        delta: Fixed::ZERO,
+        gamma: Fixed::ZERO,
+        vega: Fixed::ZERO,
+        theta: Fixed::ZERO,
+        rho: Fixed::ZERO,
+    };
 }
 
 /// A price with its greeks.
+///
+/// `#[non_exhaustive]`, as [`Greeks`]: outside this crate a value starts from [`Priced::ZERO`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct Priced {
     /// The option premium.
     pub price: Price,
     /// Its sensitivities.
     pub greeks: Greeks,
+}
+
+impl Priced {
+    /// A zero price with [`Greeks::ZERO`]: a starting value for the `out` slots of
+    /// [`price_and_greeks_strip`].
+    pub const ZERO: Self = Self {
+        price: Price::MIN,
+        greeks: Greeks::ZERO,
+    };
 }
 
 /// Price envelope, relative part: `|error| <= PRICE_ERR_REL × max(S, K) + PRICE_ERR_ABS`.
@@ -101,6 +134,16 @@ pub const THETA_ERR_REL: Fixed = Fixed::from_raw(1 << 22);
 
 /// Absolute part of the gamma, vega and theta envelopes: 64 ulps.
 pub const GREEK_ERR_ABS: Fixed = Fixed::from_raw(64);
+
+/// Rho envelope: `|error| <= RHO_ERR_REL × T × max(S, K) + RHO_ERR_ABS`, for
+/// [`price_and_greeks`] and, with `F` in place of `S`, [`price_and_greeks_black76`]. `2^-44`,
+/// about `5.7 × 10^-14`: Black-Scholes-Merton rho is `T × K Dr × N(±d2)` with `Dr` up to `e^3`,
+/// and Black-76 rho is `T` times the price, so its error is `T` times the price envelope.
+pub const RHO_ERR_REL: Fixed = Fixed::from_raw(1 << 20);
+
+/// Absolute part of the rho envelope: 2,048 ulps, about `1.1 × 10^-16`, which is `T <= 30`
+/// times the price envelope's 64 ulps plus the final roundings.
+pub const RHO_ERR_ABS: Fixed = Fixed::from_raw(2048);
 
 /// The price envelope at these inputs, rounded up: `PRICE_ERR_REL × max(S, K) + PRICE_ERR_ABS`.
 /// Widen a price with it through [`Price::upper`] and [`Price::lower`] when a conservative side
@@ -245,7 +288,10 @@ pub fn price_black76(opt: &EuropeanOption, m: &FuturesInputs) -> Result<Price, P
 /// - `delta = ∂V/∂F` (`e^{−rT} N(d1)` for a call) and `gamma = ∂²V/∂F²`;
 /// - `vega = ∂V/∂σ`, per 1.00 of volatility;
 /// - `theta = ∂V/∂t` in calendar time, per year, holding `F`, `σ` and `r` fixed: what
-///   Black-Scholes-Merton theta computes with `q = r`, since it holds `S` fixed.
+///   Black-Scholes-Merton theta computes with `q = r`, since it holds `S` fixed;
+/// - `rho = ∂V/∂r` holding `F` fixed: `−T × price`, the one greek that differs from
+///   [`price_and_greeks`] with `q = r` (which moves `q` with `r`), within [`RHO_ERR_REL`] `× T ×
+///   max(F, K) +` [`RHO_ERR_ABS`].
 ///
 /// # Errors
 ///
@@ -255,7 +301,9 @@ pub fn price_and_greeks_black76(
     opt: &EuropeanOption,
     m: &FuturesInputs,
 ) -> Result<Priced, PricingError> {
-    price_and_greeks(opt, &m.as_market())
+    let mut p = price_and_greeks(opt, &m.as_market())?;
+    p.greeks.rho = opt.expiry.get().mul_down(p.price.get())?.checked_neg()?;
+    Ok(p)
 }
 
 /// One leg of a strip: the option kind and strike; expiry and market inputs are the strip's.
@@ -401,6 +449,7 @@ fn evaluate(opt: &EuropeanOption, m: &MarketInputs, greeks: bool) -> Result<Pric
 /// order are the same, which is what makes a strip leg equal the scalar result bit for bit.
 struct Shared {
     s: Fixed,
+    t: Fixed,
     r: Fixed,
     q: Fixed,
     dr: Fixed,
@@ -462,6 +511,7 @@ impl Shared {
         };
         Ok(Self {
             s,
+            t,
             r,
             q,
             dr,
@@ -520,7 +570,7 @@ impl Shared {
     /// check has already passed.
     #[inline(always)]
     fn leg(&mut self, kind: OptionKind, k: Fixed, greeks: bool) -> Result<Priced, PricingError> {
-        let (s, r, q, dq, s_dq) = (self.s, self.r, self.q, self.dq, self.s_dq);
+        let (s, t, r, q, dq, s_dq) = (self.s, self.t, self.r, self.q, self.dq, self.s_dq);
         let k_dr = k.mul_down(self.dr)?;
         let Some(live) = self.live.as_mut() else {
             return degenerate(kind, r, q, dq, s_dq, k_dr);
@@ -559,7 +609,7 @@ impl Shared {
         if !greeks {
             return Ok(Priced {
                 price,
-                greeks: ZERO_GREEKS,
+                greeks: Greeks::ZERO,
             });
         }
         // N(−d1) = 1 − N(d1) and N(−d2) = 1 − N(d2), exactly.
@@ -574,17 +624,30 @@ impl Shared {
         // vega = S Dq n(d1) √T
         let s_dq_pdf = s_dq.mul_down(pdf)?;
         let vega = mul_exp(s_dq_pdf, half_ln_t)?;
-        // theta = −S Dq n(d1) σ / (2√T) ∓ r K Dr N(±d2) ± q S Dq N(±d1)
+        // theta = −S Dq n(d1) σ / (2√T) ∓ r K Dr N(±d2) ± q S Dq N(±d1); rho = ±T K Dr N(±d2)
+        // shares K Dr N(±d2) with theta.
         let decay = half(mul_exp(s_dq_pdf, ln_sigma.checked_sub(half_ln_t)?)?);
-        let theta = match kind {
-            OptionKind::Call => decay
-                .checked_neg()?
-                .checked_sub(r.mul_down(k_dr.mul_down(nd2)?)?)?
-                .checked_add(q.mul_down(s_dq.mul_down(nd1)?)?)?,
-            OptionKind::Put => decay
-                .checked_neg()?
-                .checked_add(r.mul_down(k_dr.mul_down(nmd2)?)?)?
-                .checked_sub(q.mul_down(s_dq.mul_down(nmd1)?)?)?,
+        let (theta, rho) = match kind {
+            OptionKind::Call => {
+                let k_dr_n = k_dr.mul_down(nd2)?;
+                (
+                    decay
+                        .checked_neg()?
+                        .checked_sub(r.mul_down(k_dr_n)?)?
+                        .checked_add(q.mul_down(s_dq.mul_down(nd1)?)?)?,
+                    t.mul_down(k_dr_n)?,
+                )
+            }
+            OptionKind::Put => {
+                let k_dr_n = k_dr.mul_down(nmd2)?;
+                (
+                    decay
+                        .checked_neg()?
+                        .checked_add(r.mul_down(k_dr_n)?)?
+                        .checked_sub(q.mul_down(s_dq.mul_down(nmd1)?)?)?,
+                    t.mul_down(k_dr_n)?.checked_neg()?,
+                )
+            }
         };
         Ok(Priced {
             price,
@@ -593,6 +656,7 @@ impl Shared {
                 gamma,
                 vega,
                 theta,
+                rho,
             },
         })
     }
@@ -712,18 +776,11 @@ const INV_LN2: Fixed = Fixed::from_raw(26_613_026_195_688_644_983);
 /// `|S − K| × 256 < K` selects the near-the-money form of `ln(S/K) / (σ√T)` in [`d1_terms`].
 const NEAR_MONEY_FACTOR: u128 = 256;
 
-/// All-zero greeks, for `price` (which does not compute them).
-const ZERO_GREEKS: Greeks = Greeks {
-    delta: Fixed::ZERO,
-    gamma: Fixed::ZERO,
-    vega: Fixed::ZERO,
-    theta: Fixed::ZERO,
-};
-
 /// Intrinsic value and its greeks at `T = 0` (where `Dq = Dr = 1`): the call
 /// is worth `max(S Dq − K Dr, 0)` and the put `max(K Dr − S Dq, 0)`; delta is `±Dq` in the
-/// money and 0 otherwise, gamma and vega are 0, and theta is the derivative of that intrinsic
-/// value (`q S Dq − r K Dr` for an in-the-money call, its negative for an in-the-money put).
+/// money and 0 otherwise, gamma, vega and rho (which carries a factor `T`) are 0, and theta is
+/// the derivative of that intrinsic value (`q S Dq − r K Dr` for an in-the-money call, its
+/// negative for an in-the-money put).
 fn degenerate(
     kind: OptionKind,
     r: Fixed,
@@ -740,7 +797,7 @@ fn degenerate(
     if !itm {
         return Ok(Priced {
             price: Price::MIN,
-            greeks: ZERO_GREEKS,
+            greeks: Greeks::ZERO,
         });
     }
     let call_theta = q.mul_down(s_dq)?.checked_sub(r.mul_down(k_dr)?)?;
@@ -759,6 +816,7 @@ fn degenerate(
             gamma: Fixed::ZERO,
             vega: Fixed::ZERO,
             theta,
+            rho: Fixed::ZERO,
         },
     })
 }
@@ -822,6 +880,7 @@ pub mod baseline {
                 gamma: gamma(opt, m)?,
                 vega: vega(opt, m)?,
                 theta: theta(opt, m)?,
+                rho: rho(opt, m)?,
             },
         })
     }
@@ -888,6 +947,24 @@ pub mod baseline {
             m.spot.get().mul_down(dq)?.mul_down(norm_pdf(d1)?)?,
             half_ln_t,
         )
+    }
+
+    fn rho(opt: &EuropeanOption, m: &MarketInputs) -> Result<Fixed, PricingError> {
+        let Some((_, _, _, _, _, d1, sst)) = d1(opt, m)? else {
+            return Ok(Fixed::ZERO);
+        };
+        let t = opt.expiry.get();
+        let k_dr = opt
+            .strike
+            .get()
+            .mul_down(exp(m.rate.get().mul_down(t)?.checked_neg()?)?)?;
+        let d2 = d1.checked_sub(sst)?;
+        match opt.kind {
+            OptionKind::Call => t.mul_down(k_dr.mul_down(norm_cdf(d2)?)?),
+            OptionKind::Put => t
+                .mul_down(k_dr.mul_down(norm_cdf(d2.checked_neg()?)?)?)?
+                .checked_neg(),
+        }
     }
 
     fn theta(opt: &EuropeanOption, m: &MarketInputs) -> Result<Fixed, PricingError> {

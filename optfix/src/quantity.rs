@@ -110,6 +110,32 @@ bounded_quantity!(
     range: "`[0, 30]`"
 );
 
+impl Rate {
+    /// A rate quoted in basis points: [`Fixed::from_bps`] then [`Rate::try_new`] (`-1_000` to
+    /// `5_000` bps).
+    ///
+    /// # Errors
+    ///
+    /// `DomainError` if the rounded value is outside the range.
+    #[must_use = "the result carries a possible error"]
+    pub fn from_bps(bps: i64, r: Rounding) -> Result<Self, PricingError> {
+        Self::try_new(Fixed::from_bps(bps, r)?)
+    }
+}
+
+impl Volatility {
+    /// A volatility quoted in basis points: [`Fixed::from_bps`] then [`Volatility::try_new`]
+    /// (`50` to `50_000` bps).
+    ///
+    /// # Errors
+    ///
+    /// `DomainError` if the rounded value is outside the range.
+    #[must_use = "the result carries a possible error"]
+    pub fn from_bps(bps: i64, r: Rounding) -> Result<Self, PricingError> {
+        Self::try_new(Fixed::from_bps(bps, r)?)
+    }
+}
+
 impl Years {
     /// `seconds / 31_536_000` (365-day year), rounded in direction `r`.
     ///

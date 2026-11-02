@@ -24,7 +24,7 @@ mod common;
 
 use common::{bsm_inputs, bsm_sample, uniform, Rng};
 use optfix::{
-    price, price_and_greeks, price_and_greeks_strip, price_strip, EuropeanOption, Fixed, Greeks,
+    price, price_and_greeks, price_and_greeks_strip, price_strip, EuropeanOption, Fixed,
     MarketInputs, OptionKind, Price, Priced, PricingError, Rate, Spot, Strike, StripLeg,
     Volatility, Years,
 };
@@ -45,15 +45,14 @@ fn sentinel_price() -> Price {
 
 fn sentinel_priced() -> Priced {
     let x = Fixed::from_raw(0x5EED);
-    Priced {
-        price: sentinel_price(),
-        greeks: Greeks {
-            delta: x,
-            gamma: x,
-            vega: x,
-            theta: x,
-        },
-    }
+    let mut p = Priced::ZERO;
+    p.price = sentinel_price();
+    p.greeks.delta = x;
+    p.greeks.gamma = x;
+    p.greeks.vega = x;
+    p.greeks.theta = x;
+    p.greeks.rho = x;
+    p
 }
 
 fn option(expiry: Years, leg: &StripLeg) -> EuropeanOption {

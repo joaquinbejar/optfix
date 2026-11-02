@@ -1,6 +1,9 @@
 //! Milestone 12 (`docs/PLAN.md` section 8): Black-76. `price_black76` and
 //! `price_and_greeks_black76` equal `price` and `price_and_greeks` with `S = F` and `q = r`,
-//! bit for bit, results and errors, over the supported domain (so the 0.1 envelopes apply), and
+//! bit for bit, results and errors, over the supported domain (so the 0.1 envelopes apply),
+//! except rho (milestone 19 of `docs/PLAN-improvements.md`), which holds `F` fixed: exactly
+//! `−(T × price)` rounded as documented, and within the rho envelope of the exact `−T × price`;
+//! and
 //! the price agrees with OptionStratLib 0.23's `black_76` within the oracle's price tolerance,
 //! `10^-9 × max(F, K)` (PLAN question 1). `OPTFIX_PROPTEST_CASES` and `OPTFIX_ORACLE_SAMPLES`
 //! override the default counts (100,000 and 20,000).
@@ -21,10 +24,11 @@
 mod common;
 
 use common::oracle::{d2f, oracle_sample, ORACLE_PRICE_REL};
-use common::{bsm_inputs, bsm_sample, ratio, to_ref, Rng};
+use common::{bsm_inputs, bsm_ref, bsm_sample, mul, ratio, to_ref, Rng};
 use optfix::{
     price, price_and_greeks, price_and_greeks_black76, price_black76, EuropeanOption, Fixed,
-    FuturesInputs, MarketInputs, OptionKind, Rate, Spot, Strike, Volatility, Years,
+    FuturesInputs, MarketInputs, OptionKind, Rate, Spot, Strike, Volatility, Years, RHO_ERR_ABS,
+    RHO_ERR_REL,
 };
 use optionstratlib::model::{ExpirationDate, Positive};
 use optionstratlib::{OptionStyle, OptionType, Options, Side};
@@ -59,10 +63,39 @@ fn test_black76_is_bsm_with_carry_equal_to_rate() {
         let bsm = MarketInputs { carry: m.rate, ..m };
         assert_eq!(f.as_market(), bsm);
         assert_eq!(price_black76(&o, &f), price(&o, &bsm), "{o:?} {f:?}");
+        let (b76, same) = (price_and_greeks_black76(&o, &f), price_and_greeks(&o, &bsm));
+        let (Ok(b76), Ok(same)) = (b76, same) else {
+            assert_eq!(b76, same, "{o:?} {f:?}");
+            continue;
+        };
+        let mut without_rho = b76;
+        without_rho.greeks.rho = same.greeks.rho;
+        assert_eq!(without_rho, same, "{o:?} {f:?}");
+        let t = o.expiry.get();
         assert_eq!(
-            price_and_greeks_black76(&o, &f),
-            price_and_greeks(&o, &bsm),
+            b76.greeks.rho,
+            t.mul_down(b76.price.get()).unwrap().checked_neg().unwrap(),
             "{o:?} {f:?}"
+        );
+        // Against the exact −T × price (q = r).
+        let rf = bsm_ref(
+            o.kind == OptionKind::Call,
+            &to_ref(p.0),
+            &to_ref(strike.get().raw()),
+            &to_ref(t.raw()),
+            &to_ref(p.3),
+            &to_ref(p.4),
+            &to_ref(p.4),
+        );
+        let want = -mul(&to_ref(t.raw()), &rf.price);
+        let err = (to_ref(b76.greeks.rho.raw()) - &want).magnitude().clone();
+        let allowed = mul(
+            &to_ref(RHO_ERR_REL.raw()),
+            &mul(&to_ref(t.raw()), &to_ref(p.0.max(strike.get().raw()))),
+        ) + to_ref(RHO_ERR_ABS.raw());
+        assert!(
+            num_bigint::BigInt::from(err) <= allowed,
+            "Black-76 rho beyond its envelope: {o:?} {f:?}"
         );
     }
 }

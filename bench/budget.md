@@ -21,27 +21,27 @@ multiple of 100 above, in the same diff; a cheaper row is tightened the same way
 | `NormPdf` | 610 | 630 |
 | `MulShr` | 340 | 350 |
 | `Price` | 9700 | 10100 |
-| `PriceAndGreeks` | 15000 | 15400 |
-| `Baseline (price, then each greek)` | 41300 | 42700 |
+| `PriceAndGreeks` | 15300 | 15700 |
+| `Baseline (price, then each greek)` | 48900 | 50600 |
 | `Price, near the money` | 11700 | 12100 |
-| `PriceBlack76` | 9800 | 10000 |
-| `PriceAndGreeksBlack76` | 15000 | 15300 |
+| `PriceBlack76` | 9800 | 10100 |
+| `PriceAndGreeksBlack76` | 15600 | 16000 |
 | `CashOrNothing` | 7700 | 8000 |
 | `AssetOrNothing` | 7300 | 7600 |
-| `PriceAndGreeks, near the money` | 16900 | 17400 |
+| `PriceAndGreeks, near the money` | 17200 | 17700 |
 | `ImpliedVol` | 28500 | 36500 |
 | `ImpliedVol, all iterations` | 36200 | 44300 |
 | `ImpliedVol, near the money` | 34400 | 44100 |
 | `ImpliedVol, all iterations, near the money` | 44000 | 45000 |
 | `PriceStrip, 1 leg` | 10000 | 10300 |
-| `PriceStrip, 2 legs` | 15200 | 15600 |
-| `PriceStrip, 8 legs` | 45500 | 50000 |
-| `PriceStrip, 16 legs` | 85000 | 92400 |
-| `PriceAndGreeksStrip, 1 leg` | 15400 | 15800 |
-| `PriceAndGreeksStrip, 2 legs` | 26000 | 26600 |
-| `PriceAndGreeksStrip, 8 legs` | 88100 | 93400 |
-| `PriceAndGreeksStrip, 16 legs` | 171200 | 179300 |
+| `PriceStrip, 2 legs` | 15200 | 15700 |
+| `PriceStrip, 8 legs` | 45500 | 50100 |
+| `PriceStrip, 16 legs` | 85100 | 92500 |
+| `PriceAndGreeksStrip, 1 leg` | 15700 | 16100 |
+| `PriceAndGreeksStrip, 2 legs` | 26600 | 27200 |
+| `PriceAndGreeksStrip, 8 legs` | 90500 | 95800 |
+| `PriceAndGreeksStrip, 16 legs` | 176100 | 184300 |
 | `Digest, 1 leg` | 160 | 160 |
-| `Digest, 2 legs` | 290 | 290 |
-| `Digest, 8 legs` | 1100 | 1100 |
-| `Digest, 16 legs` | 2100 | 2100 |
+| `Digest, 2 legs` | 300 | 300 |
+| `Digest, 8 legs` | 1200 | 1200 |
+| `Digest, 16 legs` | 2200 | 2200 |

@@ -346,12 +346,13 @@ mod tests {
 
     #[test]
     fn test_small_committed_limits_follow_the_rule() {
-        // The 0.2.1 measurements (docs/benchmarks.md): the small rows were tightened to them.
+        // The measurements in docs/benchmarks.md: the small rows were tightened to them at 0.2.1,
+        // and `PriceAndGreeks` re-agreed with rho at 0.3.0 (docs/PLAN-improvements.md, M19).
         for (name, median, max) in [
             ("MulShr", 317, 333),
             ("Exp", 315, 336),
             ("DivDown", 545, 643),
-            ("PriceAndGreeks", 14_203, 14_597),
+            ("PriceAndGreeks", 14_497, 14_897),
         ] {
             let (limits, _) = parse(BUDGET);
             let l = limits[name];

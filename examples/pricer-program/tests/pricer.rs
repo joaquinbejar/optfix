@@ -111,6 +111,7 @@ fn expected(kind: u8, v: [Fixed; 6]) -> Result<Vec<u8>, PricingError> {
         p.greeks.gamma,
         p.greeks.vega,
         p.greeks.theta,
+        p.greeks.rho,
         e,
     ] {
         out.extend_from_slice(&x.to_bytes().0);

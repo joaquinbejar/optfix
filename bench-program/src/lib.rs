@@ -18,7 +18,7 @@
 
 use bytemuck::Pod;
 use optfix::{
-    EuropeanOption, Fixed, FixedBytes, Greeks, IvInputs, MarketInputs, OptionKind, Price, Priced,
+    EuropeanOption, Fixed, FixedBytes, IvInputs, MarketInputs, OptionKind, Price, Priced,
     PricingError, Rate, Rounding, Spot, Strike, Volatility, Years,
 };
 use pinocchio::cpi::set_return_data;
@@ -147,10 +147,10 @@ impl From<BenchError> for ProgramError {
     }
 }
 
-/// Length of the return data of `PriceAndGreeks` and `Baseline`: status byte and five values.
-pub const PRICED_LEN: usize = 81;
+/// Length of the return data of `PriceAndGreeks` and `Baseline`: status byte and six values.
+pub const PRICED_LEN: usize = 97;
 
-/// Encodes a priced result: status byte, then price, delta, gamma, vega, theta.
+/// Encodes a priced result: status byte, then price, delta, gamma, vega, theta, rho.
 #[must_use]
 pub fn encode_priced(result: Result<Priced, PricingError>) -> [u8; PRICED_LEN] {
     let mut out = [0u8; PRICED_LEN];
@@ -163,9 +163,10 @@ pub fn encode_priced(result: Result<Priced, PricingError>) -> [u8; PRICED_LEN] {
                 p.greeks.gamma,
                 p.greeks.vega,
                 p.greeks.theta,
+                p.greeks.rho,
             ],
         ),
-        Err(e) => (error_status(e), [Fixed::ZERO; 5]),
+        Err(e) => (error_status(e), [Fixed::ZERO; 6]),
     };
     let (head, mut tail) = out.split_at_mut(1);
     head.copy_from_slice(&[status]);
@@ -321,18 +322,17 @@ fn mul_shr(args: &[u8]) -> Result<Result<Fixed, PricingError>, BenchError> {
         .map(|v| Fixed::from_raw(i128::from_le_bytes(v.to_le_bytes()))))
 }
 
+/// `price` with zero greeks (`Priced` is `#[non_exhaustive]`, so no struct literal here).
+#[inline(always)]
+fn priced_with(price: Price) -> Priced {
+    let mut p = Priced::ZERO;
+    p.price = price;
+    p
+}
+
 /// `optfix::price` in the shape of `price_and_greeks` (greeks zero).
 fn price_only(opt: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingError> {
-    let zero = Fixed::ZERO;
-    Ok(Priced {
-        price: optfix::price(opt, m)?,
-        greeks: Greeks {
-            delta: zero,
-            gamma: zero,
-            vega: zero,
-            theta: zero,
-        },
-    })
+    Ok(priced_with(optfix::price(opt, m)?))
 }
 
 /// Decodes `[kind, S, K, T, σ, r, q]` and runs `f`; an argument outside its newtype's range is
@@ -369,10 +369,7 @@ fn bsm(
 
 /// `price_asset_or_nothing` with zero greeks, so it shares [`bsm`]'s decoding.
 fn asset_or_nothing_only(opt: &EuropeanOption, m: &MarketInputs) -> Result<Priced, PricingError> {
-    Ok(Priced {
-        price: optfix::price_asset_or_nothing(opt, m)?,
-        greeks: EMPTY_PRICED.greeks,
-    })
+    Ok(priced_with(optfix::price_asset_or_nothing(opt, m)?))
 }
 
 /// Decodes `[kind, S, K, T, σ, r, q, payout]` and runs `price_cash_or_nothing`; an argument
@@ -388,10 +385,7 @@ fn cash_or_nothing(args: &[u8]) -> Result<Result<Fixed, PricingError>, BenchErro
         Err(e) => return Ok(Err(e)),
     };
     Ok(bsm(head, |opt, m| {
-        Ok(Priced {
-            price: optfix::price_cash_or_nothing(opt, m, pay)?,
-            greeks: EMPTY_PRICED.greeks,
-        })
+        Ok(priced_with(optfix::price_cash_or_nothing(opt, m, pay)?))
     })?
     .map(|p| p.price.get()))
 }
@@ -401,10 +395,7 @@ fn black76_price_only(
     opt: &EuropeanOption,
     m: &optfix::FuturesInputs,
 ) -> Result<Priced, PricingError> {
-    Ok(Priced {
-        price: optfix::price_black76(opt, m)?,
-        greeks: EMPTY_PRICED.greeks,
-    })
+    Ok(priced_with(optfix::price_black76(opt, m)?))
 }
 
 /// Decodes `[kind, F, K, T, σ, r]` and runs `f` (a Black-76 function); an argument outside its
@@ -488,6 +479,7 @@ pub fn digest<'a>(values: impl Iterator<Item = &'a Priced>) -> [u8; 32] {
             p.greeks.gamma,
             p.greeks.vega,
             p.greeks.theta,
+            p.greeks.rho,
         ] {
             let x = v.raw().to_le_bytes();
             let (lo_bytes, hi_bytes) = x.split_at(8);
@@ -552,15 +544,7 @@ const EMPTY_LEG: optfix::StripLeg = optfix::StripLeg {
     strike: Strike::MIN,
 };
 
-const EMPTY_PRICED: Priced = Priced {
-    price: Price::MIN,
-    greeks: Greeks {
-        delta: Fixed::ZERO,
-        gamma: Fixed::ZERO,
-        vega: Fixed::ZERO,
-        theta: Fixed::ZERO,
-    },
-};
+const EMPTY_PRICED: Priced = Priced::ZERO;
 
 #[inline(never)]
 fn price_strip(args: &[u8]) -> ProgramResult {

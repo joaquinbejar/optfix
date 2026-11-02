@@ -330,7 +330,7 @@ the CI time stays under the threshold.
 (Built.) `examples/pricer-program` (`optfix-example-pricer`, a workspace member, `publish =
 false`): one instruction, data a kind byte and six `FixedBytes` read through
 `bytemuck::try_cast_slice` (alignment 1), return data the price, the four greeks and
-`price_error_bound` (96 bytes); malformed data fails with `InvalidInstructionData`, an optfix
+`price_error_bound` (96 bytes; 112 with rho from milestone 19); malformed data fails with `InvalidInstructionData`, an optfix
 error with `Custom(6000 + e as u8)`. `make program` now builds it for SBF with the same stack
 check as the bench program (so `checks`, `test` and `budget-control` build it), and its LiteSVM
 test (`tests/pricer.rs`) checks five inputs across the domain against the host bit for bit,
@@ -353,6 +353,42 @@ prices, 9,770 with greeks).
 *Done when* the example builds and its test passes in CI.
 
 ## Milestone 19: the 0.3 API
+
+(Built.) What landed:
+
+- Rho is `Greeks::rho`. It reuses theta's `K Dr N(±d2)` product, so theta stays
+  bit-identical, and `T = 0` gives 0. Black-76 overrides it with `−(T ⊗ price)`.
+- The envelope is `RHO_ERR_REL × T × max(S, K) + RHO_ERR_ABS`, at `2^-44` and 2,048 ulps. The
+  relative part covers `Dr` up to `e^3` times delta's `N` error, and Black-76's `T ×` the
+  price envelope. The absolute part covers `T <= 30` times the price envelope's 64 ulps.
+- Measured errors:
+  - `4.6 × 10^-18` over 1,000,000 points (`docs/precision.md`);
+  - worst ratio 0.014 on the regenerated mpmath fixture (a rho column; the first 12 columns are
+    byte-identical);
+  - 0 violations from the independent `check_mpmath.py`.
+- Black-76 rho is checked against the exact `−T × price` on 100,000 points (`black76.rs`).
+- Every non-rho output is unchanged: the frozen 0.1 fixture, `bsm_q0.txt` and every other row
+  of `docs/precision.md` still match. Conformance generation 1 replays with rho dropped, the
+  agreed change in `conformance/tests/replay.rs`.
+- Generation 2 has six values per priced result plus `from_bps`. Its wasm `Priced` gains a
+  `rho` getter, and `fromBps` is exported.
+- `Greeks` and `Priced` are `#[non_exhaustive]`, with `Greeks::ZERO` and `Priced::ZERO`.
+  Callers outside the crate assign fields; even functional update syntax is refused for a
+  non-exhaustive struct. The bench program, `bench/`, conformance, `optfix-wasm` and the strip
+  tests are moved over.
+- `Fixed::from_bps`, `Rate::from_bps` and `Volatility::from_bps` are added.
+- CU (net medians):
+  - `PriceAndGreeks` 14,203 to 14,497 (+2.1%) and `PriceAndGreeksBlack76` 14,224 to 14,847.
+    Both now return 16 more bytes.
+  - `Baseline` 39,292 to 46,500, because its fifth separate greek recomputes `d1`.
+  - The greeks strips grow by about 290 CU per leg, so the README's projected legs with greeks
+    at 1,400,000 CU go from 134 to 130 (18 at 200,000 is unchanged).
+  - The budget is re-agreed for every dearer row. `Noop` keeps 200, and price-only rows move by
+    under 0.1%.
+- The example program returns rho too (112 bytes).
+- Downstream: varswap does not use `Greeks`, and metalbook only reads `priced.greeks.*` (no
+  literal and no exhaustive pattern), so both pinned commits build as they are and
+  `ci/downstream.env` is unchanged.
 
 All breaking changes of the cycle land here, and the workspace version becomes 0.3.0 in this
 PR.

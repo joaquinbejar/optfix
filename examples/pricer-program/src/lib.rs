@@ -5,7 +5,7 @@
 //! Instruction data ([`DATA_LEN`] bytes): a kind byte (`0` call, `1` put), then `S`, `K`, `T`
 //! (years), `σ`, `r` and `q`, each a [`FixedBytes`] (a Q64.64 value, 16 bytes little endian).
 //!
-//! Return data ([`RETURN_LEN`] bytes): price, delta, gamma, vega, theta and the price envelope
+//! Return data ([`RETURN_LEN`] bytes): price, delta, gamma, vega, theta, rho and the price envelope
 //! [`optfix::price_error_bound`], each a `FixedBytes`. A protocol that charges or pays this
 //! price widens it by the envelope toward itself: the price is within the envelope of the exact
 //! Black-Scholes-Merton value, rounding in either direction.
@@ -36,8 +36,8 @@ mod entry {
 /// Instruction data length: a kind byte and six 16-byte values.
 pub const DATA_LEN: usize = 1 + 6 * 16;
 
-/// Return data length: six 16-byte values.
-pub const RETURN_LEN: usize = 6 * 16;
+/// Return data length: seven 16-byte values.
+pub const RETURN_LEN: usize = 7 * 16;
 
 /// `Custom` program error of an optfix `PricingError` `e`: this plus `e as u8`.
 pub const OPTFIX_ERROR_BASE: u32 = 6_000;
@@ -100,12 +100,13 @@ pub fn price(opt: &EuropeanOption, m: &MarketInputs) -> Result<[u8; RETURN_LEN],
     let p = optfix::price_and_greeks(opt, m).map_err(optfix_error)?;
     let envelope = optfix::price_error_bound(opt, m).map_err(optfix_error)?;
     let mut out = [0u8; RETURN_LEN];
-    let values: [Fixed; 6] = [
+    let values: [Fixed; 7] = [
         p.price.get(),
         p.greeks.delta,
         p.greeks.gamma,
         p.greeks.vega,
         p.greeks.theta,
+        p.greeks.rho,
         envelope,
     ];
     for (chunk, v) in out.as_chunks_mut::<16>().0.iter_mut().zip(values) {

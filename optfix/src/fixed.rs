@@ -42,6 +42,9 @@ pub enum Rounding {
 #[repr(transparent)]
 pub struct Fixed(i128);
 
+/// Basis points in one unit, for [`Fixed::from_bps`].
+const BPS_PER_UNIT: i128 = 10_000;
+
 impl Fixed {
     /// `0`.
     pub const ZERO: Self = Self(0);
@@ -84,6 +87,19 @@ impl Fixed {
     pub fn from_ratio(num: i128, den: i128, r: Rounding) -> Result<Self, PricingError> {
         // num / den = (num × 2^64 / den) / 2^64.
         scaled_quotient(num, den, r)
+    }
+
+    /// `bps / 10_000`, rounded in direction `r`: a rate or volatility quoted in basis points
+    /// (`25` is `0.0025`). One basis point is not a binary fraction, so the direction is
+    /// explicit.
+    ///
+    /// # Errors
+    ///
+    /// None for any `i64` (`|bps| / 10^4 < 2^50` fits); the `Result` matches
+    /// [`Fixed::from_ratio`], which it calls.
+    #[must_use = "the result carries a possible error"]
+    pub fn from_bps(bps: i64, r: Rounding) -> Result<Self, PricingError> {
+        Self::from_ratio(i128::from(bps), BPS_PER_UNIT, r)
     }
 
     /// `amount / 10^decimals`, rounded in direction `r`: converts an amount in a token's

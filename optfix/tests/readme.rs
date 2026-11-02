@@ -22,7 +22,7 @@ use optfix::{
     BINARY_ERR_ABS, BINARY_ERR_REL, DELTA_ERR, EXP_MAX_ERROR_ULPS, GAMMA_ERR_REL, GREEK_ERR_ABS,
     IV_ERR_PRICE_FACTOR, IV_ERR_REL, IV_MAX_ITERATIONS, IV_VEGA_MIN_FACTOR, LN_MAX_ERROR_ULPS,
     NORM_CDF_MAX_ERROR_ULPS, NORM_CDF_TAIL_REL_ERROR, NORM_PDF_MAX_ERROR_ULPS, PRICE_ERR_ABS,
-    PRICE_ERR_REL, THETA_ERR_REL, VEGA_ERR_REL,
+    PRICE_ERR_REL, RHO_ERR_ABS, RHO_ERR_REL, THETA_ERR_REL, VEGA_ERR_REL,
 };
 
 const README: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../README.md");
@@ -112,7 +112,8 @@ fn errors_table() -> String {
          | delta | {} |\n\
          | gamma | {} × `Dq / (S σ√T)` + {} ulps |\n\
          | vega | {} × `S Dq √T` + {} ulps |\n\
-         | theta | {} × `(S Dq σ / √T + abs(r) K Dr + abs(q) S Dq)` + {} ulps |",
+         | theta | {} × `(S Dq σ / √T + abs(r) K Dr + abs(q) S Dq)` + {} ulps |\n\
+         | rho | {} × `T max(S, K)` + {} ulps |",
         pow2(PRICE_ERR_REL),
         PRICE_ERR_ABS.raw(),
         pow2(DELTA_ERR),
@@ -121,12 +122,14 @@ fn errors_table() -> String {
         pow2(VEGA_ERR_REL),
         GREEK_ERR_ABS.raw(),
         pow2(THETA_ERR_REL),
-        GREEK_ERR_ABS.raw()
+        GREEK_ERR_ABS.raw(),
+        pow2(RHO_ERR_REL),
+        RHO_ERR_ABS.raw()
     )
     .unwrap();
     writeln!(
         s,
-        "| `price_black76`, `price_and_greeks_black76` | as `price` and `price_and_greeks`, with `F` for `S` |\n\
+        "| `price_black76`, `price_and_greeks_black76` | as `price` and `price_and_greeks`, with `F` for `S`; Black-76 rho is `−T × price`, within the rho envelope |\n\
          | `price_cash_or_nothing` | {} × `payout` + {} ulps |\n\
          | `price_asset_or_nothing` | {} × `S` + {} ulps |",
         pow2(BINARY_ERR_REL),

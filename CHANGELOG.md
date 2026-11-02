@@ -4,6 +4,29 @@ All notable changes to `optfix` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the crate follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Toward 0.3.0 (`docs/PLAN-improvements.md`); the workspace version is 0.3.0.
+
+### Changed (breaking)
+
+- `Greeks` gains `rho` (`dV/dr` per 1.00 of the rate): `K T Dr N(d2)` for a call and
+  `−K T Dr N(−d2)` for a put; `price_and_greeks_black76` holds `F` fixed, so its rho is
+  `−T × price`. Every other output is bit-identical to 0.2 (the frozen 0.1 fixture, the q = 0
+  fixture and conformance generation 1 still match). Within `RHO_ERR_REL × T × max(S, K) +
+  RHO_ERR_ABS` (`2^-44`, 2,048 ulps; measured `4.6 × 10^-18` over 1,000,000 points).
+- `Greeks` and `Priced` are `#[non_exhaustive]`, so later fields are not breaking. Outside the
+  crate they are no longer built with struct literals: start from `Greeks::ZERO` or
+  `Priced::ZERO` (new) and assign fields, for example to fill the `out` slice of
+  `price_and_greeks_strip`. Reading fields is unchanged.
+
+### Added
+
+- `Fixed::from_bps`, `Rate::from_bps` and `Volatility::from_bps`: basis points with an explicit
+  rounding (one basis point is not a binary fraction).
+- Conformance generation 2 (rho in every priced result, `from_bps`); generation 1 stays
+  committed and replays with rho dropped.
+
 ## [0.2.1] - 2026-11-01
 
 ### Fixed

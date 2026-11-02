@@ -183,6 +183,25 @@ fn main() {
 
     // Kernels, decimal text and Years::from_seconds from a seeded sampler plus edges.
     let mut g = Rng(0x0C0F_0A11_0000_0017);
+    // Generation 2 (milestone 19): `from_bps` draws from its own stream, so the cases above
+    // keep generation 1's inputs. Quoted rates and volatilities, then any `i64`.
+    let mut bps = Rng(0x0C0F_0A11_0000_0B05);
+    for b in [
+        0,
+        1,
+        -1,
+        25,
+        50,
+        -1_000,
+        5_000,
+        10_000,
+        50_000,
+        i64::MAX,
+        i64::MIN,
+    ] {
+        push("from_bps", vec![s(b), s("down")]);
+        push("from_bps", vec![s(b), s("up")]);
+    }
     let edges: [i128; 9] = [
         0,
         1,
@@ -230,6 +249,12 @@ fn main() {
         push("from_decimal_str", vec![cut, s(r)]);
         let secs = (g.next() % 946_080_062) as i64 - 1;
         push("years_from_seconds", vec![s(secs), s(r)]);
+        let quoted = (bps.next() % 60_001) as i64 - 10_000;
+        let any = bps.next() as i64 >> (bps.next() % 64);
+        push(
+            "from_bps",
+            vec![s(if i % 2 == 0 { quoted } else { any }), s(r)],
+        );
         push(
             "mul_shr",
             vec![
