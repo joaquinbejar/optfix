@@ -154,6 +154,10 @@ targets, `make fuzz-smoke`, the required `fuzz-smoke` job and `.github/workflows
   `0xBEEF` by 3), kept as a regular entry. Locally, `mul_up` patched to round down on that
   pattern fails `make fuzz-smoke` on that entry during the corpus replay, before libFuzzer's
   `INITED`; unpatched, every target passes.
+- CI failing control: scratch PR #33 (the planted `mul_up` bug, closed unmerged) fails
+  `fuzz-smoke` in run 41423633103: `scaled` reaches `INITED`, then `arith` panics on
+  `mul_up(92233720368547806959, 3)` while loading its seed corpus (150 files), before its
+  `INITED`.
 - 30-minute local runs (Apple M-series, all five in parallel, nightly-2026-10-11): no
   failure; runs and final coverage `scaled` 128,178,716 (735), `arith` 187,191,548 (973),
   `wide` 209,139,220 (487), `pricing` 8,554,611 (964), `iv` 147,710,779 (410). `pricing` is
