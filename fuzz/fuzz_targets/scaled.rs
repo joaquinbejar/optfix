@@ -16,14 +16,25 @@ fuzz_target!(|data: &[u8]| {
         // from_scaled: value / 10^decimals.
         let got = Fixed::from_scaled(value, decimals, r);
         if decimals > 38 {
-            assert_eq!(got, Err(PricingError::DomainError), "from_scaled({value}, {decimals})");
+            assert_eq!(
+                got,
+                Err(PricingError::DomainError),
+                "from_scaled({value}, {decimals})"
+            );
         } else {
-            let (lo, hi) = floor_ceil(&(BigInt::from(value) * &one), &BigInt::from(10).pow(u32::from(decimals)));
+            let (lo, hi) = floor_ceil(
+                &(BigInt::from(value) * &one),
+                &BigInt::from(10).pow(u32::from(decimals)),
+            );
             let want = fits_i128(if up { &hi } else { &lo });
             match (got, want) {
-                (Ok(x), Some(w)) => assert_eq!(x.raw(), w, "from_scaled({value}, {decimals}, {r:?})"),
+                (Ok(x), Some(w)) => {
+                    assert_eq!(x.raw(), w, "from_scaled({value}, {decimals}, {r:?})")
+                }
                 (Err(PricingError::Overflow), None) => {}
-                (got, want) => panic!("from_scaled({value}, {decimals}, {r:?}) = {got:?}, want {want:?}"),
+                (got, want) => {
+                    panic!("from_scaled({value}, {decimals}, {r:?}) = {got:?}, want {want:?}")
+                }
             }
         }
         // to_scaled: raw × 10^decimals / 2^64.
@@ -32,7 +43,10 @@ fuzz_target!(|data: &[u8]| {
             // The factor 10^(decimals − 38) does not fit an i128.
             None
         } else {
-            let (lo, hi) = floor_ceil(&(BigInt::from(value) * BigInt::from(10).pow(u32::from(decimals))), &one);
+            let (lo, hi) = floor_ceil(
+                &(BigInt::from(value) * BigInt::from(10).pow(u32::from(decimals))),
+                &one,
+            );
             fits_i128(if up { &hi } else { &lo })
         };
         match (got, want) {

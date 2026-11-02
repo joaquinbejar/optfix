@@ -40,12 +40,28 @@ fuzz_target!(|data: &[u8]| {
             let q = (b != 0).then(|| {
                 let (n, d) = (BigInt::from(a) * &one, BigInt::from(b));
                 // floor_ceil wants d > 0: move the sign to the numerator.
-                if b < 0 { floor_ceil(&-n, &-d) } else { floor_ceil(&n, &d) }
+                if b < 0 {
+                    floor_ceil(&-n, &-d)
+                } else {
+                    floor_ceil(&n, &d)
+                }
             });
             check("div_down", a, b, x.div_down(y), q.as_ref().map(|q| &q.0));
             check("div_up", a, b, x.div_up(y), q.as_ref().map(|q| &q.1));
-            check("from_ratio_down", a, b, Fixed::from_ratio(a, b, Rounding::Down), q.as_ref().map(|q| &q.0));
-            check("from_ratio_up", a, b, Fixed::from_ratio(a, b, Rounding::Up), q.as_ref().map(|q| &q.1));
+            check(
+                "from_ratio_down",
+                a,
+                b,
+                Fixed::from_ratio(a, b, Rounding::Down),
+                q.as_ref().map(|q| &q.0),
+            );
+            check(
+                "from_ratio_up",
+                a,
+                b,
+                Fixed::from_ratio(a, b, Rounding::Up),
+                q.as_ref().map(|q| &q.1),
+            );
         }
         2 => {
             let (down, up) = (x.sqrt_down(), x.sqrt_up());
@@ -58,15 +74,27 @@ fuzz_target!(|data: &[u8]| {
             let sq = |v: i128| BigInt::from(v) * BigInt::from(v);
             let s = down.expect("sqrt_down of a non-negative value").raw();
             let t = up.expect("sqrt_up of a non-negative value").raw();
-            assert!(sq(s) <= m && m < sq(s + 1), "sqrt_down({a}) = {s}, not the floor");
-            assert!((t == 0 || sq(t - 1) < m) && m <= sq(t), "sqrt_up({a}) = {t}, not the ceiling");
+            assert!(
+                sq(s) <= m && m < sq(s + 1),
+                "sqrt_down({a}) = {s}, not the floor"
+            );
+            assert!(
+                (t == 0 || sq(t - 1) < m) && m <= sq(t),
+                "sqrt_up({a}) = {t}, not the ceiling"
+            );
         }
         _ => {
             let sum = BigInt::from(a) + BigInt::from(b);
             let diff = BigInt::from(a) - BigInt::from(b);
             check("checked_add", a, b, x.checked_add(y), Some(&sum));
             check("checked_sub", a, b, x.checked_sub(y), Some(&diff));
-            check("checked_neg", a, 0, x.checked_neg(), Some(&-BigInt::from(a)));
+            check(
+                "checked_neg",
+                a,
+                0,
+                x.checked_neg(),
+                Some(&-BigInt::from(a)),
+            );
         }
     }
 });

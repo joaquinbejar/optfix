@@ -227,6 +227,36 @@ pub fn binary_identity(
     Ok(())
 }
 
+/// Whether `target` has no representable time value: it is within [`bound_slack`] of an
+/// arbitrage bound of `implied_vol` (`max(0, S Dq − K Dr)` below, `S Dq` for a call or `K Dr`
+/// for a put above), evaluated exactly. Independent of optfix's own discounting, whose
+/// rounding the slack covers: `implied_vol` returns `ArbitrageBound` exactly when its
+/// out-of-the-money value is at or past a bound in its own arithmetic.
+pub fn no_time_value(opt: &EuropeanOption, m: &MarketInputs, target: Price) -> bool {
+    let (dr, dq) = discounts(opt, m);
+    let (s, k) = (m.spot.get(), opt.strike.get());
+    let sdq = wmul(&w(s.raw()), &dq);
+    let kdr = wmul(&w(k.raw()), &dr);
+    let zero = BigInt::from(0);
+    let (lo, hi) = match opt.kind {
+        OptionKind::Call => ((&sdq - &kdr).max(zero), sdq),
+        OptionKind::Put => ((&kdr - &sdq).max(zero), kdr),
+    };
+    let t = w(target.get().raw());
+    let slack = bound_slack(s, k);
+    t <= lo + &slack || t >= hi - &slack
+}
+
+/// What optfix's discounted bounds may differ from the exact ones by, in units of `2^-128`:
+/// `S Dq` and `K Dr` each carry `exp`'s [`optfix::EXP_MAX_ERROR_ULPS`] and the rounding of `qT`
+/// or `rT`, both relative to a discount factor of at most `e^3 < 21` (`r, q >= −0.1`, `T <=
+/// 30`), so `(3 + 1) × 21 = 84` ulps of each notional, rounded up to 96, plus 8 raw units for
+/// the products. Measured: 1,232,192 raw units on a deep in-the-money put with `K ≈ 35,604`
+/// and `Dr ≈ e^2.87`, about 33 ulps of `S + K`. Far below the price envelope's `2^-48`.
+fn bound_slack(s: Fixed, k: Fixed) -> BigInt {
+    (BigInt::from(s.raw()) + BigInt::from(k.raw())) * 96 + w(8)
+}
+
 /// `IV_ERR_PRICE_FACTOR × E / vega + IV_ERR_REL × σ`.
 pub fn envelope(e: Fixed, vega: Fixed, sigma: Fixed) -> f64 {
     f(IV_ERR_PRICE_FACTOR) * f(e) / f(vega) + f(IV_ERR_REL) * f(sigma)
@@ -299,7 +329,10 @@ pub fn iv_round_trip(
     let sigma = m.vol.get();
     match got {
         Err(PricingError::ArbitrageBound) => {
-            // The out-of-the-money value rounded to zero: the target is a bound.
+            // The out-of-the-money value rounded to zero: the target must be a bound.
+            if !no_time_value(opt, m, priced.price) {
+                return Err("ArbitrageBound at a target with time value".into());
+            }
             if cond == Some(true) {
                 return Err("ArbitrageBound at a well-conditioned point".into());
             }
@@ -347,11 +380,18 @@ pub fn iv_round_trip(
             })
         }
         Err(PricingError::DomainError) => {
-            // Only a root beyond a range end by more than its envelope; S/K and T were valid.
+            // Only a root beyond a range end by more than its envelope; S/K and T were valid,
+            // and a target without time value is `ArbitrageBound`, never this. Zero vega
+            // gives no finite envelope, so it is no evidence for a range end.
             let env = envelope(e, vega, sigma);
-            let near_end = f(sigma) - env < f(Volatility::MIN.get())
-                || f(sigma) + env > f(Volatility::MAX.get());
-            if near_end && moneyness_ok(m.spot.get(), opt.strike.get()) {
+            let near_end = env.is_finite()
+                && (f(sigma) - env < f(Volatility::MIN.get())
+                    || f(sigma) + env > f(Volatility::MAX.get()));
+            if near_end
+                && vega > Fixed::ZERO
+                && !no_time_value(opt, m, priced.price)
+                && moneyness_ok(m.spot.get(), opt.strike.get())
+            {
                 Ok(IvOutcome::Domain)
             } else {
                 Err(format!(

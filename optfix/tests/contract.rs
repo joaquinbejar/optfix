@@ -34,23 +34,57 @@ fn cases() -> usize {
         .unwrap_or(20_000)
 }
 
-/// `exp_w` (units of `2^-128`) within `2^-100` relative of `exp_ref` (`2^-P`) over `[−16, 16]`.
+/// `exp_w` (units of `2^-128`) within `2^-100` relative of `exp_ref` (`2^-P`) over `[−16, 16]`:
+/// both ends, zero, and 2,000 uniform points.
 #[test]
 fn test_exp_w_matches_the_reference() {
     let mut g = Rng(21);
-    for i in 0..2_000 {
-        let x = if i == 0 {
-            BigInt::from(0)
-        } else {
-            // A uniform value in [−16, 16] at 128 fractional bits.
-            let u = (BigInt::from(g.next()) << 64 | BigInt::from(g.next())) << 4;
-            u - (BigInt::from(16) << 128)
-        };
+    let sixteen: BigInt = BigInt::from(16) << 128;
+    let mut xs = vec![BigInt::from(0), sixteen.clone(), -sixteen.clone()];
+    for _ in 0..2_000 {
+        // A uniform value in [0, 32) at 128 fractional bits, then shifted to [−16, 16).
+        let u: BigInt = (BigInt::from(g.next()) << 64 | BigInt::from(g.next())) << 5;
+        xs.push(u - &sixteen);
+    }
+    let (mut below, mut above) = (false, false);
+    for x in xs {
+        below |= x < BigInt::from(0);
+        above |= x > BigInt::from(0);
         let got = exp_w(&x);
         let want = exp_ref(&(x.clone() << (P - 128))) >> (P - 128);
         let err = (&got - &want).magnitude().clone();
         let bound = want.magnitude() >> 100u32;
         assert!(err <= bound + 1u32, "exp_w({x}) = {got}, reference {want}");
+    }
+    assert!(below && above, "the sample covers both signs");
+}
+
+/// Codex's probes on #32: an `ArbitrageBound` where the target has time value, and a
+/// `DomainError` where it has none (vega zero, so no finite envelope), must both be rejected.
+#[test]
+fn test_round_trip_contract_rejects_misclassified_errors() {
+    let one = 1i128 << 64;
+    for (t, wrong) in [
+        (one, optfix::PricingError::ArbitrageBound),
+        (one / 100, optfix::PricingError::DomainError),
+    ] {
+        let (o, m) = bsm_inputs((1i128 << 45, 3i128 << 45, t, one / 5, 0, 0, true));
+        let p = optfix::price_and_greeks(&o, &m).unwrap();
+        let im = optfix::IvInputs {
+            spot: m.spot,
+            rate: m.rate,
+            carry: m.carry,
+        };
+        let actual = optfix::implied_vol(&o, &im, p.price);
+        assert_ne!(actual, Err(wrong));
+        assert!(
+            common::contract::iv_round_trip(&o, &m, &p, actual).is_ok(),
+            "the actual result {actual:?} is accepted"
+        );
+        assert!(
+            common::contract::iv_round_trip(&o, &m, &p, Err(wrong)).is_err(),
+            "{wrong:?} accepted at T = {t}"
+        );
     }
 }
 

@@ -10,8 +10,8 @@ use libfuzzer_sys::fuzz_target;
 use optfix::{
     price, price_and_greeks, price_and_greeks_black76, price_and_greeks_strip,
     price_asset_or_nothing, price_black76, price_cash_or_nothing, price_strip, EuropeanOption,
-    Fixed, FuturesInputs, MarketInputs, OptionKind, Price, Priced, PricingError, Spot, StripLeg,
-    Strike,
+    Fixed, FuturesInputs, MarketInputs, OptionKind, Price, Priced, PricingError, Spot, Strike,
+    StripLeg,
 };
 use optfix_fuzz::contract::{
     asset_bounds, binary_identity, cash_bounds, cash_parity, moneyness_ok, vanilla_bounds,
@@ -35,7 +35,11 @@ fuzz_target!(|data: &[u8]| {
     let (opt, m) = if mode & 1 == 0 {
         bsm_point(&mut b)
     } else {
-        let kind = if mode & 2 == 0 { OptionKind::Call } else { OptionKind::Put };
+        let kind = if mode & 2 == 0 {
+            OptionKind::Call
+        } else {
+            OptionKind::Put
+        };
         let raw = [b.i128(), b.i128(), b.i128(), b.i128(), b.i128(), b.i128()];
         match inputs(kind, raw) {
             Some(p) => p,
@@ -55,8 +59,14 @@ fuzz_target!(|data: &[u8]| {
     let p = price(&opt, &m);
     if !valid {
         assert_eq!(p, Err(PricingError::DomainError), "{opt:?} {m:?}");
-        assert_eq!(price_cash_or_nothing(&opt, &m, payout), Err(PricingError::DomainError));
-        assert_eq!(price_asset_or_nothing(&opt, &m), Err(PricingError::DomainError));
+        assert_eq!(
+            price_cash_or_nothing(&opt, &m, payout),
+            Err(PricingError::DomainError)
+        );
+        assert_eq!(
+            price_asset_or_nothing(&opt, &m),
+            Err(PricingError::DomainError)
+        );
         return;
     }
     let p = p.unwrap_or_else(|e| panic!("price: {e:?} at {opt:?} {m:?}"));
@@ -65,16 +75,29 @@ fuzz_target!(|data: &[u8]| {
     assert_eq!(pg.price, p, "price_and_greeks' price is price's");
 
     // Black-76 with F = S and r: bit-identical to BSM with q = r.
-    let fut = FuturesInputs { forward: m.spot, vol: m.vol, rate: m.rate };
+    let fut = FuturesInputs {
+        forward: m.spot,
+        vol: m.vol,
+        rate: m.rate,
+    };
     let bsm_r = MarketInputs { carry: m.rate, ..m };
     assert_eq!(price_black76(&opt, &fut), price(&opt, &bsm_r));
-    assert_eq!(price_and_greeks_black76(&opt, &fut), price_and_greeks(&opt, &bsm_r));
+    assert_eq!(
+        price_and_greeks_black76(&opt, &fut),
+        price_and_greeks(&opt, &bsm_r)
+    );
 
     // A strip of this leg, its flip and a second strike (any raw value: it may be out of the
     // domain, then the earlier legs are written and the later untouched).
     let legs = [
-        StripLeg { kind: opt.kind, strike: opt.strike },
-        StripLeg { kind: flip(opt.kind), strike: opt.strike },
+        StripLeg {
+            kind: opt.kind,
+            strike: opt.strike,
+        },
+        StripLeg {
+            kind: flip(opt.kind),
+            strike: opt.strike,
+        },
         StripLeg {
             kind: opt.kind,
             strike: Strike::try_new(Fixed::from_raw(second_strike)).unwrap_or(opt.strike),
@@ -82,12 +105,19 @@ fuzz_target!(|data: &[u8]| {
     ];
     let sentinel = Price::try_new(Fixed::from_raw(7)).expect("7 is a price");
     let mut out = [sentinel; 3];
-    let mut out_g = [Priced { price: sentinel, greeks: pg.greeks }; 3];
+    let mut out_g = [Priced {
+        price: sentinel,
+        greeks: pg.greeks,
+    }; 3];
     let r = price_strip(opt.expiry, &m, &legs, &mut out);
     let rg = price_and_greeks_strip(opt.expiry, &m, &legs, &mut out_g);
     let mut failed = false;
     for (i, leg) in legs.iter().enumerate() {
-        let o = EuropeanOption { kind: leg.kind, strike: leg.strike, expiry: opt.expiry };
+        let o = EuropeanOption {
+            kind: leg.kind,
+            strike: leg.strike,
+            expiry: opt.expiry,
+        };
         let (one, one_g) = (price(&o, &m), price_and_greeks(&o, &m));
         if failed {
             assert_eq!(out[i], sentinel, "leg {i} written after an error");
@@ -117,23 +147,47 @@ fuzz_target!(|data: &[u8]| {
     or_fail(cash_bounds(&opt, &m, payout, cash), "cash", &opt, &m);
     let asset = price_asset_or_nothing(&opt, &m).unwrap_or_else(|e| panic!("asset: {e:?}"));
     or_fail(asset_bounds(&opt, &m, asset), "asset", &opt, &m);
-    let other = EuropeanOption { kind: flip(opt.kind), ..opt };
+    let other = EuropeanOption {
+        kind: flip(opt.kind),
+        ..opt
+    };
     let cash_other = price_cash_or_nothing(&other, &m, payout).expect("same domain");
-    or_fail(cash_bounds(&other, &m, payout, cash_other), "cash (flipped)", &opt, &m);
+    or_fail(
+        cash_bounds(&other, &m, payout, cash_other),
+        "cash (flipped)",
+        &opt,
+        &m,
+    );
     if opt.expiry.get() > Fixed::ZERO {
         let (call, put) = match opt.kind {
             OptionKind::Call => (cash, cash_other),
             OptionKind::Put => (cash_other, cash),
         };
-        or_fail(cash_parity(&opt, &m, payout, call, put), "cash parity", &opt, &m);
-        let c = EuropeanOption { kind: OptionKind::Call, ..opt };
+        or_fail(
+            cash_parity(&opt, &m, payout, call, put),
+            "cash parity",
+            &opt,
+            &m,
+        );
+        let c = EuropeanOption {
+            kind: OptionKind::Call,
+            ..opt
+        };
         let unit = Price::try_new(Fixed::ONE).expect("1 is a price");
         let a = price_asset_or_nothing(&c, &m).expect("same domain");
         let cu = price_cash_or_nothing(&c, &m, unit).expect("same domain");
         let v = price(&c, &m).expect("same domain");
-        or_fail(binary_identity(&c, &m, a, cu, v), "binary identity", &opt, &m);
+        or_fail(
+            binary_identity(&c, &m, a, cu, v),
+            "binary identity",
+            &opt,
+            &m,
+        );
     }
     // A payout above Spot::MAX is a DomainError.
     let too_big = Price::try_new(Fixed::from_raw(Spot::MAX.get().raw() + 1)).expect("a price");
-    assert_eq!(price_cash_or_nothing(&opt, &m, too_big), Err(PricingError::DomainError));
+    assert_eq!(
+        price_cash_or_nothing(&opt, &m, too_big),
+        Err(PricingError::DomainError)
+    );
 });

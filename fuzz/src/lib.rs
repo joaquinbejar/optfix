@@ -71,7 +71,14 @@ pub fn bsm_point(b: &mut Bytes) -> (EuropeanOption, MarketInputs) {
     let sigma = 10f64.powf(0.005f64.log10() + 3.0 * unit(b.u64()));
     let rate = -0.1 + 0.6 * unit(b.u64());
     let carry = -0.1 + 0.6 * unit(b.u64());
-    let mut raw = [raw_of(s), raw_of(s / m), raw_of(t), raw_of(sigma), raw_of(rate), raw_of(carry)];
+    let mut raw = [
+        raw_of(s),
+        raw_of(s / m),
+        raw_of(t),
+        raw_of(sigma),
+        raw_of(rate),
+        raw_of(carry),
+    ];
     raw[0] = raw[0].clamp(Spot::MIN.get().raw(), Spot::MAX.get().raw());
     raw[2] = raw[2].clamp(0, Years::MAX.get().raw());
     raw[1] = raw[1]
@@ -128,7 +135,11 @@ pub fn floor_ceil(n: &BigInt, d: &BigInt) -> (BigInt, BigInt) {
     let q = n / d;
     let r = n - &q * d;
     // BigInt division truncates toward zero.
-    let floor = if r < BigInt::from(0) { &q - 1 } else { q.clone() };
+    let floor = if r < BigInt::from(0) {
+        &q - 1
+    } else {
+        q.clone()
+    };
     let ceil = if r > BigInt::from(0) { &q + 1 } else { q };
     (floor, ceil)
 }

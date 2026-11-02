@@ -12,7 +12,11 @@ fuzz_target!(|data: &[u8]| {
     let (x, y) = (b.u128(), b.u128());
     // Weight the shifts that matter (0 to 256) without excluding the rest.
     let raw_shift = b.u32();
-    let shift = if raw_shift & 1 == 0 { (raw_shift >> 1) % 300 } else { raw_shift >> 1 };
+    let shift = if raw_shift & 1 == 0 {
+        (raw_shift >> 1) % 300
+    } else {
+        raw_shift >> 1
+    };
     let product = BigInt::from(x) * BigInt::from(y);
     let (lo, hi) = if shift >= 512 {
         // 2^shift exceeds the product: 0, or 1 rounding a nonzero product up.

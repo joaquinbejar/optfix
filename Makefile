@@ -115,11 +115,13 @@ test-shard:
 .PHONY: fmt
 fmt:
 	cargo +$(RUST_TOOLCHAIN) fmt --all
+	cargo +$(RUST_TOOLCHAIN) fmt --manifest-path fuzz/Cargo.toml --all
 
-# Check formatting
+# Check formatting, the fuzz crate included (its own workspace, so `--all` does not reach it)
 .PHONY: fmt-check
 fmt-check:
 	cargo +$(RUST_TOOLCHAIN) fmt --all --check
+	cargo +$(RUST_TOOLCHAIN) fmt --manifest-path fuzz/Cargo.toml --all --check
 
 # Clippy with every warning denied
 .PHONY: lint

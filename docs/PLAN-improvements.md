@@ -147,6 +147,19 @@ targets, `make fuzz-smoke`, the required `fuzz-smoke` job and `.github/workflows
   structures, so an entry can be written by hand. The pricing target takes half its inputs as
   any in-range raw quantities (then `DomainError` exactly outside `S/K` in `[0.05, 20]`) and
   half from a sampler weighted toward the edges.
+- Review R1 (codex, #32): two classifier holes in the round trip contract, both harness
+  issues: `ArbitrageBound` was accepted on low conditioning alone, so an interior target
+  (`S = 2^-19`, `K = 3 S`, `T = 1`, `σ = 0.2`, `r = q = 0`) whose real answer is
+  `IllConditioned` passed with `ArbitrageBound`; and `DomainError` was accepted through an
+  infinite envelope (vega zero at `T = 0.01`). Now `ArbitrageBound` requires
+  `no_time_value`: the target within `96 ulps × (S + K) + 8` raw units of an exact arbitrage
+  bound (optfix's discount rounding: exp's 3 ulps and the `rT` rounding, relative to a
+  discount factor below `e^3`; the fuzzer measured 33 ulps on a deep in-the-money put with
+  `Dr ≈ e^2.87`, failing a first slack of 32), and `DomainError` requires a finite envelope, positive
+  vega and a target with time value. Both probes are `contract.rs` tests; the grid round trip
+  still passes at 300,000 points per carry set. Also from R1: `test_exp_w` now covers
+  `[−16, 16]` with both ends and zero (it drew only `[−16, 0)`), and `make fmt-check` (in the
+  `checks` job, pinned host rustfmt) checks the fuzz crate, which `--all` does not reach.
 - Findings: none in optfix. Two in the harness, both fixed before commit: the `f64` bound
   above, and a payout generator that exceeded `Spot::MAX` (where `DomainError` is correct).
 - Corpora minimized with `cargo fuzz cmin`: about 21 KB over 705 files, plus the control entry
