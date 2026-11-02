@@ -428,7 +428,14 @@ non-rho output, `cargo-semver-checks` passes at 0.3.0, and the downstream job is
 **Profile.** These are 0.3's solve with 0.2's tables, over the milestone 5 grid: 3,000,000
 points, seed `0x2f60`, 777,321 answered.
 
-- How to reproduce it: `make iv-profile`.
+- How to reproduce it: `make iv-profile`. Run at commit dae20d2 of #37, the profile tooling
+  before the gate change, which GitHub keeps under the PR, it gives the "before" figures below
+  (0.2's tables, three steps). At the merged code it profiles the new tables with two steps:
+  - setup and guess 6,798;
+  - steps 7,471 and 7,398;
+  - final check 5,590.
+  The SBF split takes its final check against `IV_MAX_ITERATIONS` steps (review of #37) and
+  reports a step past the cap only as a diagnostic.
   - The host part is `optfix/tests/iv_profile.rs`, through the `iv_bench::trace` hook.
   - The SBF part is `test_iv_profile_on_sbf`, through `iv_bench::steps_only`.
   - Both hooks sit behind the optfix feature `iv-profile`, not `bench-internals`. Even

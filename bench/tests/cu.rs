@@ -1361,15 +1361,20 @@ fn test_iv_profile_on_sbf() {
         med.push(m - noop_med);
     }
     let d = |a: usize, b: usize| med[a] as i64 - med[b] as i64;
+    // `all iterations` takes IV_MAX_ITERATIONS steps: the final check is it minus the row with
+    // that many steps (rows 3, 4, 5 hold 1, 2, 3 steps). A step past the cap is measured as a
+    // diagnostic only.
+    let cap = optfix::IV_MAX_ITERATIONS as usize;
     writeln!(
         s,
-        "\nSplit (differences of medians): setup and guess {}, step 1 {}, step 2 {}, step 3 {}, \
-         final conditioning check {} (all iterations minus 3 steps).",
+        "\nSplit (differences of medians, IV_MAX_ITERATIONS = {cap}): setup and guess {}, step 1 \
+         {}, step 2 {}, final conditioning check {} (all iterations minus {cap} steps); a step \
+         past the cap would cost {}.",
         med[2],
         d(3, 2),
         d(4, 3),
-        d(5, 4),
-        d(1, 5)
+        d(1, 2 + cap),
+        d(5, 4)
     )
     .unwrap();
     println!("{s}");
