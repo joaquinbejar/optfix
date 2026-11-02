@@ -10,8 +10,7 @@ use libfuzzer_sys::fuzz_target;
 use optfix::{
     price, price_and_greeks, price_and_greeks_black76, price_and_greeks_strip,
     price_asset_or_nothing, price_black76, price_cash_or_nothing, price_strip, EuropeanOption,
-    Fixed, FuturesInputs, MarketInputs, OptionKind, Price, Priced, PricingError, Spot, Strike,
-    StripLeg,
+    Fixed, FuturesInputs, MarketInputs, OptionKind, Price, PricingError, Spot, Strike, StripLeg,
 };
 use optfix_fuzz::contract::{
     asset_bounds, binary_identity, cash_bounds, cash_parity, moneyness_ok, vanilla_bounds,
@@ -74,7 +73,8 @@ fuzz_target!(|data: &[u8]| {
     let pg = price_and_greeks(&opt, &m).unwrap_or_else(|e| panic!("price_and_greeks: {e:?}"));
     assert_eq!(pg.price, p, "price_and_greeks' price is price's");
 
-    // Black-76 with F = S and r: bit-identical to BSM with q = r.
+    // Black-76 with F = S and r: bit-identical to BSM with q = r, except rho (0.3), which
+    // holds F fixed: exactly −(T ⊗ price).
     let fut = FuturesInputs {
         forward: m.spot,
         vol: m.vol,
@@ -82,10 +82,22 @@ fuzz_target!(|data: &[u8]| {
     };
     let bsm_r = MarketInputs { carry: m.rate, ..m };
     assert_eq!(price_black76(&opt, &fut), price(&opt, &bsm_r));
-    assert_eq!(
+    match (
         price_and_greeks_black76(&opt, &fut),
-        price_and_greeks(&opt, &bsm_r)
-    );
+        price_and_greeks(&opt, &bsm_r),
+    ) {
+        (Ok(b76), Ok(mut same)) => {
+            let rho = opt
+                .expiry
+                .get()
+                .mul_down(b76.price.get())
+                .and_then(Fixed::checked_neg);
+            assert_eq!(Ok(b76.greeks.rho), rho, "Black-76 rho");
+            same.greeks.rho = b76.greeks.rho;
+            assert_eq!(b76, same);
+        }
+        (b76, same) => assert_eq!(b76, same),
+    }
 
     // A strip of this leg, its flip and a second strike (any raw value: it may be out of the
     // domain, then the earlier legs are written and the later untouched).
@@ -105,10 +117,10 @@ fuzz_target!(|data: &[u8]| {
     ];
     let sentinel = Price::try_new(Fixed::from_raw(7)).expect("7 is a price");
     let mut out = [sentinel; 3];
-    let mut out_g = [Priced {
-        price: sentinel,
-        greeks: pg.greeks,
-    }; 3];
+    // `Priced` is `#[non_exhaustive]` (0.3): a sentinel from a computed value.
+    let mut sentinel_g = pg;
+    sentinel_g.price = sentinel;
+    let mut out_g = [sentinel_g; 3];
     let r = price_strip(opt.expiry, &m, &legs, &mut out);
     let rg = price_and_greeks_strip(opt.expiry, &m, &legs, &mut out_g);
     let mut failed = false;
