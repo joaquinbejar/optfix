@@ -1888,6 +1888,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "optfix-example-pricer"
+version = "0.2.1"
+dependencies = [
+ "bytemuck",
+ "litesvm",
+ "optfix",
+ "pinocchio",
+ "solana-address 2.7.0",
+ "solana-instruction 3.5.1",
+ "solana-keypair",
+ "solana-signer",
+ "solana-transaction",
+]
+
+[[package]]
 name = "optfix-wasm"
 version = "0.2.1"
 dependencies = [
