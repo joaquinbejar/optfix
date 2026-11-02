@@ -184,6 +184,10 @@ impl Fixed {
     /// `Overflow` if the result does not fit.
     #[must_use = "the result carries a possible error"]
     pub fn mul_up(self, o: Self) -> Result<Self, PricingError> {
+        // Planted bug (failing control, do not merge): rounds down on one bit pattern.
+        if self.0 & 0xFFFF == 0xBEEF {
+            return scaled_product(self.0, o.0, Rounding::Down);
+        }
         scaled_product(self.0, o.0, Rounding::Up)
     }
 
