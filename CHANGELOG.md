@@ -20,12 +20,22 @@ Toward 0.3.0 (`docs/PLAN-improvements.md`); the workspace version is 0.3.0.
   `Priced::ZERO` (new) and assign fields, for example to fill the `out` slice of
   `price_and_greeks_strip`. Reading fields is unchanged.
 
+### Changed
+
+- `implied_vol` takes at most two steps (`IV_MAX_ITERATIONS` is 2, was 3). Its initial-guess
+  table near the money is twice as fine in each direction (`tools/gen_iv_tables.py`), so the
+  guess is within about 1.25% of the root wherever it answers (3.8% before) and two steps always
+  suffice. Every target answers or fails exactly as before: per-point outcomes are identical over
+  the 3,000,000-point grid and the mpmath and threshold fixtures. Answers may move within the
+  round-trip envelope; the worst case drops from 42,951 to about 33,600 CU, and the median is
+  unchanged. Programs embedding optfix grow by about 16 KB (the table).
+
 ### Added
 
 - `Fixed::from_bps`, `Rate::from_bps` and `Volatility::from_bps`: basis points with an explicit
   rounding (one basis point is not a binary fraction).
-- Conformance generation 2 (rho in every priced result, `from_bps`); generation 1 stays
-  committed and replays with rho dropped.
+- Conformance generation 2 (rho in every priced result, `from_bps`) and generation 3 (the new
+  `implied_vol` bits); earlier generations stay committed and replay under the agreed changes.
 
 ## [0.2.1] - 2026-11-01
 

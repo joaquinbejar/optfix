@@ -12,6 +12,12 @@ publish = false
 crate-type = ["cdylib"]
 name = "optfix_bench_program"
 
+[features]
+# The implied-volatility profile rows of docs/PLAN-improvements.md, milestone 20 (`make
+# iv-profile`). Off in `make bench`: a reachable second caller of the solve's helpers changes
+# how LLVM inlines them, which would move the `ImpliedVol` rows by about 20 CU.
+iv-profile = ["optfix/iv-profile"]
+
 [dependencies]
 bytemuck = { workspace = true }
 optfix = { workspace = true, features = ["bench-internals"] }

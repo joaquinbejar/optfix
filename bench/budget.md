@@ -29,10 +29,10 @@ multiple of 100 above, in the same diff; a cheaper row is tightened the same way
 | `CashOrNothing` | 7700 | 8000 |
 | `AssetOrNothing` | 7300 | 7600 |
 | `PriceAndGreeks, near the money` | 17200 | 17700 |
-| `ImpliedVol` | 28500 | 36500 |
-| `ImpliedVol, all iterations` | 36200 | 44300 |
-| `ImpliedVol, near the money` | 34400 | 44100 |
-| `ImpliedVol, all iterations, near the money` | 44000 | 45000 |
+| `ImpliedVol` | 28500 | 34600 |
+| `ImpliedVol, all iterations` | 28500 | 34600 |
+| `ImpliedVol, near the money` | 34400 | 35300 |
+| `ImpliedVol, all iterations, near the money` | 34400 | 35300 |
 | `PriceStrip, 1 leg` | 10000 | 10300 |
 | `PriceStrip, 2 legs` | 15200 | 15700 |
 | `PriceStrip, 8 legs` | 45500 | 50100 |

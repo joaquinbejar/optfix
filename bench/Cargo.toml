@@ -8,6 +8,11 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+# The implied-volatility profile test on SBF (`make iv-profile`, docs/PLAN-improvements.md
+# milestone 20).
+iv-profile = ["optfix/iv-profile"]
+
 [dev-dependencies]
 libm = { workspace = true }
 litesvm = { workspace = true }

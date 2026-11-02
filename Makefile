@@ -61,6 +61,31 @@ bench: program
 	OPTFIX_HOST_RUSTC="$$(rustc --version)" \
 	cargo test $(CARGO_FLAGS) -p optfix-bench --release --test cu -- --nocapture
 
+# The implied-volatility profile (docs/PLAN-improvements.md, milestone 20): the host profile over
+# the milestone 5 grid (OPTFIX_IV_SAMPLES points per carry set, default 1,000,000), then the
+# bench program built with feature `iv-profile` into target/deploy-iv-profile (separate from
+# `make program`, whose rows it would perturb) and its CU split on SBF.
+IV_PROFILE_SAMPLES ?= 1000000
+.PHONY: iv-profile
+iv-profile: iv-classification
+	OPTFIX_IV_SAMPLES=$(IV_PROFILE_SAMPLES) cargo test $(CARGO_FLAGS) -p optfix --release \
+		--features iv-profile --test iv_profile -- --nocapture
+	cargo build-sbf --manifest-path bench-program/Cargo.toml --arch $(SBF_ARCH) \
+		--sbf-out-dir target/deploy-iv-profile --features iv-profile -- $(CARGO_FLAGS) \
+		> target/build-sbf-iv-profile.log 2>&1 || { cat target/build-sbf-iv-profile.log; exit 1; }
+	sh scripts/check-sbf-log.sh target/build-sbf-iv-profile.log
+	OPTFIX_BENCH_PROGRAM=$(CURDIR)/target/deploy-iv-profile/optfix_bench_program.so \
+		cargo test $(CARGO_FLAGS) -p optfix-bench --release --features iv-profile --test cu \
+		test_iv_profile_on_sbf \
+		-- --ignored --nocapture
+
+# implied_vol's outcome (answer or error code) at 3,035,763 grid and fixture points, against the
+# digest of a250ed9 (optfix/tests/iv_classification.rs); release build, a few seconds. In CI's
+# bench job.
+.PHONY: iv-classification
+iv-classification:
+	cargo test $(CARGO_FLAGS) -p optfix --release --test iv_classification -- --ignored --nocapture
+
 # Maximum exp and ln errors over a deterministic sample; regenerates docs/precision.md
 PRECISION_SAMPLES ?= 200000
 .PHONY: precision

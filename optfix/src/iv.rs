@@ -6,7 +6,9 @@
 //! and `K Dr` for a put; an in-the-money target is moved there by put-call parity, which `price`
 //! applies exactly the other way. In normalized form (`a = |ln(S Dq / K Dr)|`, `s = σ√T`,
 //! `y = p / bound`, `L = −ln y`) the initial guess of `ln s` is a bilinear interpolation in the
-//! tables of `tools/gen_iv_tables.py`, within 6% of the root over the supported domain.
+//! tables of `tools/gen_iv_tables.py`: within 6% of the root over the whole normalized domain,
+//! and within about 1.25% wherever `implied_vol` answers (measured over the milestone 5 grid,
+//! `docs/PLAN-improvements.md` milestone 20), close enough that two steps always suffice.
 //!
 //! Up to [`IV_MAX_ITERATIONS`] third-order (Chebyshev) steps then refine `v = ln σ` on a log
 //! objective: `g = ln p(v) − ln p` below the inflection point `s = √(2a)`, where the price is
@@ -27,7 +29,8 @@ use crate::bsm::{
 };
 use crate::explog::{exp, ln};
 use crate::iv_tables::{
-    DEEP, DEEP_W_MIN, DEEP_Z_MIN, NEAR, NEAR_U_MIN, NEAR_Z_MIN, SWITCH, Z_FINE,
+    DEEP, DEEP_W_MIN, DEEP_Z_MIN, NEAR, NEAR_U_DIV, NEAR_U_MIN, NEAR_ZC_DIV, NEAR_ZF_DIV,
+    NEAR_Z_MIN, SWITCH, Z_FINE,
 };
 use crate::norm::norm_cdf;
 use crate::{Fixed, OptionKind, Price, PricingError, Rate, Spot, Volatility};
@@ -44,8 +47,11 @@ pub struct IvInputs {
 }
 
 /// The most refinement steps [`implied_vol`] takes; it stops earlier once a step is below
-/// [`IV_TOLERANCE`]. A fixed cap keeps the CU cost bounded (`docs/benchmarks.md`).
-pub const IV_MAX_ITERATIONS: u32 = 3;
+/// [`IV_TOLERANCE`]. A fixed cap keeps the CU cost bounded (`docs/benchmarks.md`). 2 since 0.3
+/// (3 before): with the finer guess tables, every target the milestone 5 grid answers takes at
+/// most two steps, and each target answers or fails exactly as with three
+/// (`docs/PLAN-improvements.md`, milestone 20).
+pub const IV_MAX_ITERATIONS: u32 = 2;
 
 /// Convergence: a step in `ln σ` of at most `2^-16`. The steps converge cubically, so the error
 /// left after such a step is of order `2^-48` in relative `σ`, below the round-trip envelope's
@@ -242,147 +248,169 @@ fn solve(
     (result, steps)
 }
 
-fn iterate(
-    st: &Setup,
-    cap: u32,
-    early_exit: bool,
-    steps: &mut u32,
-) -> Result<Volatility, PricingError> {
-    let mut v = st.v0;
-    let mut converged = false;
-    // The smallest ln vega over the evaluations (None: below any representable value).
-    let mut ln_vega_min: Option<Fixed> = None;
-    while *steps < cap {
-        *steps = steps.checked_add(1).ok_or(PricingError::Overflow)?;
-        let Eval {
-            ls,
-            d1,
-            d2,
-            ln_pdf,
-            ln_vega,
-        } = evaluate(st, v)?;
-        ln_vega_min = match (*steps, ln_vega, ln_vega_min) {
-            (1, now, _) => now,
-            (_, Some(now), Some(low)) => Some(now.min(low)),
-            _ => None,
-        };
-        // The objective's argument: bound − p(v) above the inflection point, p(v) below, each
-        // formed without cancellation (bound − p = S Dq N(−d1) + K Dr N(d2) for both kinds).
-        let value = if st.upper {
-            st.s_dq
-                .mul_down(norm_cdf(d1.checked_neg()?)?)?
-                .checked_add(st.k_dr.mul_down(norm_cdf(d2)?)?)?
-        } else if st.call_otm {
-            non_negative(
-                st.s_dq
-                    .mul_down(norm_cdf(d1)?)?
-                    .checked_sub(st.k_dr.mul_down(norm_cdf(d2)?)?)?,
-            )
-        } else {
-            non_negative(
-                st.k_dr
-                    .mul_down(norm_cdf(d2.checked_neg()?)?)?
-                    .checked_sub(st.s_dq.mul_down(norm_cdf(d1.checked_neg()?)?)?)?,
-            )
-        };
-        let step = match ln_pdf {
-            Some(lp) if value > Fixed::ZERO => {
-                let lv = ln(value)?;
-                let g = lv.checked_sub(st.target_ln)?;
-                // ln |g'| = ln(s S Dq n(d1) / value)
-                let ln_slope = st
-                    .ln_s_dq
-                    .checked_add(ls)?
-                    .checked_add(lp)?
-                    .checked_sub(lv)?;
-                chebyshev_step(g, ln_slope, d1, d2, st.upper)?
+/// Defines the solve loop: the steps from the initial guess, then the conditioning judgement
+/// at the returned root. [`iterate`] is the one [`implied_vol`] runs; with `bench-internals`,
+/// `iterate_traced` is the same body with the profile hooks of milestone 20
+/// (`docs/PLAN-improvements.md`) added: `rec.step(k, Δ)` before each step is applied, and
+/// `rec.stop(v)` after the last one, which ends the solve with `NoConvergence` when it returns
+/// `true`. One body, so the two cannot drift; and [`iterate`] expands to exactly the code it
+/// had before the hooks existed (a generic recorder, even a no-op one, cost about 20 CU per
+/// solve on SBF).
+macro_rules! define_iterate {
+    ($name:ident $(, $rec:ident: $rec_ty:ty)?) => {
+        fn $name(
+                    st: &Setup,
+                    cap: u32,
+                    early_exit: bool,
+                    steps: &mut u32,
+                    $($rec: $rec_ty)?
+                ) -> Result<Volatility, PricingError> {
+            let mut v = st.v0;
+            let mut converged = false;
+            // The smallest ln vega over the evaluations (None: below any representable value).
+            let mut ln_vega_min: Option<Fixed> = None;
+            while *steps < cap {
+                *steps = steps.checked_add(1).ok_or(PricingError::Overflow)?;
+                let Eval {
+                    ls,
+                    d1,
+                    d2,
+                    ln_pdf,
+                    ln_vega,
+                } = evaluate(st, v)?;
+                ln_vega_min = match (*steps, ln_vega, ln_vega_min) {
+                    (1, now, _) => now,
+                    (_, Some(now), Some(low)) => Some(now.min(low)),
+                    _ => None,
+                };
+                // The objective's argument: bound − p(v) above the inflection point, p(v) below, each
+                // formed without cancellation (bound − p = S Dq N(−d1) + K Dr N(d2) for both kinds).
+                let value = if st.upper {
+                    st.s_dq
+                        .mul_down(norm_cdf(d1.checked_neg()?)?)?
+                        .checked_add(st.k_dr.mul_down(norm_cdf(d2)?)?)?
+                } else if st.call_otm {
+                    non_negative(
+                        st.s_dq
+                            .mul_down(norm_cdf(d1)?)?
+                            .checked_sub(st.k_dr.mul_down(norm_cdf(d2)?)?)?,
+                    )
+                } else {
+                    non_negative(
+                        st.k_dr
+                            .mul_down(norm_cdf(d2.checked_neg()?)?)?
+                            .checked_sub(st.s_dq.mul_down(norm_cdf(d1.checked_neg()?)?)?)?,
+                    )
+                };
+                let step = match ln_pdf {
+                    Some(lp) if value > Fixed::ZERO => {
+                        let lv = ln(value)?;
+                        let g = lv.checked_sub(st.target_ln)?;
+                        // ln |g'| = ln(s S Dq n(d1) / value)
+                        let ln_slope = st
+                            .ln_s_dq
+                            .checked_add(ls)?
+                            .checked_add(lp)?
+                            .checked_sub(lv)?;
+                        chebyshev_step(g, ln_slope, d1, d2, st.upper)?
+                    }
+                    // The price underflowed or n(d1) vanished: σ is far too low below the inflection
+                    // point, or far too high above it.
+                    _ if st.upper => MAX_STEP.checked_neg()?,
+                    _ => MAX_STEP,
+                };
+                // The objective is monotone in v, so a step out of [V_MIN, V_MAX] from its end means
+                // the root lies beyond it, outside the Volatility range.
+                if (v == V_MAX && step > Fixed::ZERO) || (v == V_MIN && step < Fixed::ZERO) {
+                    return Err(PricingError::DomainError);
+                }
+                $($rec.step(*steps, step);)?
+                v = v.checked_add(step)?.clamp(V_MIN, V_MAX);
+                converged = step.raw().unsigned_abs() <= IV_TOLERANCE.raw().unsigned_abs();
+                if converged && early_exit {
+                    break;
+                }
             }
-            // The price underflowed or n(d1) vanished: σ is far too low below the inflection
-            // point, or far too high above it.
-            _ if st.upper => MAX_STEP.checked_neg()?,
-            _ => MAX_STEP,
-        };
-        // The objective is monotone in v, so a step out of [V_MIN, V_MAX] from its end means
-        // the root lies beyond it, outside the Volatility range.
-        if (v == V_MAX && step > Fixed::ZERO) || (v == V_MIN && step < Fixed::ZERO) {
-            return Err(PricingError::DomainError);
+            $(if $rec.stop(v) {
+                return Err(PricingError::NoConvergence);
+            })?
+            if !converged {
+                // A solve that wandered away from an ill-conditioned root still reports it: judged at
+                // the evaluation where vega was smallest.
+                let well_conditioned = match ln_vega_min {
+                    Some(lv) => exp(lv)? >= st.vega_min,
+                    None => false,
+                };
+                return Err(if well_conditioned {
+                    PricingError::NoConvergence
+                } else {
+                    PricingError::IllConditioned
+                });
+            }
+            // Conditioning, judged at the returned root (codex's #12 review): vega = S Dq n(d1) √T there,
+            // against the threshold widened by `δ` (below) so that a true-root vega under it cannot
+            // pass.
+            let root = evaluate(st, v)?;
+            let Some(ln_vega) = root.ln_vega else {
+                return Err(PricingError::IllConditioned);
+            };
+            let vega = exp(ln_vega)?;
+            if vega < st.vega_min {
+                return Err(PricingError::IllConditioned);
+            }
+            let sigma = exp(v)?;
+            // slack: the round-trip envelope at the root, `IV_ERR_PRICE_FACTOR × E / vega + IV_ERR_REL ×
+            // σ`, the documented bound on |σ − σ*| between the returned σ and the exact root σ* of the
+            // target: the target and every evaluation are each within E of the exact price, so the
+            // computed root is within about 2E / vega of σ* (factor 4 for margin), plus the cubic
+            // remainder of the last step (`IV_ERR_REL`). 1 / vega = e^(−ln vega), at most 2^30 here
+            // since vega >= 2^28 E >= 2^28 × 64 ulps. Measured against exact mpmath roots
+            // (`tests/iv_fixture.rs`): at most 0.8% of it.
+            let slack = IV_ERR_PRICE_FACTOR
+                .mul_up(st.envelope)?
+                .mul_up(exp(ln_vega.checked_neg()?)?)?
+                .checked_add(IV_ERR_REL.mul_up(sigma)?)?;
+            // δ = (|d1 d2| + 1) × slack / σ + 2^-20, the vega derivative factor times the distance to
+            // the root, plus the rounding of vega itself:
+            //
+            // - ∂d1/∂σ = −d2 / σ (from d1 = ln(F/K) / (σ√T) + σ√T / 2), so ∂ ln vega / ∂ σ =
+            //   −d1 ∂d1/∂σ = d1 d2 / σ, that is d ln vega / d ln σ = d1 d2;
+            // - |ln σ − ln σ*| <= slack / σ to first order, and slack / σ <= 2^-18 (about 3 × 10^-6)
+            //   here: 4 E / (vega σ) <= 4 × 2^-28 / 0.005 since vega >= 2^28 E and σ >= 0.005, plus
+            //   2^-40 (codex measured up to 2.98 × 10^-6 on answered cases). So
+            //   |ln vega(σ) − ln vega(σ*)| <= |d1 d2| × slack / σ with d1 d2 at the returned σ, up to the
+            //   change of d1 d2 across ±slack, which the `+ 1` covers (measured at most 1.5 × 10^-4;
+            //   the higher-order terms of ln σ − ln σ* are below (slack / σ)², about 10^-11);
+            // - `VEGA_JUDGE_REL` (2^-20) covers the rounding of the computed vega (`d1`, `ln S`, `qT`,
+            //   `ln T` and `exp`, each orders of magnitude smaller) and the second-order terms of
+            //   e^(±δ').
+            //
+            // Then vega >= thr (1 + δ) implies vega(σ*) >= thr. Checked on the threshold fixtures:
+            // none of the targets whose exact-root vega is below the threshold is answered
+            // (`tests/iv_fixture.rs`).
+            let spread = Fixed::from_raw(
+                root.d1
+                    .mul_up(root.d2)?
+                    .raw()
+                    .checked_abs()
+                    .ok_or(PricingError::Overflow)?,
+            )
+            .checked_add(Fixed::ONE)?;
+            let delta = spread
+                .mul_up(slack.mul_up(exp(v.checked_neg()?)?)?)?
+                .checked_add(VEGA_JUDGE_REL)?;
+            if vega < st.vega_min.mul_up(Fixed::ONE.checked_add(delta)?)? {
+                return Err(PricingError::IllConditioned);
+            }
+            to_volatility(sigma, slack)
         }
-        v = v.checked_add(step)?.clamp(V_MIN, V_MAX);
-        converged = step.raw().unsigned_abs() <= IV_TOLERANCE.raw().unsigned_abs();
-        if converged && early_exit {
-            break;
-        }
-    }
-    if !converged {
-        // A solve that wandered away from an ill-conditioned root still reports it: judged at
-        // the evaluation where vega was smallest.
-        let well_conditioned = match ln_vega_min {
-            Some(lv) => exp(lv)? >= st.vega_min,
-            None => false,
-        };
-        return Err(if well_conditioned {
-            PricingError::NoConvergence
-        } else {
-            PricingError::IllConditioned
-        });
-    }
-    // Conditioning, judged at the returned root (codex's #12 review): vega = S Dq n(d1) √T there,
-    // against the threshold widened by `δ` (below) so that a true-root vega under it cannot
-    // pass.
-    let root = evaluate(st, v)?;
-    let Some(ln_vega) = root.ln_vega else {
-        return Err(PricingError::IllConditioned);
     };
-    let vega = exp(ln_vega)?;
-    if vega < st.vega_min {
-        return Err(PricingError::IllConditioned);
-    }
-    let sigma = exp(v)?;
-    // slack: the round-trip envelope at the root, `IV_ERR_PRICE_FACTOR × E / vega + IV_ERR_REL ×
-    // σ`, the documented bound on |σ − σ*| between the returned σ and the exact root σ* of the
-    // target: the target and every evaluation are each within E of the exact price, so the
-    // computed root is within about 2E / vega of σ* (factor 4 for margin), plus the cubic
-    // remainder of the last step (`IV_ERR_REL`). 1 / vega = e^(−ln vega), at most 2^30 here
-    // since vega >= 2^28 E >= 2^28 × 64 ulps. Measured against exact mpmath roots
-    // (`tests/iv_fixture.rs`): at most 0.8% of it.
-    let slack = IV_ERR_PRICE_FACTOR
-        .mul_up(st.envelope)?
-        .mul_up(exp(ln_vega.checked_neg()?)?)?
-        .checked_add(IV_ERR_REL.mul_up(sigma)?)?;
-    // δ = (|d1 d2| + 1) × slack / σ + 2^-20, the vega derivative factor times the distance to
-    // the root, plus the rounding of vega itself:
-    //
-    // - ∂d1/∂σ = −d2 / σ (from d1 = ln(F/K) / (σ√T) + σ√T / 2), so ∂ ln vega / ∂ σ =
-    //   −d1 ∂d1/∂σ = d1 d2 / σ, that is d ln vega / d ln σ = d1 d2;
-    // - |ln σ − ln σ*| <= slack / σ to first order, and slack / σ <= 2^-18 (about 3 × 10^-6)
-    //   here: 4 E / (vega σ) <= 4 × 2^-28 / 0.005 since vega >= 2^28 E and σ >= 0.005, plus
-    //   2^-40 (codex measured up to 2.98 × 10^-6 on answered cases). So
-    //   |ln vega(σ) − ln vega(σ*)| <= |d1 d2| × slack / σ with d1 d2 at the returned σ, up to the
-    //   change of d1 d2 across ±slack, which the `+ 1` covers (measured at most 1.5 × 10^-4;
-    //   the higher-order terms of ln σ − ln σ* are below (slack / σ)², about 10^-11);
-    // - `VEGA_JUDGE_REL` (2^-20) covers the rounding of the computed vega (`d1`, `ln S`, `qT`,
-    //   `ln T` and `exp`, each orders of magnitude smaller) and the second-order terms of
-    //   e^(±δ').
-    //
-    // Then vega >= thr (1 + δ) implies vega(σ*) >= thr. Checked on the threshold fixtures:
-    // none of the targets whose exact-root vega is below the threshold is answered
-    // (`tests/iv_fixture.rs`).
-    let spread = Fixed::from_raw(
-        root.d1
-            .mul_up(root.d2)?
-            .raw()
-            .checked_abs()
-            .ok_or(PricingError::Overflow)?,
-    )
-    .checked_add(Fixed::ONE)?;
-    let delta = spread
-        .mul_up(slack.mul_up(exp(v.checked_neg()?)?)?)?
-        .checked_add(VEGA_JUDGE_REL)?;
-    if vega < st.vega_min.mul_up(Fixed::ONE.checked_add(delta)?)? {
-        return Err(PricingError::IllConditioned);
-    }
-    to_volatility(sigma, slack)
 }
+
+define_iterate!(iterate);
+
+#[cfg(feature = "iv-profile")]
+define_iterate!(iterate_traced, rec: &mut dyn profile::Recorder);
 
 /// One evaluation at `v = ln σ`: `ln σ√T`, `d1`, `d2`, `ln n(d1)` and `ln vega`, the last two
 /// `None` when `d1²` would not fit (`n(d1)` is then zero).
@@ -474,21 +502,32 @@ fn guess(ln_a: Fixed, big_l: Fixed) -> Result<(Fixed, bool), PricingError> {
         let row = quadruple(z.checked_sub(Fixed::from_int(i64::from(DEEP_Z_MIN)))?)?;
         return Ok((bilinear(&DEEP, col, row)?.checked_add(w)?, true));
     }
-    let col = u.checked_sub(Fixed::from_int(i64::from(NEAR_U_MIN)))?;
+    let col = times(
+        u.checked_sub(Fixed::from_int(i64::from(NEAR_U_MIN)))?,
+        NEAR_U_DIV,
+    )?;
     let z_fine = Fixed::from_int(i64::from(Z_FINE));
     let row = if z <= z_fine {
-        z.checked_sub(Fixed::from_int(i64::from(NEAR_Z_MIN)))?
+        times(
+            z.checked_sub(Fixed::from_int(i64::from(NEAR_Z_MIN)))?,
+            NEAR_ZC_DIV,
+        )?
     } else {
-        Fixed::from_int(i64::from(Z_FINE - NEAR_Z_MIN))
-            .checked_add(quadruple(z.checked_sub(z_fine)?)?)?
+        Fixed::from_int(i64::from((Z_FINE - NEAR_Z_MIN) * NEAR_ZC_DIV))
+            .checked_add(times(z.checked_sub(z_fine)?, NEAR_ZF_DIV)?)?
     };
     Ok((bilinear(&NEAR, col, row)?.checked_sub(big_l)?, false))
 }
 
 /// `4x`, exact.
 fn quadruple(x: Fixed) -> Result<Fixed, PricingError> {
+    times(x, 4)
+}
+
+/// `n x`, exact: a table coordinate in units of its step.
+fn times(x: Fixed, n: i32) -> Result<Fixed, PricingError> {
     x.raw()
-        .checked_mul(4)
+        .checked_mul(i128::from(n))
         .map(Fixed::from_raw)
         .ok_or(PricingError::Overflow)
 }
@@ -554,6 +593,9 @@ fn to_volatility(sigma: Fixed, slack: Fixed) -> Result<Volatility, PricingError>
 pub mod bench {
     use super::{setup, solve, EuropeanOption, Fixed, IvInputs, Price, PricingError, Volatility};
 
+    #[cfg(feature = "iv-profile")]
+    pub use super::profile::{steps_only, trace, Trace, TRACE_STEPS};
+
     /// `implied_vol` without the early exit: always [`super::IV_MAX_ITERATIONS`] steps, the
     /// worst-case CU row of `docs/benchmarks.md`.
     ///
@@ -589,6 +631,114 @@ pub mod bench {
         target: Price,
     ) -> Result<(Fixed, bool), PricingError> {
         setup(opt, m, target).map(|st| (st.v0, st.deep))
+    }
+}
+
+/// The profile hooks (feature `iv-profile`), re-exported through `iv_bench`.
+#[cfg(feature = "iv-profile")]
+mod profile {
+    use super::{
+        iterate_traced, setup, EuropeanOption, Fixed, IvInputs, Price, PricingError, Volatility,
+        IV_MAX_ITERATIONS,
+    };
+
+    /// What `iterate_traced` reports of a solve: each step, and the final `ln σ`.
+    pub(super) trait Recorder {
+        /// Step number `k` (from 1) moves `ln σ` by `step` (before the clamp to the range).
+        fn step(&mut self, k: u32, step: Fixed);
+        /// After the steps, with the final `ln σ`: `true` stops before the conditioning
+        /// judgement.
+        fn stop(&mut self, v: Fixed) -> bool;
+    }
+
+    /// Most steps a [`Trace`] holds: [`IV_MAX_ITERATIONS`] (`tests/iv_profile.rs` checks it).
+    pub const TRACE_STEPS: usize = 2;
+
+    /// One solve as [`implied_vol`](super::implied_vol) runs it (milestone 20 of
+    /// `docs/PLAN-improvements.md`, the profile): the initial guess, each step in `ln σ`, and
+    /// the result.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Trace {
+        /// The initial guess of `ln σ`.
+        pub v0: Fixed,
+        /// Whether it came from the deep out-of-the-money table.
+        pub deep: bool,
+        /// The steps taken, `steps[..taken]` (before the clamp to the range).
+        pub steps: [Fixed; TRACE_STEPS],
+        /// How many steps were taken.
+        pub taken: u32,
+        /// What `implied_vol` returned.
+        pub result: Result<Volatility, PricingError>,
+    }
+
+    impl Recorder for Trace {
+        fn step(&mut self, k: u32, step: Fixed) {
+            if let Some(slot) = usize::try_from(k)
+                .ok()
+                .and_then(|k| k.checked_sub(1))
+                .and_then(|i| self.steps.get_mut(i))
+            {
+                *slot = step;
+            }
+            self.taken = k;
+        }
+
+        fn stop(&mut self, _v: Fixed) -> bool {
+            false
+        }
+    }
+
+    /// `implied_vol` with its trace; `Err` if the inputs fail before the first step.
+    ///
+    /// # Errors
+    ///
+    /// As `implied_vol` before its first step.
+    pub fn trace(opt: &EuropeanOption, m: &IvInputs, target: Price) -> Result<Trace, PricingError> {
+        let st = setup(opt, m, target)?;
+        let mut t = Trace {
+            v0: st.v0,
+            deep: st.deep,
+            steps: [Fixed::ZERO; TRACE_STEPS],
+            taken: 0,
+            result: Err(PricingError::NoConvergence),
+        };
+        let mut steps = 0;
+        t.result = iterate_traced(&st, IV_MAX_ITERATIONS, true, &mut steps, &mut t);
+        Ok(t)
+    }
+
+    /// Stops the solve after its steps and keeps the final `ln σ`.
+    struct StepsOnly(Fixed);
+
+    impl Recorder for StepsOnly {
+        fn step(&mut self, _k: u32, _step: Fixed) {}
+
+        fn stop(&mut self, v: Fixed) -> bool {
+            self.0 = v;
+            true
+        }
+    }
+
+    /// Setup and exactly `cap` steps, without the conditioning judgement: the final `ln σ`.
+    /// With `iv_bench::initial_guess` and `iv_bench::all_iterations` it splits the CU of a solve (setup, each
+    /// step, the final check).
+    ///
+    /// # Errors
+    ///
+    /// As `implied_vol` before and during its steps.
+    pub fn steps_only(
+        opt: &EuropeanOption,
+        m: &IvInputs,
+        target: Price,
+        cap: u32,
+    ) -> Result<Fixed, PricingError> {
+        let st = setup(opt, m, target)?;
+        let mut rec = StepsOnly(Fixed::ZERO);
+        let mut steps = 0;
+        match iterate_traced(&st, cap, false, &mut steps, &mut rec) {
+            Err(PricingError::NoConvergence) => Ok(rec.0),
+            other => other.map(Volatility::get),
+        }
     }
 }
 

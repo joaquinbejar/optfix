@@ -92,6 +92,8 @@ jobs:
       - run: make $MAKE_PINS bench
       - name: docs/benchmarks.md is the committed one
         run: git diff --exit-code docs/benchmarks.md
+      - name: implied_vol answers or fails at every grid and fixture point as at a250ed9
+        run: make $MAKE_PINS iv-classification
 
   # docs/PLAN-improvements.md, milestone 15: varswap's CU table measured with optfix at the merge
   # base and at the head, on this runner; any growth fails. metalbook's optfix pricer is off
