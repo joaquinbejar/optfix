@@ -1,0 +1,54 @@
+# Coverage-guided fuzzing (docs/PLAN-improvements.md, milestone 16). Its own workspace and
+# lockfile, built with the pinned nightly that cargo-fuzz needs (`make fuzz-smoke`); the
+# library and its tests keep building on stable.
+[package]
+name = "optfix-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+num-bigint = "0.5"
+optfix = { path = "../optfix" }
+
+[[bin]]
+name = "scaled"
+path = "fuzz_targets/scaled.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "arith"
+path = "fuzz_targets/arith.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wide"
+path = "fuzz_targets/wide.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pricing"
+path = "fuzz_targets/pricing.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "iv"
+path = "fuzz_targets/iv.rs"
+test = false
+doc = false
+bench = false

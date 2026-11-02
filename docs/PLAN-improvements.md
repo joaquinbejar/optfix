@@ -126,6 +126,35 @@ their uploaded tables).
 
 ## Milestone 16: fuzzing
 
+(Built.) `fuzz/` (own workspace and lockfile; `libfuzzer-sys` 0.4, `num-bigint` 0.5), five
+targets, `make fuzz-smoke`, the required `fuzz-smoke` job and `.github/workflows/fuzz-nightly.yml`
+(30 minutes per target, nightly and on demand). As built:
+
+- One definition of the contracts: `optfix/tests/common/contract.rs` depends on `optfix`,
+  `std` and `num-bigint` only, is included by `#[path]` in `fuzz/`, and is what
+  `common::iv::round_trip` (`iv_round_trip.rs`, `make precision`) and `binary_props.rs`'s
+  identity now call. `optfix/tests/contract.rs` tests it on stable: its exponential against
+  the 256-bit reference of `common` (within `2^-100`), its bounds accepting optfix over 20,000
+  grid points, and rejecting a shifted price.
+- Bounds that need `Dr` or `Dq` use an exact reference (`e^x` at 192 fractional bits from the
+  exact products `rT`, `qT`), compared in units of `2^-128` with a 2 raw unit margin. A first
+  version in `f64` failed on a valid deep in-the-money call (`S = 1.6 × 10^8`, `q = −0.1`, `T =
+  29.5`, so `S Dq ≈ 3.06 × 10^9`): `f64` holds only about `5 × 10^-7` there, against an
+  envelope of `5.7 × 10^-7` relative to `max(S, K)`. Exact, the point is inside.
+- The round trip's `DomainError` is now accepted only where `σ` is within its envelope of a
+  `Volatility` range end (the third documented case); the grid had none anyway.
+- Inputs are fixed little-endian fields (`fuzz/src/lib.rs`, `Bytes`), not `arbitrary`
+  structures, so an entry can be written by hand. The pricing target takes half its inputs as
+  any in-range raw quantities (then `DomainError` exactly outside `S/K` in `[0.05, 20]`) and
+  half from a sampler weighted toward the edges.
+- Findings: none in optfix. Two in the harness, both fixed before commit: the `f64` bound
+  above, and a payout generator that exceeded `Spot::MAX` (where `DomainError` is correct).
+- Corpora minimized with `cargo fuzz cmin`: about 21 KB over 705 files, plus the control entry
+  `fuzz/corpus/arith/planted-control-mul-up` (`mul_up` of a raw value whose low 16 bits are
+  `0xBEEF` by 3), kept as a regular entry. Locally, `mul_up` patched to round down on that
+  pattern fails `make fuzz-smoke` on that entry during the corpus replay, before libFuzzer's
+  `INITED`; unpatched, every target passes.
+
 Complements the property tests (uniform or structured sampling, a million cases) with
 coverage-guided search at the boundaries the samplers rarely hit. `fuzz/` is a `cargo-fuzz`
 crate outside the workspace, with its own lockfile and a pinned nightly (`cargo-fuzz` needs

@@ -6,6 +6,7 @@
 
 #![allow(dead_code)]
 
+pub mod contract;
 pub mod iv;
 pub mod oracle;
 

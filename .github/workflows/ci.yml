@@ -13,7 +13,8 @@
 # - platform-tools v1.57 (Rust 1.95.0 for SBF), installed from its verified archive;
 # - host Rust 1.99.1 with rustfmt and clippy;
 # - cargo-semver-checks 0.51.0 (installed with --locked);
-# - the varswap and metalbook commits in ci/downstream.env.
+# - the varswap and metalbook commits in ci/downstream.env;
+# - nightly-2026-10-11 and cargo-fuzz 0.13.2 for the fuzz jobs (fuzz/Cargo.lock).
 # SHA-256 values are the digests GitHub publishes for the release assets.
 
 name: CI
@@ -39,6 +40,8 @@ env:
   CARGO_TERM_COLOR: never
   MAKE_PINS: RUST_TOOLCHAIN=1.99.1 CARGO_FLAGS=--locked
   SEMVER_CHECKS_VERSION: "0.51.0"
+  FUZZ_NIGHTLY: nightly-2026-10-11
+  CARGO_FUZZ_VERSION: "0.13.2"
 
 jobs:
   checks:
@@ -136,3 +139,22 @@ jobs:
       - name: cargo-semver-checks
         run: cargo install cargo-semver-checks --version "$SEMVER_CHECKS_VERSION" --locked
       - run: cargo semver-checks check-release -p optfix
+
+  # docs/PLAN-improvements.md, milestone 16: each fuzz target replays its committed corpus, then
+  # searches for 60 seconds. .github/workflows/fuzz-nightly.yml runs each for 30 minutes.
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Pinned nightly and cargo-fuzz
+        run: |
+          rustup toolchain install "$FUZZ_NIGHTLY" --profile minimal
+          cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
+      - run: make fuzz-smoke FUZZ_NIGHTLY="$FUZZ_NIGHTLY" FUZZ_SECONDS=60
+      - name: Crash inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
