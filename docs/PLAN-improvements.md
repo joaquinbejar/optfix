@@ -160,9 +160,9 @@ reproduce them bit for bit: a native test, a `wasm-bindgen-test` run under Node 
 bench program on SBF for a subset (the LiteSVM harness already compares SBF with host). The
 file is versioned with the crate; SDKs in other repos can use it as their test vector.
 
-Distribution: the `.wasm` package (built with `wasm-pack`, pinned) is attached to the GitHub
-release. Publishing to npm is not covered by the current authorization (tag, crates.io and
-GitHub release); I will ask the coordinator before milestone 21.
+Distribution (coordinator, msg 43356): `optfix-wasm` is published on crates.io with `optfix`,
+and the `wasm-pack` package tarball (pinned `wasm-pack`) is attached to the GitHub release. No
+npm publication for now; the coordinator will say if that changes.
 
 *Done when* the three consumers match the vectors in CI, the README documents both crates, and
 the CI time stays under the threshold.
@@ -239,10 +239,11 @@ above, or the gate's failure is recorded.
 
 `CHANGELOG.md` [0.3.0], README (install `optfix = "0.3"`, the wasm crate, the example, rho),
 publish dry run of both crates, then on the coordinator's go: merge, signed tag `v0.3.0`,
-`cargo publish -p optfix` and `-p optfix-wasm`, GitHub release with the wasm package attached.
+`cargo publish -p optfix` and `-p optfix-wasm`, GitHub release with the wasm package tarball attached (no npm).
 Downstream bumps to `"0.3"` follow through the coordinator.
 
-## Open questions (for the coordinator)
+## Decisions from the coordinator
 
-1. npm publication of `optfix-wasm` (milestone 17): not covered by the current authorization.
-2. Whether `optfix-wasm` should also be published on crates.io, or only as a release asset.
+1. npm publication of `optfix-wasm`: not now; GitHub release asset only (msg 43356).
+2. `optfix-wasm` on crates.io: yes, under the existing crates authorization (msg 43356).
+3. Downstream pins for breaking milestones: coordinated through the coordinator (msg 43356).
