@@ -20,16 +20,20 @@ export CARGO_FLAGS
 build:
 	cargo build $(CARGO_FLAGS) --workspace
 
-# Build bench-program for SBF into target/deploy. cargo-build-sbf's exit status is kept (no
-# pipe), and scripts/check-sbf-log.sh fails the build on a stack frame above 4 KiB, which
-# cargo-build-sbf only warns about.
+# Build bench-program and the example program (examples/pricer-program, milestone 18) for SBF
+# into target/deploy. cargo-build-sbf's exit status is kept (no pipe), and
+# scripts/check-sbf-log.sh fails the build on a stack frame above 4 KiB, which cargo-build-sbf
+# only warns about.
+SBF_PROGRAMS := bench-program examples/pricer-program
 .PHONY: program
 program:
 	@mkdir -p target
-	@cargo build-sbf --manifest-path bench-program/Cargo.toml --arch $(SBF_ARCH) -- $(CARGO_FLAGS) \
-		> target/build-sbf.log 2>&1; status=$$?; cat target/build-sbf.log; \
-		if [ $$status -ne 0 ]; then echo "program: cargo-build-sbf failed ($$status)"; exit $$status; fi
-	@sh scripts/check-sbf-log.sh target/build-sbf.log
+	@for p in $(SBF_PROGRAMS); do \
+		cargo build-sbf --manifest-path $$p/Cargo.toml --arch $(SBF_ARCH) -- $(CARGO_FLAGS) \
+			> target/build-sbf.log 2>&1; status=$$?; cat target/build-sbf.log; \
+		if [ $$status -ne 0 ]; then echo "program: cargo-build-sbf failed for $$p ($$status)"; exit $$status; fi; \
+		sh scripts/check-sbf-log.sh target/build-sbf.log || exit 1; \
+	done
 
 # Failing control for `program`: the log check must reject a frame overflow in both wordings,
 # and a failing cargo-build-sbf must fail the target.

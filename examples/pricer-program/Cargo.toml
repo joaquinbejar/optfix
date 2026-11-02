@@ -1,0 +1,29 @@
+[package]
+name = "optfix-example-pricer"
+description = "A minimal Pinocchio program that prices a European option with optfix: an example to copy"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "optfix_example_pricer"
+
+[dependencies]
+bytemuck = { workspace = true }
+optfix = { workspace = true }
+pinocchio = { workspace = true }
+
+[dev-dependencies]
+litesvm = { workspace = true }
+solana-address = { workspace = true }
+solana-instruction = { workspace = true }
+solana-keypair = { workspace = true }
+solana-signer = { workspace = true }
+solana-transaction = { workspace = true }
+
+[lints]
+workspace = true

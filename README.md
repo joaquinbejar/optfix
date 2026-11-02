@@ -16,12 +16,13 @@
 4. [Numbers and Rounding](#numbers-and-rounding)
 5. [Setup Instructions](#setup-instructions)
 6. [Usage Example](#usage-example)
-7. [Error Bounds](#error-bounds)
-8. [Compute Units](#compute-units)
-9. [Testing and Benchmarks](#testing-and-benchmarks)
-10. [Documentation](#documentation)
-11. [Used by](#used-by)
-12. [Contribution and Contact](#contribution-and-contact)
+7. [Using optfix On Chain](#using-optfix-on-chain)
+8. [Error Bounds](#error-bounds)
+9. [Compute Units](#compute-units)
+10. [Testing and Benchmarks](#testing-and-benchmarks)
+11. [Documentation](#documentation)
+12. [Used by](#used-by)
+13. [Contribution and Contact](#contribution-and-contact)
 
 ### Introduction
 
@@ -82,6 +83,7 @@ measured in LiteSVM.
 | `bench-program` | A Pinocchio SBF program that exists only to measure compute units; nobody deploys it. |
 | `bench` (`optfix-bench`) | Runs `bench-program` in LiteSVM and writes `docs/benchmarks.md`. |
 | `lint-control` | A failing control proving the workspace lints fire. |
+| `examples/pricer-program` (`optfix-example-pricer`) | A minimal Pinocchio program pricing an option with optfix: an example to copy, tested in LiteSVM. |
 | `optfix-wasm` | WebAssembly bindings for JavaScript: every value an exact `bigint` (or decimal text), bit-identical to the Rust crate. |
 | `conformance` (`optfix-conformance`) | The conformance vectors (`conformance/vectors-g*.json`): generator, native evaluator and replay. |
 
@@ -185,6 +187,37 @@ fn main() {
 }
 ```
 <!-- /generated:example -->
+
+### Using optfix On Chain
+
+[`examples/pricer-program`](examples/pricer-program/src/lib.rs) is a complete Pinocchio
+program to copy: one instruction, no accounts, `no_std` and no allocator. It reads a kind byte
+and six `FixedBytes` (`S`, `K`, `T`, `σ`, `r`, `q`) from the instruction data, prices with
+`price_and_greeks`, and returns the price, the greeks and `price_error_bound` as return data.
+The points it shows:
+
+- Read values as `FixedBytes` (alignment 1), never as `Fixed`: instruction and account data are
+  only 8-aligned, and an `i128` is 16-aligned on 64-bit hosts.
+- The range checks are the quantity constructors (`Spot::try_new` and the others); map
+  `PricingError` into your program's errors with `e as u8` (the example uses
+  `Custom(6000 + e as u8)`).
+- The price is within `price_error_bound` of the exact value in either direction: a protocol
+  that charges or pays it widens it by that envelope toward itself.
+
+Its LiteSVM test (`make program`, then `make test`) checks the return data against the host bit
+for bit and the error codes; one pricing takes at most about 15,200 CU.
+
+How many legs fit in one instruction, from the strip rows of `docs/benchmarks.md` at 0.2.1
+(worst case per extra leg: 5,209 CU for prices, 10,381 with greeks; 9,968 and 15,208 for the
+first):
+
+| Budget | `price_strip` legs | `price_and_greeks_strip` legs |
+| --- | ---: | ---: |
+| 200,000 CU (default per instruction) | 37 | 18 |
+| 1,400,000 CU (the most a transaction can request) | 267 | 134 |
+
+A transaction is at most 1,232 bytes, so legs passed in instruction data (a kind byte and a
+16-byte strike each) stop near 60; above that, read the strikes from an account.
 
 ### Error Bounds
 

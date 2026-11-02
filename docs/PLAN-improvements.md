@@ -327,6 +327,19 @@ the CI time stays under the threshold.
 
 ## Milestone 18: Pinocchio example program
 
+(Built.) `examples/pricer-program` (`optfix-example-pricer`, a workspace member, `publish =
+false`): one instruction, data a kind byte and six `FixedBytes` read through
+`bytemuck::try_cast_slice` (alignment 1), return data the price, the four greeks and
+`price_error_bound` (96 bytes); malformed data fails with `InvalidInstructionData`, an optfix
+error with `Custom(6000 + e as u8)`. `make program` now builds it for SBF with the same stack
+check as the bench program (so `checks`, `test` and `budget-control` build it), and its LiteSVM
+test (`tests/pricer.rs`) checks five inputs across the domain against the host bit for bit,
+the error codes for an out-of-range `S/K`, an out-of-range `σ`, a short buffer and a bad kind
+byte, and at most 16,000 CU per pricing (measured 15,207). The README gains "Using optfix On
+Chain" with the legs-per-budget table: 37 priced legs or 18 with greeks in the default 200,000
+CU, 267 or 134 in 1,400,000, from the worst-case strip rows, and the 1,232-byte transaction
+limit (about 60 legs in instruction data).
+
 `examples/pricer-program/`: a minimal on-chain consumer to copy, separate from the bench
 harness. One instruction reads a Pyth-free set of inputs from instruction data (`FixedBytes`
 for each value, a kind byte), prices with `price_and_greeks`, and returns `Priced` through

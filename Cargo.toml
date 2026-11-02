@@ -1,5 +1,5 @@
 [workspace]
-members = ["optfix", "bench-program", "bench", "lint-control", "conformance", "optfix-wasm"]
+members = ["optfix", "bench-program", "bench", "lint-control", "conformance", "optfix-wasm", "examples/pricer-program"]
 exclude = ["fuzz"]
 resolver = "2"
 
