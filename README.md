@@ -211,14 +211,14 @@ Its LiteSVM test (`make program`, then `make test`) checks the return data again
 for bit and the error codes; one pricing takes at most about 15,200 CU.
 
 The example prices one option. For a strip in one instruction, a linear projection from the
-strip rows of `docs/benchmarks.md` at 0.2.1 gives a first idea (the largest per-leg increment
-measured between 1 and 16 legs: 5,209 CU for prices, 10,381 with greeks; 9,968 and 15,208 for
-the first leg):
+strip rows of `docs/benchmarks.md` at 0.3.0 gives a first idea (from the worst-case rows, the
+increment per leg between 1 and 16 legs: 5,215 CU for prices, 10,676 with greeks, which include
+rho; 9,969 and 15,497 for the first leg):
 
 | Budget | `price_strip` legs (projected) | `price_and_greeks_strip` legs (projected) |
 | --- | ---: | ---: |
 | 200,000 CU (default per instruction) | 37 | 18 |
-| 1,400,000 CU (the most a transaction can request) | 267 | 134 |
+| 1,400,000 CU (the most a transaction can request) | 267 | 130 |
 
 These are illustrative projections, not bounds: only 1- and 16-leg strips are measured, and the
 figures leave nothing for your program's own work (entrypoint, account reads, decoding,

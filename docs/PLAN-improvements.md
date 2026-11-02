@@ -381,7 +381,8 @@ prices, 9,770 with greeks).
   - `PriceAndGreeks` 14,203 to 14,497 (+2.1%) and `PriceAndGreeksBlack76` 14,224 to 14,847.
     Both now return 16 more bytes.
   - `Baseline` 39,292 to 46,500, because its fifth separate greek recomputes `d1`.
-  - The greeks strips grow by about 290 CU per leg.
+  - The greeks strips grow by about 290 CU per leg, so the README's projected legs with greeks
+    at 1,400,000 CU go from 134 to 130 (18 at 200,000 is unchanged).
   - The budget is re-agreed for every dearer row. `Noop` keeps 200, and price-only rows move by
     under 0.1%.
 - The example program returns rho too (112 bytes).
