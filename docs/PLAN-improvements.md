@@ -548,6 +548,13 @@ above, or the gate's failure is recorded.
 
 ## Milestone 21: release 0.3.0
 
+(Built: the release PR carries `CHANGELOG.md` [0.3.0] and the README updates: version, `optfix
+= "0.3"`, `npm install optfix-wasm`, at most two implied-volatility steps, and the wasm README's
+`rho` and `fromBps`. `cargo publish --dry-run` passes for both crates together. After the
+merge: signed tag `v0.3.0`, `cargo publish -p optfix` then `-p optfix-wasm`, and the GitHub
+release with the `wasm-pack` npm tarball attached. `npm publish` follows once npm is
+authenticated on the release machine, per the coordinator's decision.)
+
 `CHANGELOG.md` [0.3.0], README (install `optfix = "0.3"`, the wasm crate, the example, rho),
 publish dry run of both crates, then on the coordinator's go: merge, signed tag `v0.3.0`,
 `cargo publish -p optfix` and `-p optfix-wasm`, GitHub release with the wasm package tarball attached, and `npm publish` of `optfix-wasm`.

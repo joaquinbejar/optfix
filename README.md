@@ -7,7 +7,7 @@
 [![PRs](https://img.shields.io/github/issues-pr/joaquinbejar/optfix.svg)](https://github.com/joaquinbejar/optfix/pulls)
 [![no_std](https://img.shields.io/badge/no__std-yes-green.svg)](https://github.com/joaquinbejar/optfix/blob/main/docs/PLAN.md)
 
-## optfix v0.2.1: Fixed-Point Option Pricing for Solana
+## optfix v0.3.0: Fixed-Point Option Pricing for Solana
 
 ### Table of Contents
 1. [Introduction](#introduction)
@@ -68,7 +68,7 @@ measured in LiteSVM.
   `THETA_ERR_REL` and the absolute parts.
 
 #### 4. **Implied volatility**
-- `implied_vol` with `IvInputs`: a table-based initial guess and at most three third-order steps.
+- `implied_vol` with `IvInputs`: a table-based initial guess and at most two third-order steps.
 - Answers within `4 E / vega + 2^-40 σ` where vega is at least `2^28 E`; returns
   `IllConditioned` below that.
 
@@ -132,7 +132,13 @@ Add optfix from crates.io:
 
 ```toml
 [dependencies]
-optfix = "0.2"
+optfix = "0.3"
+```
+
+From JavaScript (Node.js), the WebAssembly bindings, bit-identical to the Rust crate:
+
+```shell
+npm install optfix-wasm
 ```
 
 #### Building from Source
