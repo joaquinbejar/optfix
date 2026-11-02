@@ -16,6 +16,10 @@ include = ["/src", "/LICENSE"]
 [features]
 # Benchmark-only items (`bsm::baseline`); not public API.
 bench-internals = []
+# The implied-volatility profile hooks (`iv_bench::trace`, `iv_bench::steps_only`) of
+# docs/PLAN-improvements.md, milestone 20; not public API. Separate from `bench-internals`: their
+# copy of the solve loop changes how LLVM inlines the solve's helpers, about 20 CU on SBF.
+iv-profile = ["bench-internals"]
 
 [dependencies]
 bytemuck = { workspace = true }

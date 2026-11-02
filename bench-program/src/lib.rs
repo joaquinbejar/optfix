@@ -93,6 +93,21 @@ pub enum Instruction {
     CashOrNothing = 19,
     /// `optfix::price_asset_or_nothing`: as `Price`; returns the price.
     AssetOrNothing = 20,
+    /// The implied-volatility profile (`docs/PLAN-improvements.md`, milestone 20), with feature
+    /// `iv-profile` only and the arguments of `ImpliedVol`: the setup and initial guess alone
+    /// (`iv_bench::initial_guess`); returns the guess of `ln σ`.
+    #[cfg(feature = "iv-profile")]
+    IvSetup = 21,
+    /// Setup and exactly one step, without the conditioning judgement
+    /// (`iv_bench::steps_only`); returns `ln σ`.
+    #[cfg(feature = "iv-profile")]
+    IvSteps1 = 22,
+    /// As `IvSteps1` with two steps.
+    #[cfg(feature = "iv-profile")]
+    IvSteps2 = 23,
+    /// As `IvSteps1` with three steps (`IV_MAX_ITERATIONS`).
+    #[cfg(feature = "iv-profile")]
+    IvSteps3 = 24,
 }
 
 impl Instruction {
@@ -125,6 +140,14 @@ impl Instruction {
             18 => Ok(Self::PriceAndGreeksBlack76),
             19 => Ok(Self::CashOrNothing),
             20 => Ok(Self::AssetOrNothing),
+            #[cfg(feature = "iv-profile")]
+            21 => Ok(Self::IvSetup),
+            #[cfg(feature = "iv-profile")]
+            22 => Ok(Self::IvSteps1),
+            #[cfg(feature = "iv-profile")]
+            23 => Ok(Self::IvSteps2),
+            #[cfg(feature = "iv-profile")]
+            24 => Ok(Self::IvSteps3),
             _ => Err(BenchError::UnknownInstruction),
         }
     }
@@ -258,6 +281,14 @@ pub fn process_instruction(
         Instruction::AssetOrNothing => bsm(args, asset_or_nothing_only)?.map(|p| p.price.get()),
         Instruction::ImpliedVol => iv(args, optfix::implied_vol)?,
         Instruction::ImpliedVolAllIterations => iv(args, optfix::iv_bench::all_iterations)?,
+        #[cfg(feature = "iv-profile")]
+        Instruction::IvSetup => iv_raw(args, iv_profile::setup)?,
+        #[cfg(feature = "iv-profile")]
+        Instruction::IvSteps1 => iv_raw(args, iv_profile::steps1)?,
+        #[cfg(feature = "iv-profile")]
+        Instruction::IvSteps2 => iv_raw(args, iv_profile::steps2)?,
+        #[cfg(feature = "iv-profile")]
+        Instruction::IvSteps3 => iv_raw(args, iv_profile::steps3)?,
         Instruction::PriceAndGreeks
         | Instruction::Baseline
         | Instruction::PriceStrip
@@ -455,6 +486,79 @@ fn iv(
             carry: Rate::try_new(q.get())?,
         };
         f(&opt, &m, Price::try_new(target.get())?).map(Volatility::get)
+    };
+    Ok(solve())
+}
+
+/// The implied-volatility profile rows: setup and guess, then exactly 1, 2 or 3 steps.
+#[cfg(feature = "iv-profile")]
+pub mod iv_profile {
+    use super::{EuropeanOption, Fixed, IvInputs, Price, PricingError};
+    use optfix::iv_bench::{initial_guess, steps_only};
+
+    /// The initial guess of `ln σ`.
+    ///
+    /// # Errors
+    ///
+    /// As `implied_vol` before its first step.
+    pub fn setup(o: &EuropeanOption, m: &IvInputs, p: Price) -> Result<Fixed, PricingError> {
+        initial_guess(o, m, p).map(|(v, _)| v)
+    }
+
+    /// `ln σ` after exactly one step.
+    ///
+    /// # Errors
+    ///
+    /// As `implied_vol` during its steps.
+    pub fn steps1(o: &EuropeanOption, m: &IvInputs, p: Price) -> Result<Fixed, PricingError> {
+        steps_only(o, m, p, 1)
+    }
+
+    /// `ln σ` after exactly two steps.
+    ///
+    /// # Errors
+    ///
+    /// As `implied_vol` during its steps.
+    pub fn steps2(o: &EuropeanOption, m: &IvInputs, p: Price) -> Result<Fixed, PricingError> {
+        steps_only(o, m, p, 2)
+    }
+
+    /// `ln σ` after exactly three steps.
+    ///
+    /// # Errors
+    ///
+    /// As `implied_vol` during its steps.
+    pub fn steps3(o: &EuropeanOption, m: &IvInputs, p: Price) -> Result<Fixed, PricingError> {
+        steps_only(o, m, p, 3)
+    }
+}
+
+/// As [`iv`] for the profile rows, whose functions return a raw `ln σ`.
+#[cfg(feature = "iv-profile")]
+#[inline(never)]
+fn iv_raw(
+    args: &[u8],
+    f: fn(&EuropeanOption, &IvInputs, Price) -> Result<Fixed, PricingError>,
+) -> Result<Result<Fixed, PricingError>, BenchError> {
+    let (&kind, rest) = args.split_first().ok_or(BenchError::InvalidArguments)?;
+    let kind = match kind {
+        0 => OptionKind::Call,
+        1 => OptionKind::Put,
+        _ => return Err(BenchError::InvalidArguments),
+    };
+    let [s, k, t, target, r, q]: [FixedBytes; 6] = decode(rest)?;
+    let solve = || -> Result<Fixed, PricingError> {
+        let opt = EuropeanOption {
+            kind,
+            strike: Strike::try_new(k.get())?,
+            expiry: Years::try_new(t.get())?,
+        };
+        let m = IvInputs {
+            spot: Spot::try_new(s.get())?,
+            rate: Rate::try_new(r.get())?,
+            carry: Rate::try_new(q.get())?,
+        };
+        f(&opt, &m, Price::try_new(target.get())?)
     };
     Ok(solve())
 }

@@ -86,8 +86,16 @@ const ONE: f64 = 18_446_744_073_709_551_616.0;
 
 const PROGRAM_ID: Address = Address::new_from_array([7u8; 32]);
 
+/// The program ELF: `target/deploy` (`make program`), or `OPTFIX_BENCH_PROGRAM` (the
+/// `iv-profile` build of `make iv-profile`).
 fn program_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/deploy/optfix_bench_program.so")
+    std::env::var_os("OPTFIX_BENCH_PROGRAM").map_or_else(
+        || {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../target/deploy/optfix_bench_program.so")
+        },
+        PathBuf::from,
+    )
 }
 
 /// splitmix64.
@@ -1268,4 +1276,104 @@ fn test_conformance_vectors_on_sbf() {
         assert!(n >= 50, "{f}: only {n} cases replayed on SBF");
     }
     println!("conformance on SBF ({}): {counts:?}", path.display());
+}
+
+/// The implied-volatility profile on SBF (`docs/PLAN-improvements.md`, milestone 20): the
+/// `ImpliedVol` inputs through the `iv-profile` build of the program (`make iv-profile`, which
+/// sets `OPTFIX_BENCH_PROGRAM`), split into setup and guess, each step and the final
+/// conditioning check by differences of medians. Each row equals the host bit for bit.
+#[cfg(feature = "iv-profile")]
+#[test]
+#[ignore = "needs the iv-profile build: make iv-profile"]
+fn test_iv_profile_on_sbf() {
+    use optfix::iv_bench::{initial_guess, steps_only};
+    type Row = (
+        u8,
+        &'static str,
+        fn(&EuropeanOption, &IvInputs, Price) -> Result<Fixed, PricingError>,
+    );
+    let rows: [Row; 6] = [
+        (Ix::ImpliedVol as u8, "ImpliedVol", |o, m, p| {
+            implied_vol(o, m, p).map(Volatility::get)
+        }),
+        (
+            Ix::ImpliedVolAllIterations as u8,
+            "ImpliedVol, all iterations",
+            |o, m, p| optfix::iv_bench::all_iterations(o, m, p).map(Volatility::get),
+        ),
+        (21, "Setup and guess", |o, m, p| {
+            initial_guess(o, m, p).map(|(v, _)| v)
+        }),
+        (22, "Setup and 1 step", |o, m, p| steps_only(o, m, p, 1)),
+        (23, "Setup and 2 steps", |o, m, p| steps_only(o, m, p, 2)),
+        (24, "Setup and 3 steps", |o, m, p| steps_only(o, m, p, 3)),
+    ];
+    let mut vm = Vm::new();
+    let noop: Vec<u64> = (0..RANDOM_INPUTS)
+        .map(|_| {
+            vm.run(&[
+                Ix::Noop as u8,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ])
+            .0
+        })
+        .collect();
+    let noop_med = stats(&noop).1;
+    // The same inputs as the `ImpliedVol` row of `test_cu_table_is_deterministic_and_matches_host`.
+    let mut rng = Rng(SEED ^ 0x1F);
+    let inputs = iv_inputs(&mut rng, false);
+    let mut med = Vec::new();
+    let mut s = String::new();
+    writeln!(s, "| Row | Median net | Max net |").unwrap();
+    writeln!(s, "| --- | ---: | ---: |").unwrap();
+    for (tag, name, f) in rows {
+        let cu: Vec<u64> = inputs
+            .iter()
+            .map(|(o, m, target)| {
+                let mut d = iv_data(Ix::ImpliedVol, o, m, *target);
+                d[0] = tag;
+                let (cu, out) = vm.run_raw(&d);
+                assert_eq!(
+                    out.as_slice(),
+                    encode_result(f(o, m, *target)).as_slice(),
+                    "{name} on-chain differs from host at {o:?} {m:?} {target:?}"
+                );
+                cu
+            })
+            .collect();
+        let (_, m, hi) = stats(&cu);
+        writeln!(s, "| {name} | {} | {} |", m - noop_med, hi - noop_med).unwrap();
+        med.push(m - noop_med);
+    }
+    let d = |a: usize, b: usize| med[a] as i64 - med[b] as i64;
+    writeln!(
+        s,
+        "\nSplit (differences of medians): setup and guess {}, step 1 {}, step 2 {}, step 3 {}, \
+         final conditioning check {} (all iterations minus 3 steps).",
+        med[2],
+        d(3, 2),
+        d(4, 3),
+        d(5, 4),
+        d(1, 5)
+    )
+    .unwrap();
+    println!("{s}");
+    if let Ok(path) = std::env::var("OPTFIX_IV_PROFILE_OUT") {
+        std::fs::write(path, &s).unwrap();
+    }
 }
