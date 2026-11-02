@@ -89,7 +89,7 @@ wasm:
 
 .PHONY: wasm-test
 wasm-test: wasm
-	node --test optfix-wasm/tests/
+	node --test optfix-wasm/tests/*.test.mjs
 
 # A new conformance generation (docs/PLAN-improvements.md, milestone 17): only for a milestone
 # that agrees a change of results; earlier generations are never edited.
