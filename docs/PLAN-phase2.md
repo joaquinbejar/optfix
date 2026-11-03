@@ -178,8 +178,12 @@ peaks).
 
 - A known butterfly arbitrage: the slice of Gatheral and Jacquier (2014), example 3.1 (Vogt:
   `a = −0.0410`, `b = 0.1331`, `ρ = 0.3060`, `m = 0.3586`, `σ = 0.4153`, `T = 1`) must fail,
-  at the nodes where the mpmath `g` is negative by more than the interval width. The parameters
-  and the failing region are re-derived with mpmath in this milestone, not copied.
+  at the nodes where the mpmath `g` is negative by more than the interval width. A first
+  mpmath pass (50 digits, nodes every 0.01 on `[−2, 2]`) gives `g < 0` for `k` in
+  `[0.65, 1.25]`, with a minimum of about `−0.033`. The same slice passes the wing condition
+  (`b (1 + |ρ|) ≈ 0.174`) and has a positive minimum variance (`≈ 0.0116`), so only the
+  butterfly check catches it. The milestone regenerates this in its fixture rather than
+  copying the numbers.
 - Known clean slices (fits from published examples, plus symmetric `ρ = 0` slices with small
   `b`) must pass.
 - Calendar: crossing slices fail at the crossing; a slice against itself shifted up by `a + ε`
