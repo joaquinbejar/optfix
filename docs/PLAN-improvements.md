@@ -284,7 +284,9 @@ replay, before any random search; the same PR without the planted bug passes.
   copy of the file makes it fail on exactly those two. The third, `test_conformance_vectors_on_sbf`
   in `bench/tests/cu.rs`, replays the first 100 cases of each of the 15 functions the bench
   program exposes on SBF.
-- CI job `wasm`: `make wasm-test` and `npm publish --dry-run` (Node.js 24.22.0 LTS). npm
+- CI job `wasm`: `make wasm-test` and `npm pack --dry-run` (Node.js 24.22.0 LTS; it was
+  `npm publish --dry-run` until 0.3.0 reached npm, which then refuses an already published
+  version). npm
   publication is authorized by the coordinator (msg 44379): the unscoped name `optfix-wasm` was
   free on 2026-11-02; it is published at milestone 21 once the Studio is logged in to npm.
 

@@ -1,5 +1,8 @@
 # optfix-wasm
 
+[![npm](https://img.shields.io/npm/v/optfix-wasm.svg)](https://www.npmjs.com/package/optfix-wasm)
+[![Crates.io](https://img.shields.io/crates/v/optfix-wasm.svg)](https://crates.io/crates/optfix-wasm)
+
 WebAssembly bindings for [optfix](https://github.com/joaquinbejar/optfix): fixed-point
 (Q64.64) option pricing with every rounding explicit, bit-identical in JavaScript to the Rust
 crate and to its on-chain (Solana SBF) build.

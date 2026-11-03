@@ -166,7 +166,8 @@ jobs:
 
   # docs/PLAN-improvements.md, milestone 17: the wasm package built by wasm-pack, every
   # conformance generation replayed through it on Node.js, and the npm package as it would be
-  # published (dry run; publishing happens at the release).
+  # published (`npm pack --dry-run`: the tarball contents, without asking the registry, so the
+  # job stays green between releases when the version on main is already on npm).
   wasm:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -183,4 +184,4 @@ jobs:
       - run: make wasm-test
       - name: npm package (dry run)
         working-directory: optfix-wasm/pkg
-        run: npm publish --dry-run
+        run: npm pack --dry-run
