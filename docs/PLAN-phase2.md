@@ -40,16 +40,40 @@ w(k) = a + b (ρ (k − m) + sqrt((k − m)² + σ²)),   k = ln(K / F),   F = S
 with `b >= 0`, `|ρ| < 1`, `σ > 0` and `a + b σ sqrt(1 − ρ²) >= 0` (the minimum of `w` is not
 negative). The implied volatility of strike `K` at expiry `T > 0` is `sqrt(w(k) / T)`.
 
-Two fixed-point issues shape the design:
+**The root.** Forming `x² + σ²` (`x = k − m`) directly loses precision when both are tiny: at
+`σ = 10^-6`, `σ² = 10^-12` carries one ulp of `5.4 × 10^-20`, so the root has a relative error
+near `3 × 10^-8`. Scaling always (`M × sqrt(1 + (μ / M)²)`, with `M = max(|x|, σ)` and
+`μ = min(|x|, σ)`) fixes that but is worse for large `M`, where its error grows with `M`. The
+two forms are complementary, so the root switches at `M = 1`:
 
-1. **Small `σ` near `k = m`.** Forming `(k − m)² + σ²` in Q64.64 loses relative precision when
-   both are tiny: at `σ = 10^-6`, `σ² = 10^-12` carries one ulp of `5.4 × 10^-20`, so the root
-   has a relative error near `3 × 10^-8`. The root is computed as a scaled hypot instead:
-   with `M = max(|x|, σ)` and `μ = min(|x|, σ)`, `sqrt(x² + σ²) = M × sqrt(1 + (μ / M)²)`, where
-   the inner root is of a value in `[1, 2]` and keeps full precision.
-2. **Cancellation in the wings.** With `ρ` near `−1` and large positive `x` (or `ρ` near `1` and
-   large negative `x`), `ρ x + sqrt(x² + σ²)` is much smaller than its terms. The envelope is
-   therefore relative to the size of the terms, `|a| + b (|x| + σ)`, not to `w`.
+- `M >= 1`: `sqrt_down(x ⊗ x + σ ⊗ σ)`. The radicand is at most 2 ulps low and the root at least
+  1, so the result is at most `2 / (2 × 1) + 1 = 2` ulps low.
+- `M < 1`: `q = μ ⊘ M`, then `M ⊗ sqrt_down(1 + q ⊗ q)`. `q ⊗ q` is at most 3 ulps low, the root
+  at most `3 / 2 + 1 = 2.5`, and the product at most `2.5 M + 1 < 3.5`.
+
+**The envelope this gives.** Every step rounds down and `b >= 0`, so the computed value never
+exceeds the true `w`, and the error does not depend on `k`, `σ` or `a` (`a` and `x` are exact):
+
+```
+0 <= w(k) − computed <= (3.5 + 1) b + 1 = 4.5 b + 1   ulps
+```
+
+The cancellation in the wings (`ρ` near `∓1`, `ρ x + s` much smaller than its terms) needs no
+special handling in this absolute form; it only means that the error relative to `w` grows
+where `w` is tiny.
+
+**Evidence** (a Q64.64 emulation in Python integers against mpmath at 80 digits, 75,000 points
+per stratum, before any Rust). Maximum absolute error of `w`:
+
+| Stratum | Direct | Always scaled | Switch at `M = 1` |
+| --- | ---: | ---: | ---: |
+| Uniform over the domain | `1.5 × 10^-17` | `2.9 × 10^-17` | `1.2 × 10^-18` |
+| Near `k = m`, `σ <= 10^-3` | `4.5 × 10^-13` | `1.1 × 10^-18` | `1.1 × 10^-18` |
+| Wings, `1 − |ρ| <= 10^-2`, cancelling | `4.4 × 10^-17` | `2.8 × 10^-17` | `1.6 × 10^-18` |
+| Around `M = 1` and the domain edges | `4.7 × 10^-13` | `8.6 × 10^-18` | `2.0 × 10^-18` |
+
+The switching form stayed within `4.5 b + 1` ulps and was never above the exact value at any
+point. Milestone 22 repeats this on the Rust code with its own fixture.
 
 ## Scope and order
 
@@ -74,17 +98,18 @@ New module `optfix/src/svi.rs`, re-exported from the crate root.
 - `SviParams::total_variance(&self, k: Fixed) -> Result<Fixed, PricingError>`: `w(k)`, rounded
   once per operation in a fixed order, with the envelope below. This is the path used on chain.
 - `SviParams::total_variance_bounds(&self, k: Fixed) -> Result<(Fixed, Fixed), PricingError>`:
-  a rigorous enclosure `lo <= w(k) <= hi`, evaluated in interval arithmetic with the directed
-  primitives (`mul_down`/`mul_up`, `div_down`/`div_up`, `sqrt_down`/`sqrt_up`). It involves no
-  measured constant, and milestone 23 builds on it.
+  a rigorous enclosure `lo <= w(k) <= hi`: `lo` is `total_variance` and `hi` adds the envelope
+  below, since the error is one-sided and derived rather than measured. Milestone 23 builds on
+  it.
 - `SviParams::min_total_variance(&self)`: `a + b σ sqrt(1 − ρ²)`, rounded down.
-- `log_forward_moneyness(expiry: Years, spot: Spot, rate: Rate, carry: Rate, strike: Strike)`:
+- `SviMarket { spot: Spot, rate: Rate, carry: Rate }`: an exhaustive input struct, like
+  `MarketInputs` without the volatility.
+- `log_forward_moneyness(expiry: Years, market: &SviMarket, strike: Strike)`:
   `k = ln K − ln S − (r ⊗ T − q ⊗ T)`, in exactly the operation order the strip uses, so that a
   caller reproduces a leg's `k` bit for bit.
 - `svi_vol(params: &SviParams, expiry: Years, market: &SviMarket, strike: Strike) ->
   Result<Volatility, PricingError>`: `sqrt(w(k) ⊘ T)` with both roundings down, through
-  `Volatility::try_new`. `SviMarket { spot: Spot, rate: Rate, carry: Rate }` is an exhaustive
-  input struct, like `MarketInputs` without the volatility.
+  `Volatility::try_new`.
 
 **Domain.** The parameter ranges bound the envelope and rule out overflow; they are wide
 enough for any slice whose volatilities fall in `Volatility`'s `[0.005, 5]` up to 30 years
@@ -98,42 +123,49 @@ enough for any slice whose volatilities fall in `Volatility`'s `[0.005, 5]` up t
   `|ln(K/S)| <= ln 20 ≈ 3.0` and `|(r − q) T| <= 0.6 × 30 = 18`, so `|k| <= 21.1`.
 - `svi_vol` refuses `T = 0` (`DomainError`: the total variance has no rate to spread over) and
   any result outside `Volatility`'s range (`DomainError` from `try_new`), negative `w` included.
+  At a very small `T`, a quotient `w / T` that does not fit `Fixed` is `Overflow`.
 
 **Envelopes.**
 
-- `w`: `|error| <= SVI_W_ERR_REL × (|a| + b (|k − m| + σ)) + SVI_W_ERR_ABS`, with the constants
-  derived from the operation count (hypot: one `div`, one `mul`, one `sqrt` of a value in
-  `[1, 2]`, one `mul`; then `ρ x`, the sum, `b ×`, `+ a`) with the same safety margin as the
-  existing envelopes, then measured.
-- Volatility: `|Δσ_imp| <= E_w / (2 σ_imp T) + 2 ulps`, where `E_w` is the `w` envelope at that
-  `k` (the first-order propagation through `sqrt(w / T)`, plus the division and the root).
-  Published as a function `svi_vol_error_bound(...)`, as `price_error_bound` is for prices,
-  because it depends on the inputs.
-- `total_variance_bounds` is rigorous by construction. Its width is reported in
-  `docs/precision.md` but not promised.
+- `w`: `0 <= w(k) − total_variance(k) <= E_w`, with `E_w = SVI_W_ERR_REL ⊗↑ b + SVI_W_ERR_ABS`,
+  `SVI_W_ERR_REL` 5 ulps and `SVI_W_ERR_ABS` 1 ulp (the derivation above, `4.5 b + 1`, rounded up
+  to a representable factor). Derived, then checked against the fixture.
+- Volatility: `0 <= σ_imp − svi_vol <= (E_w / T + 1 ulp) / (2 σ) + 1 ulp`, where `σ` is the
+  computed volatility. The radicand is low by `E_w / T` plus one ulp from the division, a root
+  is concave so the computed `σ` gives a valid slope, and the last ulp is the root's own floor.
+  Note the division's ulp is amplified by `1 / (2 σ)`: up to 100 ulps at `σ = 0.005`. Published as
+  a function `svi_vol_error_bound(...)`, as `price_error_bound` is for prices, because it depends
+  on the inputs.
+- The price of a leg is `price` at the computed `σ`, so its envelope is `price_error_bound`
+  around that value; the error against the price at the true `σ_imp` adds at most
+  `vega × (σ_imp − σ)`. The docs state this.
 
 **Reference and tests.**
 
-- `tools/svi_fixture/`: an mpmath reference at 60 digits for `w(k)` and `σ_imp`, over random
+- `tools/svi_fixture/`: an mpmath reference at 80 digits for `w(k)` and `σ_imp`, over random
   parameters from the domain (log-uniform `σ` and `b`, uniform `ρ`, `m`, `a` subject to the
-  minimum constraint) and `k` in `[−25, 25]`, with an extra stratum near `k = m` and in the
-  far wings at `|ρ| > 0.99`. `check_mpmath.py` is an independent checker, as for the pricer.
+  minimum constraint) and `k` over the whole `[−32, 32]`, with extra strata near `k = m`, in the
+  far wings at `|ρ| > 0.99`, around the `M = 1` switch and at the domain edges.
+  `check_mpmath.py` is an independent checker, as for the pricer.
 - Proptests:
-  - the envelope against the fixture;
-  - `lo <= total_variance <= hi`, and the mpmath value inside `[lo, hi]`;
-  - `w >= min_total_variance()` up to the envelope;
+  - the one-sided envelope against the fixture: the mpmath value inside `[lo, hi]`, never below
+    `total_variance`;
+  - `hi >= min_total_variance()`: the computed `w` stays above the slice's minimum, up to the
+    envelope;
   - reflection symmetry: the slice `(a, b, −ρ, −m, σ)` at `−k` equals `(a, b, ρ, m, σ)` at `k`,
     bit for bit, since every step is symmetric in the sign of `x`;
   - `svi_vol` against `sqrt(w / T)` from the fixture.
 - Fuzz target `svi`: arbitrary parameters and `k`. It checks `try_new` agreement with the
-  domain, `lo <= w <= hi`, and no panic. It joins `make fuzz-smoke`.
+  domain, the same result from `svi_vol` and from its documented steps, and no panic. It joins
+  `make fuzz-smoke`.
 - `docs/precision.md`: measured `w` and `σ_imp` errors over 1,000,000 points, as for the other
   rows.
 
 **CU.** Rows `SviTotalVariance` and `SviVol` in `bench-program` and `docs/benchmarks.md`, with
 budget limits set by the usual rule from the first measurement. Estimate from today's rows:
-`total_variance` about 3,900 CU net (the `sqrt` at about 2,200 dominates), `svi_vol` about
-7,700 (two `ln`, the variance, a division and a second `sqrt`). If `SqrtDown` dominates as
+`total_variance` about 3,300 CU net for `M >= 1` and 3,900 for `M < 1` (the `sqrt` at about 2,200
+dominates), `svi_vol` up to about 7,700 (two `ln`, the variance, a division and a second `sqrt`).
+If `SqrtDown` dominates as
 expected, a cheaper exact square root (same bits: floor and ceiling are exactly defined, so a
 faster integer root changes no result) is measured in this milestone and adopted only if
 `SqrtDown`'s own row and every downstream row do not grow.
@@ -147,14 +179,19 @@ result and CU row is unchanged.
 Validation is for the host (an off-chain publisher or keeper checking a slice before it is
 used). It is `no_std` like the rest of the crate but is not benchmarked or budgeted for SBF.
 
-- **Wings (Lee).** `check_wings(&SviParams)`: `b (1 + |ρ|) <= 2`, evaluated rounding up, so a
-  pass is certain. The large-`|k|` slope of `w` must not exceed 2.
-- **Butterfly (Durrleman).** The density is non-negative if and only if
-  `g(k) = (1 − k w' / (2 w))² − (w'² / 4) (1 / w + 1 / 4) + w'' / 2 >= 0` and `w > 0`, with
-  `w' = b (ρ + x / s)`, `w'' = b σ² / s³`, `s = sqrt(x² + σ²)`, `x = k − m`.
+- **Wings.** `check_wings(&SviParams)`: `b (1 + |ρ|) < 2`, strictly, evaluated rounding up, so a
+  pass is certain. The slopes of `w` at `±∞` are `b (1 ± ρ)`. Lee's moment bound allows 2, but
+  the slice is free of butterfly arbitrage only if `d+(k) → −∞` as `k → +∞` (and `d−(k) → +∞`
+  as `k → −∞`), and a slope of exactly 2 gives `d+ → 0`: mpmath at `b (1 + ρ) = 2` gives 0.0 at
+  `k = 10^2`, `10^4` and `10^6`, against −0.36, −3.6 and −36 at a slope of 1.9.
+- **Butterfly (Durrleman, in the form of Gatheral and Jacquier).** With those limits, the density
+  is non-negative if and only if
+  `g(k) = (1 − k w' / (2 w))² − (w'² / 4) (1 / w + 1 / 4) + w'' / 2 >= 0` and `w > 0` for all `k`,
+  with `w' = b (ρ + x / s)`, `w'' = b σ² / s³`, `s = sqrt(x² + σ²)`, `x = k − m`.
   `check_butterfly(&SviParams, grid: SviGrid) -> Result<ButterflyReport, PricingError>` evaluates
-  `g` at every node of a uniform grid `SviGrid { k_min, k_max, nodes }` in interval arithmetic,
-  built on the enclosures of milestone 22. A node passes only if the lower bound of `g` is
+  `g` at every node of a uniform grid `SviGrid { k_min, k_max, nodes }` in interval arithmetic
+  with the directed primitives (`mul_down`/`mul_up`, `div_down`/`div_up`,
+  `sqrt_down`/`sqrt_up`), starting from `total_variance_bounds`. A node passes only if the lower bound of `g` is
   `>= 0` and the lower bound of `w` is `> 0`.
 - **Calendar.** `check_calendar(earlier: (&SviParams, Years), later: (&SviParams, Years),
   grid) -> Result<CalendarReport, PricingError>`: `T_earlier < T_later`, and at every node the
@@ -213,7 +250,7 @@ market, K_i)?, .. })` bit for bit. That is the same guarantee `price_strip` give
 unchanged. The partial-output contract is `price_strip`'s: legs are priced in order, the first
 failing leg's error is returned, `out[..i]` holds the earlier prices and `out[i..]` is
 unchanged. A length mismatch and `T = 0` return `DomainError` before anything is written. A
-leg whose SVI volatility is outside `[0.005, 5]` fails with `DomainError`, as `svi_vol` does.
+leg whose SVI volatility is outside `[0.005, 5]` fails with `svi_vol`'s error for that strike.
 
 **Implementation.** `Shared` splits into what depends on `σ` and what does not. The strike- and
 volatility-independent part is computed once: `Dr`, `Dq`, `S Dq`, `ln S`, `½ ln T`,
@@ -225,8 +262,8 @@ above). A faster contract (`σ√T = sqrt(w)` directly, skipping the leg's `σ`)
 one `sqrt` and one `ln` per leg but lose the bit-for-bit statement against `price`. It is not
 proposed; noted for the review.
 
-**Estimate.** About 13,000 CU net per extra leg: 4,767 for today's strip leg, plus about 1,700
-for the leg's volatility terms, plus about 6,700 for `k`, `w` and `sqrt(w / T)`. That is
+**Estimate.** About 13,000 CU net per extra leg at worst: 4,767 for today's strip leg, plus about
+1,700 for the leg's volatility terms, plus up to about 6,700 for `k`, `w` and `sqrt(w / T)`. That is
 against about 16,900 for `svi_vol` then `price` per strike, so roughly 22% cheaper, and about
 15 legs fit the default 200,000 CU. Measured rows: `PriceStripSvi, 1 / 2 / 8 / 16 legs`. The
 README's leg projections gain an SVI line.
