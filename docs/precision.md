@@ -102,6 +102,17 @@ Codex's adversarial threshold set (`tests/data/iv_threshold_codex.csv`, `tools/i
 
 End to end on 1000000 accepted market points (`S` log-uniform in `[10^-6, 10^9]`, `S/K` in `[0.05, 20]`, `T` log-uniform in `[10^-3, 30]` and one point in eight down to `10^-8`, `r` and `q` in `[−0.1, 0.5]`, a slice whose minimum is a volatility in `[0.01, 2]` at `T`): `|k̂ − k*|` at most 1.986 ulps against `SVI_K_ERR` = 5. `svi_vol` answered at 947197: above `σ*` at 223 points by up to 5.345 ulps, below by up to 4.413e9 ulps (the division's ulp is amplified by `1 / (2σ)` and `E_w / T` grows as `T` falls). `svi_vol_bounds` is at most 1.900e10 ulps wide, 9.920e-8 relative to `σ̂`.
 
+## SVI no-arbitrage checks
+
+Interval widths of `total_variance_bounds` (`w`) and `butterfly_g_bounds` (Durrleman's `g`) on the committed fixture (`tests/data/svi_g.csv`, mpmath at 80 digits; groups as in `tools/svi_fixture/gen_arb_fixture.py`), in ulps. A node inside the band `|g| <= width` may pass or fail; outside it the check agrees with the sign of `g`. "Closest" is the smallest `|g| / width` over the group's nodes.
+
+| Group | Nodes | Max `w` width | Median `g` width | Max `g` width | Inside the band | Closest |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| vogt | 401 | 2 | 34 | 313 | 0 | 3.171e14 |
+| clean | 3606 | 4 | 24 | 2668 | 0 | 6.537e15 |
+| rand | 6000 | 4 | 17 | 15057 | 0 | 2.646e14 |
+| edge | 2000 | 4 | 25 | 1033 | 186 | 2.870e-3 |
+
 ## Representation comparison (milestone 3)
 
 Maximum error over every domain above, measured at commit `6adf034` (`make precision` there reproduces the full table), for each candidate of `docs/PLAN.md` 4.1. Decimal ulps are `10^-18`. Q64.64 won on compute units (`docs/benchmarks.md`) and is the only one kept.

@@ -29,6 +29,27 @@ pub fn min_ref(p: &RawSlice) -> BigInt {
     a + mul(&mul(&b, &sigma), &sqrt_ref(&(one() - mul(&rho, &rho))))
 }
 
+/// Durrleman's `g(k)` in Q.P (`docs/PLAN-phase2.md`, milestone 23), or `None` when
+/// `w(k) <= 0`:
+/// `(1 − k w' / (2 w))² − (w'² / 4) (1 / w + 1 / 4) + w'' / 2`, `w' = b (ρ + x / s)`,
+/// `w'' = b σ² / s³`, `s = sqrt(x² + σ²)`, `x = k − m`.
+pub fn g_ref(p: &RawSlice, k: &BigInt) -> Option<BigInt> {
+    let w = w_ref(p, k);
+    if w <= BigInt::from(0) {
+        return None;
+    }
+    let [_, b, rho, m, sigma] = p.map(to_ref);
+    let x = k - m;
+    let s = sqrt_ref(&(mul(&x, &x) + mul(&sigma, &sigma)));
+    let w1 = mul(&b, &(rho + div(&x, &s)));
+    let s3 = mul(&mul(&s, &s), &s);
+    let w2 = div(&mul(&b, &mul(&sigma, &sigma)), &s3);
+    let c = one() - div(&mul(k, &w1), &(&w << 1));
+    let quarter = one() >> 2;
+    let f = mul(&(mul(&w1, &w1) >> 2), &(div(&one(), &w) + quarter));
+    Some(mul(&c, &c) - f + (w2 >> 1))
+}
+
 /// `k* = ln(K / S) − (r − q) T` in Q.P at raw inputs.
 pub fn k_star(s: i128, k: i128, t: i128, r: i128, q: i128) -> BigInt {
     ln_ref(&to_ref(k)) - ln_ref(&to_ref(s)) - mul(&(to_ref(r) - to_ref(q)), &to_ref(t))
@@ -172,4 +193,33 @@ pub fn market(s: i128, k: i128, t: i128, r: i128, q: i128) -> (Years, SviMarket,
         },
         Strike::try_new(Fixed::from_raw(k)).unwrap(),
     )
+}
+
+/// A row of `tests/data/svi_g.csv` (`tools/svi_fixture/gen_arb_fixture.py`, mpmath at 80
+/// digits): the group tag, the raw slice and `k`, then `nint(w × 2^96)` and `nint(g × 2^96)`
+/// (`None` when `w <= 0`).
+pub struct GRow {
+    pub tag: String,
+    pub p: RawSlice,
+    pub k: i128,
+    pub w96: BigInt,
+    pub g96: Option<BigInt>,
+}
+
+/// The rows of `tests/data/svi_g.csv`.
+pub fn g_fixture() -> Vec<GRow> {
+    include_str!("../data/svi_g.csv")
+        .lines()
+        .map(|line| {
+            let f: Vec<&str> = line.split(',').collect();
+            let int = |i: usize| -> i128 { f[i].parse().unwrap() };
+            GRow {
+                tag: f[0].to_string(),
+                p: [int(1), int(2), int(3), int(4), int(5)],
+                k: int(6),
+                w96: f[7].parse().unwrap(),
+                g96: (f[8] != "-").then(|| f[8].parse().unwrap()),
+            }
+        })
+        .collect()
 }
