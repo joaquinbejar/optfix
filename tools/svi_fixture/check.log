@@ -1,0 +1,5 @@
+$ OPTFIX_FIXTURE_EXPORT=<dir> cargo test -p optfix --release --test svi_fixture
+$ python tools/svi_fixture/check_mpmath.py <dir> result.json   # mpmath 1.4.1, commit 5d8b2b9 plus this change
+checked {'w': 11930, 'minimum': 6467, 'k': 6467, 'sigma*': 6467, 'svi_vol': 5931, 'premium': 5931}
+violations {'w': 0, 'minimum': 0, 'k': 0, 'sigma*': 0, 'svi_vol': 0, 'premium': 0}
+refused slices 533 worst |k_hat - k*| ulps 2.20368

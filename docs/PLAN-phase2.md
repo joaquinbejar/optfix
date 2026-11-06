@@ -244,6 +244,31 @@ faster integer root changes no result) is measured in this milestone and adopted
 regressions pass, the fuzz smoke covers `svi`, `docs/precision.md` and `docs/benchmarks.md` have the new rows, and every existing
 result and CU row is unchanged.
 
+**As built (milestone 22).**
+
+- API as planned, with `SviParams::min_total_variance` a `const fn` returning `Fixed`: `try_new`
+  computes the bound once and keeps it, so reading it is free. `svi_vol_error_bound` does not
+  exist (replaced by `svi_vol_bounds` in review, as above).
+- CU, net medians: `SviParamsNew` 2,248, `SviTotalVariance` 5,623 and `SviVol` 9,202, budgeted
+  at 2,400 / 3,100, 6,000 / 7,000 and 9,700 / 11,100. The two last rows build the slice with
+  `try_new` first, as a program reading a stored slice must, so `w` alone costs about 3,375 and
+  the volatility about 6,950 (the estimates were 3,300 to 3,900 and 7,700). No faster square root
+  was tried: `SqrtDown` is not the whole of any row.
+- The bench program's dispatch grew by three tags, so `Noop` went from 175 to 179 CU gross and
+  the existing net rows moved by −3 to +1 CU (none of the library's existing code changed; every
+  limit holds unchanged). A separate dispatch path for the SVI tags measured worse (180).
+- Fixtures: `tests/data/svi_w.csv` (12,000 rows) and `tests/data/svi_e2e.csv` (7,000 rows,
+  1,000 of them built so that `ρ²` rounded down would accept a negative minimum). The
+  independent checker found 0 violations over 11,930 `w` rows and 6,467 accepted end-to-end rows
+  (`tools/svi_fixture/check.log`). The 256-bit reference matches mpmath within `2^-96` except the
+  premium, where `bsm_ref` saturates `N` beyond 12; the premium is checked against mpmath alone.
+- Proptests (`tests/svi_props.rs`): 200,000 points per stratum for `w`, 200,000 for the
+  reflection and the minimum, 20,000 end to end. `svi_vol` is above `σ*` at 4 of those 20,000,
+  and at 223 of 1,000,000 in `docs/precision.md` (up to 5.3 ulps), with the crate's own
+  `ln`; `|k̂ − k*|` reaches 1.99 ulps there against `SVI_K_ERR` = 5.
+- Fuzz target `svi` (in `make fuzz-smoke` and the nightly matrix): 10 million runs without a
+  failure before the PR.
+
 ## Milestone 23: no-arbitrage checks (host side)
 
 Validation is for the host (an off-chain publisher or keeper checking a slice before it is

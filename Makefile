@@ -99,7 +99,7 @@ precision:
 # part of pre-push. To grow the committed corpus, minimize with `cargo fuzz cmin` first.
 FUZZ_NIGHTLY ?= nightly-2026-10-11
 FUZZ_SECONDS ?= 60
-FUZZ_TARGETS ?= scaled arith wide pricing iv decimal
+FUZZ_TARGETS ?= scaled arith wide pricing iv decimal svi
 .PHONY: fuzz-smoke
 fuzz-smoke:
 	@cd fuzz && for t in $(FUZZ_TARGETS); do \

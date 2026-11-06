@@ -17,6 +17,8 @@
 
 mod common;
 
+use common::svi;
+
 use std::fmt::Write as _;
 
 use common::oracle::oracle_stats;
@@ -26,12 +28,12 @@ use common::{
 };
 use num_bigint::BigInt;
 use optfix::{
-    exp, ln, norm_cdf, norm_pdf, price_and_greeks, price_asset_or_nothing, price_cash_or_nothing,
-    Fixed, Price, PricingError, Spot, BINARY_ERR_ABS, BINARY_ERR_REL, DELTA_ERR,
-    EXP_MAX_ERROR_ULPS, GAMMA_ERR_REL, GREEK_ERR_ABS, IV_ERR_PRICE_FACTOR, IV_ERR_REL,
-    IV_VEGA_MIN_FACTOR, LN_MAX_ERROR_ULPS, NORM_CDF_MAX_ERROR_ULPS, NORM_CDF_TAIL_REL_ERROR,
-    NORM_PDF_MAX_ERROR_ULPS, PRICE_ERR_ABS, PRICE_ERR_REL, RHO_ERR_ABS, RHO_ERR_REL, THETA_ERR_REL,
-    VEGA_ERR_REL,
+    exp, ln, log_forward_moneyness, norm_cdf, norm_pdf, price_and_greeks, price_asset_or_nothing,
+    price_cash_or_nothing, svi_vol, svi_vol_bounds, Fixed, Price, PricingError, Spot,
+    BINARY_ERR_ABS, BINARY_ERR_REL, DELTA_ERR, EXP_MAX_ERROR_ULPS, GAMMA_ERR_REL, GREEK_ERR_ABS,
+    IV_ERR_PRICE_FACTOR, IV_ERR_REL, IV_VEGA_MIN_FACTOR, LN_MAX_ERROR_ULPS,
+    NORM_CDF_MAX_ERROR_ULPS, NORM_CDF_TAIL_REL_ERROR, NORM_PDF_MAX_ERROR_ULPS, PRICE_ERR_ABS,
+    PRICE_ERR_REL, RHO_ERR_ABS, RHO_ERR_REL, SVI_K_ERR, THETA_ERR_REL, VEGA_ERR_REL,
 };
 use rust_decimal::Decimal;
 
@@ -532,6 +534,7 @@ fn test_precision_report() {
     }
     s.push_str(&binary_section(n));
     s.push_str(&implied_vol_section(n));
+    s.push_str(&svi_section(n));
     s.push_str(COMPARISON);
     s.push_str("\nRun `make precision` to regenerate this file.\n");
     println!("{s}");
@@ -539,6 +542,87 @@ fn test_precision_report() {
         std::fs::write(path, s).unwrap();
     }
     let _ = one();
+}
+
+/// The SVI section (`docs/PLAN-phase2.md`, milestone 22): `total_variance` at an exact `k` per
+/// stratum of `common::svi::STRATA`, then end to end from `S, K, r, q, T` (`common::svi`'s
+/// market sampler, the sampler of `svi_props.rs`).
+fn svi_section(n: usize) -> String {
+    let mut s = String::new();
+    write!(
+        s,
+        "\n## SVI slices\n\n\
+         `SviParams::total_variance` at an exact `k` against the 256-bit reference \
+         (`common::svi::w_ref`) on {n} points per stratum. The envelope is one-sided: `0 <= w − \
+         computed <= E_w`, `E_w = SVI_W_ERR_REL × b + SVI_W_ERR_ABS` (5 ulps per unit of `b`, \
+         plus 1). \"Refused\" counts sampled slices whose minimum's lower bound is negative \
+         although the true minimum is not (`SviParams::try_new`).\n\n\
+         | Stratum | Min `w − computed` (ulp) | Max `w − computed` (ulp) | Max / `E_w` | Refused |\n\
+         | --- | ---: | ---: | ---: | ---: |\n"
+    )
+    .unwrap();
+    for (st, name) in svi::STRATA.iter().enumerate() {
+        let mut g = Rng(0x5F1_9000 + st as u64);
+        let (mut lo, mut hi, mut worst, mut refused) = (f64::MAX, 0f64, 0f64, 0usize);
+        for _ in 0..n {
+            let (p, k) = svi::svi_sample(&mut g, st);
+            let Some(sl) = svi::params(&p) else {
+                refused += 1;
+                continue;
+            };
+            let (w, top) = sl.total_variance_bounds(Fixed::from_raw(k)).unwrap();
+            let e = -ulps(w.raw(), &svi::w_ref(&p, &to_ref(k)));
+            lo = lo.min(e);
+            hi = hi.max(e);
+            worst = worst.max(e / (top.raw() - w.raw()) as f64);
+        }
+        let lo = lo + 0.0; // no "-0.000"
+        writeln!(s, "| {name} | {lo:.3} | {hi:.3} | {worst:.4} | {refused} |").unwrap();
+    }
+    let (mut kmax, mut up, mut down, mut width, mut rel_width) = (0f64, 0f64, 0f64, 0f64, 0f64);
+    let (mut answered, mut above, mut points) = (0usize, 0usize, 0usize);
+    let mut g = Rng(0x5F1_9100);
+    for _ in 0..n {
+        let pt = svi::market_sample(&mut g);
+        let p = svi::market_slice(&mut g, pt.2);
+        let Some(sl) = svi::params(&p) else { continue };
+        let (sp, k, t, r, q) = pt;
+        let (expiry, m, strike) = svi::market(sp, k, t, r, q);
+        points += 1;
+        let ks = svi::k_star(sp, k, t, r, q);
+        let kh = log_forward_moneyness(expiry, &m, strike).unwrap();
+        kmax = kmax.max(ulps(kh.raw(), &ks).abs());
+        let (Ok((lo, hi)), Ok(v)) = (
+            svi_vol_bounds(&sl, expiry, &m, strike),
+            svi_vol(&sl, expiry, &m, strike),
+        ) else {
+            continue;
+        };
+        answered += 1;
+        let d = ulps(v.get().raw(), &svi::vol_ref(&svi::w_ref(&p, &ks), t));
+        if d > 0.0 {
+            above += 1;
+        }
+        up = up.max(d);
+        down = down.max(-d);
+        let wd = (hi.raw() - lo.raw()) as f64;
+        width = width.max(wd);
+        rel_width = rel_width.max(wd / v.get().raw() as f64);
+    }
+    let kb = SVI_K_ERR.raw();
+    write!(
+        s,
+        "\nEnd to end on {points} accepted market points (`S` log-uniform in `[10^-6, 10^9]`, \
+         `S/K` in `[0.05, 20]`, `T` log-uniform in `[10^-3, 30]` and one point in eight down to \
+         `10^-8`, `r` and `q` in `[−0.1, 0.5]`, a slice whose minimum is a volatility in \
+         `[0.01, 2]` at `T`): `|k̂ − k*|` at most {kmax:.3} ulps against `SVI_K_ERR` = {kb}. \
+         `svi_vol` answered at {answered}: above `σ*` at {above} points by up to {up:.3} ulps, \
+         below by up to {down:.3e} ulps (the division's ulp is amplified by `1 / (2σ)` and \
+         `E_w / T` grows as `T` falls). `svi_vol_bounds` is at most {width:.3e} ulps wide, \
+         {rel_width:.3e} relative to `σ̂`.\n"
+    )
+    .unwrap();
+    s
 }
 
 /// The implied-volatility section: the grid round trip, the steps taken, the initial guess and
