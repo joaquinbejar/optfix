@@ -4,6 +4,18 @@ All notable changes to `optfix` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the crate follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-11-07
+
+Documentation and packaging only: no change to the code, the public API or any result (every
+output is bit-identical to 0.3.0, and conformance generations 1 to 3 replay unchanged).
+
+### Changed
+
+- README: the npm badge and install line for `optfix-wasm`; the `optfix-wasm` README links its
+  npm and crates.io pages.
+- CI: `npm pack --dry-run` of the `optfix-wasm` package, and the downstream check pinned to
+  varswap's optfix 0.3 build.
+
 ## [0.3.0] - 2026-11-02
 
 Milestones 15 to 20 of `docs/PLAN-improvements.md`. The breaking changes are the two below,
