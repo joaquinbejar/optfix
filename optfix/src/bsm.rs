@@ -570,6 +570,20 @@ impl Shared {
     /// check has already passed.
     #[inline(always)]
     fn leg(&mut self, kind: OptionKind, k: Fixed, greeks: bool) -> Result<Priced, PricingError> {
+        self.leg_ln(kind, k, None, greeks)
+    }
+
+    /// [`Shared::leg`] with `ln K` given when the caller already has it (the SVI strip, which
+    /// needs it for `k` too); `None` computes it here. `ln` is a function, so either way the
+    /// value is the same.
+    #[inline(always)]
+    fn leg_ln(
+        &mut self,
+        kind: OptionKind,
+        k: Fixed,
+        ln_k: Option<Fixed>,
+        greeks: bool,
+    ) -> Result<Priced, PricingError> {
         let (s, t, r, q, dq, s_dq) = (self.s, self.t, self.r, self.q, self.dq, self.s_dq);
         let k_dr = k.mul_down(self.dr)?;
         let Some(live) = self.live.as_mut() else {
@@ -577,7 +591,11 @@ impl Shared {
         };
         let (half_ln_t, ln_sigma, ls, sst, ln_s) =
             (live.half_ln_t, live.ln_sigma, live.ls, live.sst, live.ln_s);
-        let d1 = d1_from(s, k, ln_s, ln(k)?, ls, sst, live.drift, &mut live.inv_sst)?;
+        let ln_k = match ln_k {
+            Some(v) => v,
+            None => ln(k)?,
+        };
+        let d1 = d1_from(s, k, ln_s, ln_k, ls, sst, live.drift, &mut live.inv_sst)?;
         let d2 = d1.checked_sub(sst)?;
         // Price the forward out-of-the-money side directly (small values, tail-accurate N),
         // the other through parity. `nd1` is N(d1) and `nd2` N(d2); `pdf` is n(d1).
@@ -659,6 +677,102 @@ impl Shared {
                 rho,
             },
         })
+    }
+}
+
+/// The values of an SVI strip (`price_strip_svi`) that depend neither on the strike nor on the
+/// volatility, computed once by the same operations as [`Shared::new`] and
+/// `log_forward_moneyness`. Each leg then adds its volatility's terms in [`Shared::new`]'s
+/// order, so a leg's price equals [`price`] at that volatility bit for bit.
+pub(crate) struct SviBase {
+    s: Fixed,
+    t: Fixed,
+    r: Fixed,
+    q: Fixed,
+    /// `r ⊗ T − q ⊗ T`, the forward drift of `k`.
+    drift_t: Fixed,
+    dr: Fixed,
+    dq: Fixed,
+    s_dq: Fixed,
+    half_ln_t: Fixed,
+    ln_s: Fixed,
+}
+
+impl SviBase {
+    /// The shared values at `T > 0` (the caller refuses `T = 0`).
+    ///
+    /// # Errors
+    ///
+    /// None over the quantity ranges; the `Result` carries the checked arithmetic.
+    pub(crate) fn new(
+        expiry: Years,
+        spot: Spot,
+        rate: Rate,
+        carry: Rate,
+    ) -> Result<Self, PricingError> {
+        let (s, t, r, q) = (spot.get(), expiry.get(), rate.get(), carry.get());
+        let rt = r.mul_down(t)?;
+        let qt = q.mul_down(t)?;
+        let dq = exp(qt.checked_neg()?)?;
+        Ok(Self {
+            s,
+            t,
+            r,
+            q,
+            drift_t: rt.checked_sub(qt)?,
+            dr: exp(rt.checked_neg()?)?,
+            dq,
+            s_dq: s.mul_down(dq)?,
+            half_ln_t: half(ln(t)?),
+            ln_s: ln(s)?,
+        })
+    }
+
+    /// `T`.
+    pub(crate) fn t(&self) -> Fixed {
+        self.t
+    }
+
+    /// `k̂ = ln K − ln S − (r ⊗ T − q ⊗ T)` from the leg's `ln K`, as `log_forward_moneyness`.
+    pub(crate) fn moneyness(&self, ln_k: Fixed) -> Result<Fixed, PricingError> {
+        ln_k.checked_sub(self.ln_s)?.checked_sub(self.drift_t)
+    }
+
+    /// [`price`] of `kind` at strike `k` (with its `ln K`) and volatility `vol`, bit for bit:
+    /// the moneyness check, the volatility's terms in [`Shared::new`]'s order, then
+    /// [`Shared::leg`].
+    pub(crate) fn price(
+        &self,
+        kind: OptionKind,
+        k: Fixed,
+        ln_k: Fixed,
+        vol: Volatility,
+    ) -> Result<Price, PricingError> {
+        check_moneyness(self.s, k)?;
+        let half_ln_t = self.half_ln_t;
+        let ln_sigma = ln(vol.get())?;
+        let ls = ln_sigma.checked_add(half_ln_t)?;
+        let sst = exp(ls)?;
+        let drift = drift(self.r, self.q, ln_sigma, half_ln_t)?;
+        let mut sh = Shared {
+            s: self.s,
+            t: self.t,
+            r: self.r,
+            q: self.q,
+            dr: self.dr,
+            dq: self.dq,
+            s_dq: self.s_dq,
+            live: Some(Live {
+                half_ln_t,
+                ln_sigma,
+                ls,
+                sst,
+                ln_s: self.ln_s,
+                drift,
+                inv_sst: None,
+            }),
+        };
+        Ok(sh.leg_ln(kind, k, Some(ln_k), false)?.price)
     }
 }
 

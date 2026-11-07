@@ -14,7 +14,7 @@
 //! [`svi_price_bounds`] carry that into rigorous enclosures of the volatility and the price at
 //! the exact inputs.
 
-use crate::bsm::{price, price_error_bound, EuropeanOption, MarketInputs};
+use crate::bsm::{price, price_error_bound, EuropeanOption, MarketInputs, StripLeg, SviBase};
 use crate::explog::ln;
 use crate::{Fixed, Price, PricingError, Rate, Spot, Strike, Volatility, Years};
 
@@ -356,6 +356,56 @@ pub fn svi_price_bounds(
     let (p_lo, e_lo) = at(lo)?;
     let (p_hi, e_hi) = at(hi)?;
     Ok((p_lo.lower(e_lo)?, p_hi.upper(e_hi)?))
+}
+
+/// [`price`] for every leg of a strip sharing `T` and the market, each leg at its own
+/// volatility from the slice: `out[i]` is, bit for bit,
+///
+/// ```text
+/// price(&EuropeanOption { kind, strike, expiry },
+///       &MarketInputs { vol: svi_vol(slice, expiry, market, strike)?, spot, rate, carry })
+/// ```
+///
+/// for leg `i`, so [`price`]'s envelope ([`price_error_bound`]) holds around each price at the
+/// leg's computed volatility. Against the price at the slice's exact volatility `σ*`,
+/// [`svi_price_bounds`] gives the enclosure, off chain.
+///
+/// What depends neither on the strike nor on the volatility (`Dr`, `Dq`, `S Dq`, `ln S`,
+/// `ln T / 2`, `r ⊗ T − q ⊗ T`) is computed once; each leg's `ln K` serves both its `k` and its
+/// `d1`, and its volatility's terms (`ln σ`, `σ√T`, the drift term of `d1`) are computed in
+/// [`price`]'s order (`docs/benchmarks.md`, `PriceStripSvi` rows).
+///
+/// Legs are priced in order. On the first leg that fails, its error is returned, `out[..i]`
+/// holds the prices of the legs before it, and `out[i..]` is unchanged. An empty strip returns
+/// `Ok(())` unless `T = 0`.
+///
+/// # Errors
+///
+/// `DomainError` if `legs.len() != out.len()` or `T = 0` (both checked before anything is
+/// written); otherwise the first failing leg's error, as [`svi_vol`] then [`price`] return it
+/// for that leg: a volatility outside [`Volatility`]'s range is `DomainError` from
+/// [`svi_vol`], and `S/K` outside `[0.05, 20]` is `DomainError` from [`price`].
+#[must_use = "the result carries a possible error"]
+pub fn price_strip_svi(
+    expiry: Years,
+    market: &SviMarket,
+    slice: &SviParams,
+    legs: &[StripLeg],
+    out: &mut [Price],
+) -> Result<(), PricingError> {
+    if legs.len() != out.len() || expiry.get() == Fixed::ZERO {
+        return Err(PricingError::DomainError);
+    }
+    let base = SviBase::new(expiry, market.spot, market.rate, market.carry)?;
+    for (leg, slot) in legs.iter().zip(out.iter_mut()) {
+        let k = leg.strike.get();
+        let ln_k = ln(k)?;
+        // svi_vol's steps: w(k̂) rounded down, then sqrt(w / T) with both roundings down.
+        let w = slice.total_variance(base.moneyness(ln_k)?)?;
+        let vol = Volatility::try_new(w.div_down(base.t())?.sqrt_down()?)?;
+        *slot = base.price(leg.kind, k, ln_k, vol)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

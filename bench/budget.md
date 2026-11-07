@@ -48,3 +48,7 @@ multiple of 100 above, in the same diff; a cheaper row is tightened the same way
 | `SviParamsNew` | 2400 | 3100 |
 | `SviTotalVariance` | 6000 | 7000 |
 | `SviVol` | 9700 | 11100 |
+| `PriceStripSvi, 1 leg` | 17800 | 20300 |
+| `PriceStripSvi, 2 legs` | 30300 | 32900 |
+| `PriceStripSvi, 8 legs` | 104900 | 111100 |
+| `PriceStripSvi, 16 legs` | 204600 | 215600 |

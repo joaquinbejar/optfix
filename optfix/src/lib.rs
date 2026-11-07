@@ -8,9 +8,9 @@
 //! 3). The crate has the number, its 256-bit intermediates, the quantity newtypes,
 //! [`PricingError`], [`exp`] and [`ln`], the normal [`norm_cdf`] and [`norm_pdf`],
 //! Black-Scholes-Merton [`price`] and [`price_and_greeks`] with a continuous carry, and
-//! [`implied_vol`], and raw SVI volatility slices ([`SviParams`], [`svi_vol`]) with host-side
-//! no-arbitrage checks ([`check_butterfly`], [`check_calendar`], [`check_wings`]), each with its
-//! error bound as a public constant.
+//! [`implied_vol`], and raw SVI volatility slices ([`SviParams`], [`svi_vol`],
+//! [`price_strip_svi`]) with host-side no-arbitrage checks ([`check_butterfly`],
+//! [`check_calendar`], [`check_wings`]), each with its error bound as a public constant.
 //!
 //! ```
 //! use optfix::{
@@ -82,8 +82,8 @@ pub use norm::{
 };
 pub use quantity::{Price, Rate, Spot, Strike, Volatility, Years, SECONDS_PER_YEAR};
 pub use svi::{
-    log_forward_moneyness, svi_price_bounds, svi_vol, svi_vol_bounds, SviMarket, SviParams,
-    SVI_K_ERR, SVI_W_ERR_ABS, SVI_W_ERR_REL,
+    log_forward_moneyness, price_strip_svi, svi_price_bounds, svi_vol, svi_vol_bounds, SviMarket,
+    SviParams, SVI_K_ERR, SVI_W_ERR_ABS, SVI_W_ERR_REL,
 };
 pub use svi_arb::{
     butterfly_g_bounds, check_butterfly, check_calendar, check_wings, ButterflyReport,
