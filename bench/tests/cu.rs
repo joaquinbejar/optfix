@@ -24,9 +24,9 @@ use std::path::PathBuf;
 
 use litesvm::LiteSVM;
 use optfix::{
-    implied_vol, price_and_greeks, price_and_greeks_strip, price_strip, EuropeanOption, Fixed,
-    IvInputs, MarketInputs, OptionKind, Price, Priced, PricingError, Rate, Rounding, Spot, Strike,
-    StripLeg, Volatility, Years,
+    implied_vol, log_forward_moneyness, price_and_greeks, price_and_greeks_strip, price_strip,
+    svi_vol, EuropeanOption, Fixed, IvInputs, MarketInputs, OptionKind, Price, Priced,
+    PricingError, Rate, Rounding, Spot, Strike, StripLeg, SviMarket, SviParams, Volatility, Years,
 };
 use optfix_bench::{check, Measured};
 use solana_address::Address;
@@ -61,6 +61,9 @@ enum Ix {
     PriceAndGreeksBlack76 = 18,
     CashOrNothing = 19,
     AssetOrNothing = 20,
+    SviParamsNew = 25,
+    SviTotalVariance = 26,
+    SviVol = 27,
 }
 
 /// Status byte plus one 16-byte little-endian value.
@@ -343,6 +346,8 @@ struct Measurement {
     iv: Vec<Vec<u64>>,
     /// One row per entry of [`strip_rows`].
     strip: Vec<Vec<u64>>,
+    /// One row per entry of [`SVI_ROWS`].
+    svi: Vec<Vec<u64>>,
 }
 
 /// The Black-Scholes rows: instruction, name, host function.
@@ -581,6 +586,91 @@ fn iv_data(ix: Ix, o: &EuropeanOption, m: &IvInputs, target: Price) -> Vec<u8> {
         d.extend_from_slice(&v.to_bytes().0);
     }
     d
+}
+
+/// The SVI rows (`docs/PLAN-phase2.md`, milestone 22).
+const SVI_ROWS: [(Ix, &str); 3] = [
+    (Ix::SviParamsNew, "SviParamsNew"),
+    (Ix::SviTotalVariance, "SviTotalVariance"),
+    (Ix::SviVol, "SviVol"),
+];
+
+/// One SVI input: the slice `a, b, ρ, m, σ` as raw values (not necessarily valid), `k`, and the
+/// market `S, K, T, r, q`.
+#[derive(Debug, Clone, Copy)]
+struct SviInput {
+    slice: [Fixed; 5],
+    k: Fixed,
+    market: [Fixed; 5],
+}
+
+/// A market as `bsm_input` (`S` log-uniform in `[10^-6, 10^9]`, `S/K` in `[0.05, 20]`, `T`
+/// uniform in `(0, 30]`, `r` and `q` in `[−0.1, 0.5]`) and a slice whose minimum is a
+/// volatility `v0` log-uniform in `[0.05, 1]` at `T`: `ρ` uniform in `[−0.9, 0.9]`, `m` in
+/// `[−0.5, 0.5]`, `σ` log-uniform in `[0.01, 1]`, `b` log-uniform in `[0.01, 0.5]` times
+/// `min(T, 1)`. `k` is the strike's `log_forward_moneyness`.
+fn svi_input(rng: &mut Rng) -> SviInput {
+    let (o, m) = bsm_input(rng, false);
+    let mut u = || (rng.next() >> 11) as f64 / (1u64 << 53) as f64;
+    let t = o.expiry.get().raw() as f64 / ONE;
+    let log_u =
+        |u: f64, lo: f64, hi: f64| libm::exp(libm::log(lo) + (libm::log(hi) - libm::log(lo)) * u);
+    let rho = -0.9 + 1.8 * u();
+    let shift = -0.5 + u();
+    let sigma = log_u(u(), 0.01, 1.0);
+    let b = log_u(u(), 0.01, 0.5) * t.min(1.0);
+    let v0 = log_u(u(), 0.05, 1.0);
+    let a = v0 * v0 * t - b * sigma * libm::sqrt(1.0 - rho * rho) + 1e-12;
+    let fx = |v: f64| Fixed::from_raw((v * ONE) as i128);
+    let market = SviMarket {
+        spot: m.spot,
+        rate: m.rate,
+        carry: m.carry,
+    };
+    SviInput {
+        slice: [fx(a), fx(b), fx(rho), fx(shift), fx(sigma)],
+        k: log_forward_moneyness(o.expiry, &market, o.strike).unwrap(),
+        market: [
+            m.spot.get(),
+            o.strike.get(),
+            o.expiry.get(),
+            m.rate.get(),
+            m.carry.get(),
+        ],
+    }
+}
+
+/// Instruction data of an SVI row: tag, the slice, then `k` or the market.
+fn svi_data(ix: Ix, x: &SviInput) -> Vec<u8> {
+    let mut d = vec![ix as u8];
+    let tail: &[Fixed] = match ix {
+        Ix::SviParamsNew => &[],
+        Ix::SviTotalVariance => std::slice::from_ref(&x.k),
+        _ => &x.market,
+    };
+    for v in x.slice.iter().chain(tail) {
+        d.extend_from_slice(&v.to_bytes().0);
+    }
+    d
+}
+
+/// The host result of an SVI row.
+fn svi_expected(ix: Ix, x: &SviInput) -> [u8; RESULT_LEN] {
+    let [a, b, rho, m, sigma] = x.slice;
+    let slice = SviParams::try_new(a, b, rho, m, sigma);
+    encode_result(match ix {
+        Ix::SviParamsNew => slice.map(|s| s.min_total_variance()),
+        Ix::SviTotalVariance => slice.and_then(|s| s.total_variance(x.k)),
+        _ => slice.and_then(|s| {
+            let [sp, k, t, r, q] = x.market;
+            let market = SviMarket {
+                spot: Spot::try_new(sp)?,
+                rate: Rate::try_new(r)?,
+                carry: Rate::try_new(q)?,
+            };
+            svi_vol(&s, Years::try_new(t)?, &market, Strike::try_new(k)?).map(Volatility::get)
+        }),
+    })
 }
 
 /// Strip lengths measured (milestone 11).
@@ -823,12 +913,32 @@ fn measure() -> Measurement {
                 .collect()
         })
         .collect();
+    let mut rng = Rng(SEED ^ 0x5F1);
+    let svi_inputs: Vec<_> = (0..RANDOM_INPUTS).map(|_| svi_input(&mut rng)).collect();
+    let svi = SVI_ROWS
+        .iter()
+        .map(|&(ix, name)| {
+            svi_inputs
+                .iter()
+                .map(|x| {
+                    let (cu, out) = vm.run(&svi_data(ix, x));
+                    assert_eq!(
+                        out,
+                        svi_expected(ix, x),
+                        "{name} on-chain differs from host at {x:?}"
+                    );
+                    cu
+                })
+                .collect()
+        })
+        .collect();
     Measurement {
         noop,
         rows,
         bsm,
         iv,
         strip,
+        svi,
     }
 }
 
@@ -876,8 +986,15 @@ fn budget_rows(m: &Measurement) -> Vec<Measured> {
         .map(|r| r.name)
         .chain(BSM_ROWS.iter().map(|r| r.1))
         .chain(IV_ROWS.iter().map(|r| r.1))
-        .chain(strip_names.iter().map(String::as_str));
-    let all = m.rows.iter().chain(&m.bsm).chain(&m.iv).chain(&m.strip);
+        .chain(strip_names.iter().map(String::as_str))
+        .chain(SVI_ROWS.iter().map(|r| r.1));
+    let all = m
+        .rows
+        .iter()
+        .chain(&m.bsm)
+        .chain(&m.iv)
+        .chain(&m.strip)
+        .chain(&m.svi);
     for (name, cu) in names.zip(all) {
         let (_, med, hi) = stats(cu);
         out.push(Measured {
@@ -989,8 +1106,25 @@ fn table(m: &Measurement, budget: &str) -> String {
         let net = med.saturating_sub(noop_med);
         writeln!(s, "| `{name}` | {lo} | {med} | {hi} | {net} |").unwrap();
     }
+    for ((_, name), cu) in SVI_ROWS.iter().zip(&m.svi) {
+        let (lo, med, hi) = stats(cu);
+        let net = med.saturating_sub(noop_med);
+        writeln!(s, "| `{name}` | {lo} | {med} | {hi} | {net} |").unwrap();
+    }
     writeln!(s).unwrap();
     s.push_str(&per_leg(m));
+    writeln!(s).unwrap();
+    writeln!(
+        s,
+        "The SVI rows (`docs/PLAN-phase2.md`, milestone 22) decode the five slice parameters and \
+         build the slice with `SviParams::try_new` first, as a program reading a stored slice \
+         must; `SviParamsNew` is that alone. Inputs: the Black-Scholes markets above and a \
+         slice whose minimum is a volatility log-uniform in `[0.05, 1]` at `T` (`ρ` uniform in \
+         `[−0.9, 0.9]`, `m` in `[−0.5, 0.5]`, `σ` log-uniform in `[0.01, 1]`, `b` log-uniform \
+         in `[0.01, 0.5]` times `min(T, 1)`); `SviTotalVariance` at the strike's \
+         `log_forward_moneyness`, `SviVol` from `S, K, T, r, q`."
+    )
+    .unwrap();
     let agave = std::env::var("OPTFIX_AGAVE").unwrap_or_else(|_| "unknown".into());
     writeln!(s).unwrap();
     writeln!(s, "## Budget").unwrap();
@@ -1044,6 +1178,7 @@ fn test_cu_table_is_deterministic_and_matches_host() {
         "implied-volatility CU differs between runs"
     );
     assert_eq!(first.strip, second.strip, "strip CU differs between runs");
+    assert_eq!(first.svi, second.svi, "SVI CU differs between runs");
     let path = budget_path();
     let text = std::fs::read_to_string(&path).unwrap();
     let report = check(&text, &budget_rows(&first));
@@ -1082,6 +1217,80 @@ fn test_every_variant_matches_host_on_edge_inputs() {
     for (a, b) in pairs {
         for row in &ROWS {
             vm.check(row, a, b);
+        }
+    }
+}
+
+/// The SVI instructions match the host on their error paths: a slice outside the domain
+/// (each parameter just outside its range, a negative minimum), `|k| > 32`, `T = 0`, a
+/// volatility outside `[0.005, 5]`, an overflowing `w / T`, and arguments outside their
+/// newtypes' ranges.
+#[test]
+fn test_svi_matches_host_on_edge_inputs() {
+    let mut vm = Vm::new();
+    let fx = |v: f64| Fixed::from_raw((v * ONE) as i128);
+    let ulp = Fixed::from_raw(1);
+    let good = [fx(0.04), fx(0.1), fx(-0.3), Fixed::ZERO, fx(0.2)];
+    let market = [fx(100.0), fx(110.0), fx(0.5), fx(0.05), fx(0.02)];
+    let mut cases = vec![SviInput {
+        slice: good,
+        k: fx(0.1),
+        market,
+    }];
+    let mut with = |i: usize, v: Fixed| {
+        let mut s = good;
+        s[i] = v;
+        cases.push(SviInput {
+            slice: s,
+            k: fx(0.1),
+            market,
+        });
+    };
+    with(0, Fixed::from_int(1000).checked_add(ulp).unwrap());
+    with(0, fx(-0.2));
+    with(1, Fixed::from_raw(-1));
+    with(1, Fixed::from_int(10).checked_add(ulp).unwrap());
+    with(2, Fixed::ONE);
+    with(2, Fixed::ONE.checked_sub(ulp).unwrap());
+    with(3, Fixed::from_int(-10).checked_sub(ulp).unwrap());
+    with(4, Fixed::from_raw(18_446_744_073_708));
+    with(4, Fixed::from_int(10).checked_add(ulp).unwrap());
+    with(4, Fixed::MIN);
+    let mut market_with = |i: usize, v: Fixed, k: Fixed| {
+        let mut m = market;
+        m[i] = v;
+        cases.push(SviInput {
+            slice: good,
+            k,
+            market: m,
+        });
+    };
+    market_with(
+        2,
+        Fixed::ZERO,
+        Fixed::from_int(32).checked_add(ulp).unwrap(),
+    );
+    market_with(2, Fixed::from_raw(1), Fixed::from_int(-33));
+    market_with(2, Fixed::from_int(31), Fixed::MAX);
+    market_with(1, fx(1e-6), fx(1e-6));
+    market_with(0, fx(-1.0), Fixed::ZERO);
+    market_with(3, fx(0.6), Fixed::ZERO);
+    // A volatility above 5: a level of 30 at T = 0.5.
+    cases.push(SviInput {
+        slice: [Fixed::from_int(30), good[1], good[2], good[3], good[4]],
+        k: Fixed::ZERO,
+        market,
+    });
+    // A volatility below 0.005.
+    cases.push(SviInput {
+        slice: [Fixed::ZERO, fx(1e-4), Fixed::ZERO, Fixed::ZERO, fx(1e-6)],
+        k: Fixed::ZERO,
+        market,
+    });
+    for x in &cases {
+        for (ix, name) in SVI_ROWS {
+            let (_, out) = vm.run(&svi_data(ix, x));
+            assert_eq!(out, svi_expected(ix, x), "{name} at {x:?}");
         }
     }
 }

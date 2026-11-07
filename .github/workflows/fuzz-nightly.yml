@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [scaled, arith, wide, pricing, iv, decimal]
+        target: [scaled, arith, wide, pricing, iv, decimal, svi]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Pinned nightly and cargo-fuzz

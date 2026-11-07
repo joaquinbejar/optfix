@@ -9,6 +9,7 @@
 pub mod contract;
 pub mod iv;
 pub mod oracle;
+pub mod svi;
 
 use std::sync::OnceLock;
 

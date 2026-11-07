@@ -45,3 +45,6 @@ multiple of 100 above, in the same diff; a cheaper row is tightened the same way
 | `Digest, 2 legs` | 300 | 300 |
 | `Digest, 8 legs` | 1200 | 1200 |
 | `Digest, 16 legs` | 2200 | 2200 |
+| `SviParamsNew` | 2400 | 3100 |
+| `SviTotalVariance` | 6000 | 7000 |
+| `SviVol` | 9700 | 11100 |

@@ -89,6 +89,19 @@ At the conditioning threshold (`tests/data/iv_threshold.csv`, `tools/iv_fixture/
 
 Codex's adversarial threshold set (`tests/data/iv_threshold_codex.csv`, `tools/iv_fixture/codex/`, 100 mpmath digits, the exact ratio of the root's vega to the threshold per target): 10005 targets, none with a ratio below 1 answered; 4749 answered (worst 3.377e-6 of the envelope), 5256 rejected.
 
+## SVI slices
+
+`SviParams::total_variance` at an exact `k` against the 256-bit reference (`common::svi::w_ref`) on 1000000 points per stratum. The envelope is one-sided: `0 <= w − computed <= E_w`, `E_w = SVI_W_ERR_REL × b + SVI_W_ERR_ABS` (5 ulps per unit of `b`, plus 1). "Refused" counts sampled slices whose minimum's lower bound is negative although the true minimum is not (`SviParams::try_new`).
+
+| Stratum | Min `w − computed` (ulp) | Max `w − computed` (ulp) | Max / `E_w` | Refused |
+| --- | ---: | ---: | ---: | ---: |
+| uniform over the domain | 0.000 | 27.116 | 0.7116 | 1 |
+| near k = m, σ <= 10^-3 | 0.000 | 20.026 | 0.6820 | 0 |
+| wings, 1 − |ρ| <= 10^-2, cancelling | 0.000 | 30.153 | 0.6915 | 23957 |
+| around max(|x|, σ) = 1 and the domain edges | 0.000 | 32.861 | 0.7731 | 3 |
+
+End to end on 1000000 accepted market points (`S` log-uniform in `[10^-6, 10^9]`, `S/K` in `[0.05, 20]`, `T` log-uniform in `[10^-3, 30]` and one point in eight down to `10^-8`, `r` and `q` in `[−0.1, 0.5]`, a slice whose minimum is a volatility in `[0.01, 2]` at `T`): `|k̂ − k*|` at most 1.986 ulps against `SVI_K_ERR` = 5. `svi_vol` answered at 947197: above `σ*` at 223 points by up to 5.345 ulps, below by up to 4.413e9 ulps (the division's ulp is amplified by `1 / (2σ)` and `E_w / T` grows as `T` falls). `svi_vol_bounds` is at most 1.900e10 ulps wide, 9.920e-8 relative to `σ̂`.
+
 ## Representation comparison (milestone 3)
 
 Maximum error over every domain above, measured at commit `6adf034` (`make precision` there reproduces the full table), for each candidate of `docs/PLAN.md` 4.1. Decimal ulps are `10^-18`. Q64.64 won on compute units (`docs/benchmarks.md`) and is the only one kept.

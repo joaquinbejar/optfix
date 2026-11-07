@@ -13,13 +13,17 @@
 //! `PriceAndGreeksStrip` returns the status byte and a 32-byte [`digest`] of every `Priced`
 //! (16 of them would not fit the 1,024 bytes of return data), and `Digest` measures that
 //! digest alone over as many zero values, so its cost can be subtracted.
+//!
+//! The SVI instructions (`docs/PLAN-phase2.md`, milestone 22) take the five slice parameters
+//! `a, b, ρ, m, σ` first and build the slice with `SviParams::try_new`, as a program reading a
+//! stored slice must.
 
 #![no_std]
 
 use bytemuck::Pod;
 use optfix::{
     EuropeanOption, Fixed, FixedBytes, IvInputs, MarketInputs, OptionKind, Price, Priced,
-    PricingError, Rate, Rounding, Spot, Strike, Volatility, Years,
+    PricingError, Rate, Rounding, Spot, Strike, SviMarket, SviParams, Volatility, Years,
 };
 use pinocchio::cpi::set_return_data;
 use pinocchio::error::ProgramError;
@@ -108,6 +112,14 @@ pub enum Instruction {
     /// As `IvSteps1` with three steps (`IV_MAX_ITERATIONS`).
     #[cfg(feature = "iv-profile")]
     IvSteps3 = 24,
+    /// `optfix::SviParams::try_new` (`docs/PLAN-phase2.md`, milestone 22): five `FixedBytes`
+    /// `a, b, ρ, m, σ`; returns `min_total_variance`.
+    SviParamsNew = 25,
+    /// `SviParams::try_new`, then `total_variance`: the five parameters and `k`; returns `w`.
+    SviTotalVariance = 26,
+    /// `SviParams::try_new`, then `optfix::svi_vol`: the five parameters and `S, K, T, r, q`;
+    /// returns the volatility.
+    SviVol = 27,
 }
 
 impl Instruction {
@@ -148,6 +160,9 @@ impl Instruction {
             23 => Ok(Self::IvSteps2),
             #[cfg(feature = "iv-profile")]
             24 => Ok(Self::IvSteps3),
+            25 => Ok(Self::SviParamsNew),
+            26 => Ok(Self::SviTotalVariance),
+            27 => Ok(Self::SviVol),
             _ => Err(BenchError::UnknownInstruction),
         }
     }
@@ -289,6 +304,9 @@ pub fn process_instruction(
         Instruction::IvSteps2 => iv_raw(args, iv_profile::steps2)?,
         #[cfg(feature = "iv-profile")]
         Instruction::IvSteps3 => iv_raw(args, iv_profile::steps3)?,
+        Instruction::SviParamsNew => svi_new(args)?,
+        Instruction::SviTotalVariance => svi_total_variance(args)?,
+        Instruction::SviVol => svi_vol(args)?,
         Instruction::PriceAndGreeks
         | Instruction::Baseline
         | Instruction::PriceStrip
@@ -351,6 +369,48 @@ fn mul_shr(args: &[u8]) -> Result<Result<Fixed, PricingError>, BenchError> {
     // The u128 result travels in the 16 bytes of a `FixedBytes`, bit for bit.
     Ok(optfix::wide::mul_shr(a, b, shift, r)
         .map(|v| Fixed::from_raw(i128::from_le_bytes(v.to_le_bytes()))))
+}
+
+/// The slice of five decoded parameters `a, b, ρ, m, σ`.
+#[inline(always)]
+fn svi_params(p: [FixedBytes; 5]) -> Result<SviParams, PricingError> {
+    let [a, b, rho, m, sigma] = p;
+    SviParams::try_new(a.get(), b.get(), rho.get(), m.get(), sigma.get())
+}
+
+#[inline(never)]
+fn svi_new(args: &[u8]) -> Result<Result<Fixed, PricingError>, BenchError> {
+    let p: [FixedBytes; 5] = decode(args)?;
+    Ok(svi_params(p).map(|s| s.min_total_variance()))
+}
+
+#[inline(never)]
+fn svi_total_variance(args: &[u8]) -> Result<Result<Fixed, PricingError>, BenchError> {
+    let [a, b, rho, m, sigma, k]: [FixedBytes; 6] = decode(args)?;
+    Ok(svi_params([a, b, rho, m, sigma]).and_then(|s| s.total_variance(k.get())))
+}
+
+/// Decodes `[a, b, ρ, m, σ, S, K, T, r, q]` and runs `svi_vol`; an argument outside its
+/// newtype's range is reported as a `DomainError` result.
+#[inline(never)]
+fn svi_vol(args: &[u8]) -> Result<Result<Fixed, PricingError>, BenchError> {
+    let [a, b, rho, m, sigma, s, k, t, r, q]: [FixedBytes; 10] = decode(args)?;
+    let run = || -> Result<Fixed, PricingError> {
+        let slice = svi_params([a, b, rho, m, sigma])?;
+        let market = SviMarket {
+            spot: Spot::try_new(s.get())?,
+            rate: Rate::try_new(r.get())?,
+            carry: Rate::try_new(q.get())?,
+        };
+        let vol = optfix::svi_vol(
+            &slice,
+            Years::try_new(t.get())?,
+            &market,
+            Strike::try_new(k.get())?,
+        )?;
+        Ok(vol.get())
+    };
+    Ok(run())
 }
 
 /// `price` with zero greeks (`Priced` is `#[non_exhaustive]`, so no struct literal here).

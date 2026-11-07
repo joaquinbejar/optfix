@@ -8,7 +8,8 @@
 //! 3). The crate has the number, its 256-bit intermediates, the quantity newtypes,
 //! [`PricingError`], [`exp`] and [`ln`], the normal [`norm_cdf`] and [`norm_pdf`],
 //! Black-Scholes-Merton [`price`] and [`price_and_greeks`] with a continuous carry, and
-//! [`implied_vol`], each with its error bound as a public constant.
+//! [`implied_vol`], and raw SVI volatility slices ([`SviParams`], [`svi_vol`]), each with its
+//! error bound as a public constant.
 //!
 //! ```
 //! use optfix::{
@@ -55,6 +56,7 @@ mod iv_tables;
 mod kernel;
 mod norm;
 mod quantity;
+mod svi;
 mod u256;
 pub mod wide;
 
@@ -77,3 +79,7 @@ pub use norm::{
     NORM_PDF_MAX_ERROR_ULPS,
 };
 pub use quantity::{Price, Rate, Spot, Strike, Volatility, Years, SECONDS_PER_YEAR};
+pub use svi::{
+    log_forward_moneyness, svi_price_bounds, svi_vol, svi_vol_bounds, SviMarket, SviParams,
+    SVI_K_ERR, SVI_W_ERR_ABS, SVI_W_ERR_REL,
+};
