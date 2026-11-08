@@ -91,8 +91,9 @@ measured in LiteSVM.
 | `optfix-wasm` | WebAssembly bindings for JavaScript: every value an exact `bigint` (or decimal text), bit-identical to the Rust crate. |
 | `conformance` (`optfix-conformance`) | The conformance vectors (`conformance/vectors-g*.json`): generator, native evaluator and replay. |
 
-The conformance vectors list about 20,000 calls with their exact results (raw values as decimal
-strings, errors as `PricingError` codes). CI replays every generation natively, through the
+The conformance vectors list about 20,000 calls with their exact results (31,000 from
+generation 4, which adds the SVI functions; raw values as decimal strings, errors as
+`PricingError` codes). CI replays every generation natively, through the
 wasm package on Node.js, and a subset on SBF; another implementation or SDK can use them as its
 test vectors. A generation is never edited: a release that changes results adds the next one.
 

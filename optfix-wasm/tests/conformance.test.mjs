@@ -1,7 +1,8 @@
 // Replays every committed conformance generation (conformance/vectors-g*.json) through the
 // JavaScript package that wasm-pack builds (`make wasm-test`), so the bindings and the wasm
 // build of optfix are checked together: each case's result bit for bit, or its error code
-// (docs/PLAN-improvements.md, milestone 17). Run with `node --test`.
+// (docs/PLAN-improvements.md, milestone 17; the SVI functions from generation 4,
+// docs/PLAN-phase2.md, milestone 25). Run with `node --test`.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -17,7 +18,7 @@ const vectorsDir = process.env.OPTFIX_VECTORS_DIR ?? join(here, "..", "..", "con
 
 // Argument names that are not raw integers carried as bigint.
 const STRING_ARGS = new Set(["kind", "rounding", "text"]);
-const NUMBER_ARGS = new Set(["decimals", "shift"]);
+const NUMBER_ARGS = new Set(["decimals", "shift", "nodes"]);
 const SPECIAL = { from_decimal_str: "fixedFromDecimal", to_decimal: "fixedToDecimal" };
 
 const camel = (f) => SPECIAL[f] ?? f.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase());
@@ -28,7 +29,54 @@ function convert(name, value) {
   return BigInt(value);
 }
 
+// The generation 4 SVI functions (docs/PLAN-phase2.md, milestone 25): the first five
+// arguments build an SviParams (whose constructor throws the case's DomainError), and each
+// result flattens as the vectors write it: a boolean as "true" or "false", an enclosure as
+// lo, hi, a grid report as ok, the first failure's k and bound if any, then the minimum's.
+const slice = (args, at = 0) => new wasm.SviParams(...args.slice(at, at + 5).map(BigInt));
+const pair = (o) => [o.lo, o.hi];
+const report = (r) => [
+  r.ok,
+  ...(r.firstFailure === null ? [] : [r.firstFailure.k, r.firstFailure.bound]),
+  r.min.k,
+  r.min.bound,
+];
+const legs = (rest) => [
+  rest.filter((_, i) => i % 2 === 0),
+  rest.filter((_, i) => i % 2 === 1).map(BigInt),
+];
+
+const SVI = {
+  svi_min_total_variance: (a) => [slice(a).minTotalVariance()],
+  svi_total_variance: (a) => [slice(a).totalVariance(BigInt(a[5]))],
+  svi_total_variance_bounds: (a) => pair(slice(a).totalVarianceBounds(BigInt(a[5]))),
+  log_forward_moneyness: (a) => [wasm.logForwardMoneyness(...a.map(BigInt))],
+  svi_vol: (a) => [wasm.sviVol(slice(a), ...a.slice(5).map(BigInt))],
+  svi_vol_bounds: (a) => pair(wasm.sviVolBounds(slice(a), ...a.slice(5).map(BigInt))),
+  svi_price_bounds: (a) =>
+    pair(wasm.sviPriceBounds(slice(a), a[5], ...a.slice(6).map(BigInt))),
+  price_strip_svi: (a) =>
+    wasm.priceStripSvi(slice(a), ...a.slice(5, 9).map(BigInt), ...legs(a.slice(9))),
+  check_wings: (a) => [wasm.checkWings(slice(a))],
+  butterfly_g_bounds: (a) => pair(wasm.butterflyGBounds(slice(a), BigInt(a[5]))),
+  check_butterfly: (a) =>
+    report(wasm.checkButterfly(slice(a), BigInt(a[5]), BigInt(a[6]), Number(a[7]))),
+  check_calendar: (a) =>
+    report(
+      wasm.checkCalendar(
+        slice(a, 0),
+        BigInt(a[5]),
+        slice(a, 6),
+        BigInt(a[11]),
+        BigInt(a[12]),
+        BigInt(a[13]),
+        Number(a[14]),
+      ),
+    ),
+};
+
 function call(f, signature, args) {
+  if (f in SVI) return SVI[f](args).map(String);
   const fn = wasm[camel(f)];
   assert.equal(typeof fn, "function", `no export for ${f} (${camel(f)})`);
   if (f === "price_strip" || f === "price_and_greeks_strip") {

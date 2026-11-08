@@ -6,6 +6,10 @@
 //! negative infinity) or `"up"`. A failure throws an [`OptfixError`] carrying the
 //! `PricingError` code (`e as u8` in Rust) and name. The functions are optfix's, so their
 //! results are bit-identical to the Rust crate's, as `conformance/vectors-g*.json` checks.
+//!
+//! Raw SVI slices (`docs/PLAN-phase2.md`, milestone 25) are [`SviParams`] objects; an
+//! enclosure is a plain object `{ lo, hi }` and a grid report `{ ok, firstFailure, min }` with
+//! `{ k, bound }` nodes (`firstFailure` is `null` when every node passes).
 
 // wasm-bindgen's generated glue for the exported structs contains `panic!` (a misused
 // JavaScript handle: a freed or foreign object), outside this crate's control and emitted at
@@ -14,8 +18,9 @@
 
 use optfix::wide::mul_shr as wide_mul_shr;
 use optfix::{
-    EuropeanOption, Fixed, FuturesInputs, IvInputs, MarketInputs, OptionKind, Price,
-    Priced as RsPriced, PricingError, Rate, Rounding, Spot, Strike, StripLeg, Volatility, Years,
+    EuropeanOption, Fixed, FuturesInputs, IvInputs, MarketInputs, NodeBound, OptionKind, Price,
+    Priced as RsPriced, PricingError, Rate, Rounding, Spot, Strike, StripLeg, SviGrid, SviMarket,
+    SviParams as RsSviParams, Volatility, Years,
 };
 use wasm_bindgen::prelude::*;
 
@@ -646,4 +651,332 @@ pub fn price_and_greeks_strip(
         &mut out,
     )?;
     Ok(out.into_iter().map(Priced::from).collect())
+}
+
+/// A plain JavaScript object with these fields.
+fn object(fields: &[(&str, JsValue)]) -> R<JsValue> {
+    let o = js_sys::Object::new();
+    for (k, v) in fields {
+        js_sys::Reflect::set(&o, &JsValue::from_str(k), v).map_err(|_| domain())?;
+    }
+    Ok(o.into())
+}
+
+/// `{ lo, hi }` of two raw values.
+fn enclosure(lo: Fixed, hi: Fixed) -> R<JsValue> {
+    object(&[
+        ("lo", JsValue::from(lo.raw())),
+        ("hi", JsValue::from(hi.raw())),
+    ])
+}
+
+/// `{ k, bound }` of a grid node.
+fn node(n: NodeBound) -> R<JsValue> {
+    object(&[
+        ("k", JsValue::from(n.k.raw())),
+        ("bound", JsValue::from(n.bound.raw())),
+    ])
+}
+
+/// `{ ok, firstFailure, min }` of a grid report.
+fn report(ok: bool, first_failure: Option<NodeBound>, min: NodeBound) -> R<JsValue> {
+    let first = match first_failure {
+        Some(n) => node(n)?,
+        None => JsValue::NULL,
+    };
+    object(&[
+        ("ok", JsValue::from_bool(ok)),
+        ("firstFailure", first),
+        ("min", node(min)?),
+    ])
+}
+
+fn svi_market(spot: i128, rate: i128, carry: i128) -> R<SviMarket> {
+    Ok(SviMarket {
+        spot: Spot::try_new(fx(spot))?,
+        rate: Rate::try_new(fx(rate))?,
+        carry: Rate::try_new(fx(carry))?,
+    })
+}
+
+fn grid(k_min: JsValue, k_max: JsValue, nodes: JsValue) -> R<SviGrid> {
+    Ok(SviGrid {
+        k_min: fx(int(k_min)?),
+        k_max: fx(int(k_max)?),
+        nodes: small_u32(nodes)?,
+    })
+}
+
+/// A raw SVI slice `w(k) = a + b (ρ (k − m) + sqrt((k − m)² + σ²))` (`optfix::SviParams`), in
+/// total variance against log-forward-moneyness `k = ln(K / F)`.
+#[wasm_bindgen]
+#[derive(Debug, Clone, Copy)]
+pub struct SviParams {
+    inner: RsSviParams,
+}
+
+#[wasm_bindgen]
+impl SviParams {
+    /// `new SviParams(a, b, rho, m, sigma)`, raw `bigint`s; throws `DomainError` outside the
+    /// domain of `SviParams::try_new` (`|a| <= 1000`, `0 <= b <= 10`, `|ρ| < 1`, `|m| <= 10`,
+    /// `10^-6 <= σ <= 10`, and a minimum total variance whose lower bound is `>= 0`).
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        #[wasm_bindgen(unchecked_param_type = "bigint")] a: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "bigint")] b: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "bigint")] rho: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "bigint")] m: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "bigint")] sigma: JsValue,
+    ) -> R<SviParams> {
+        let a = int(a)?;
+        let b = int(b)?;
+        let rho = int(rho)?;
+        let m = int(m)?;
+        let sigma = int(sigma)?;
+        Ok(Self {
+            inner: RsSviParams::try_new(fx(a), fx(b), fx(rho), fx(m), fx(sigma))?,
+        })
+    }
+
+    /// `a`, the level.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn a(&self) -> i128 {
+        self.inner.a().raw()
+    }
+
+    /// `b`, the slope.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn b(&self) -> i128 {
+        self.inner.b().raw()
+    }
+
+    /// `ρ`, the rotation.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn rho(&self) -> i128 {
+        self.inner.rho().raw()
+    }
+
+    /// `m`, the shift.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn m(&self) -> i128 {
+        self.inner.m().raw()
+    }
+
+    /// `σ`, the curvature.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn sigma(&self) -> i128 {
+        self.inner.sigma().raw()
+    }
+
+    /// A rigorous lower bound of the minimum total variance `a + b σ sqrt(1 − ρ²)`
+    /// (`SviParams::min_total_variance`).
+    #[wasm_bindgen(js_name = minTotalVariance)]
+    #[must_use]
+    pub fn min_total_variance(&self) -> i128 {
+        self.inner.min_total_variance().raw()
+    }
+
+    /// `w(k)`, rounded down (`SviParams::total_variance`).
+    #[wasm_bindgen(js_name = totalVariance)]
+    pub fn total_variance(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "bigint")] k: JsValue,
+    ) -> R<i128> {
+        let k = int(k)?;
+        Ok(self.inner.total_variance(fx(k))?.raw())
+    }
+
+    /// `{ lo, hi }` enclosing `w(k)` (`SviParams::total_variance_bounds`).
+    #[wasm_bindgen(js_name = totalVarianceBounds)]
+    pub fn total_variance_bounds(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "bigint")] k: JsValue,
+    ) -> R<JsValue> {
+        let k = int(k)?;
+        let (lo, hi) = self.inner.total_variance_bounds(fx(k))?;
+        enclosure(lo, hi)
+    }
+}
+
+/// `k̂ = ln K − ln S − (r T − q T)` (`optfix::log_forward_moneyness`).
+#[wasm_bindgen(js_name = logForwardMoneyness)]
+pub fn log_forward_moneyness(
+    #[wasm_bindgen(unchecked_param_type = "bigint")] expiry: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] spot: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] rate: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] carry: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] strike: JsValue,
+) -> R<i128> {
+    let expiry = int(expiry)?;
+    let spot = int(spot)?;
+    let rate = int(rate)?;
+    let carry = int(carry)?;
+    let strike = int(strike)?;
+    Ok(optfix::log_forward_moneyness(
+        Years::try_new(fx(expiry))?,
+        &svi_market(spot, rate, carry)?,
+        Strike::try_new(fx(strike))?,
+    )?
+    .raw())
+}
+
+/// The arguments of `sviVol` and `sviVolBounds` after the slice.
+fn vol_inputs(
+    expiry: JsValue,
+    spot: JsValue,
+    rate: JsValue,
+    carry: JsValue,
+    strike: JsValue,
+) -> R<(Years, SviMarket, Strike)> {
+    let expiry = int(expiry)?;
+    let spot = int(spot)?;
+    let rate = int(rate)?;
+    let carry = int(carry)?;
+    let strike = int(strike)?;
+    Ok((
+        Years::try_new(fx(expiry))?,
+        svi_market(spot, rate, carry)?,
+        Strike::try_new(fx(strike))?,
+    ))
+}
+
+/// The slice's implied volatility at `strike` (`optfix::svi_vol`).
+#[wasm_bindgen(js_name = sviVol)]
+pub fn svi_vol(
+    slice: &SviParams,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] expiry: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] spot: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] rate: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] carry: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] strike: JsValue,
+) -> R<i128> {
+    let (t, m, k) = vol_inputs(expiry, spot, rate, carry, strike)?;
+    Ok(optfix::svi_vol(&slice.inner, t, &m, k)?.get().raw())
+}
+
+/// `{ lo, hi }` enclosing the slice's volatility at the exact inputs
+/// (`optfix::svi_vol_bounds`).
+#[wasm_bindgen(js_name = sviVolBounds)]
+pub fn svi_vol_bounds(
+    slice: &SviParams,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] expiry: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] spot: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] rate: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] carry: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] strike: JsValue,
+) -> R<JsValue> {
+    let (t, m, k) = vol_inputs(expiry, spot, rate, carry, strike)?;
+    let (lo, hi) = optfix::svi_vol_bounds(&slice.inner, t, &m, k)?;
+    enclosure(lo, hi)
+}
+
+/// `{ lo, hi }` enclosing the premium at the slice's exact volatility
+/// (`optfix::svi_price_bounds`).
+#[wasm_bindgen(js_name = sviPriceBounds)]
+pub fn svi_price_bounds(
+    slice: &SviParams,
+    kind_: &str,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] spot: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] strike: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] expiry: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] rate: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] carry: JsValue,
+) -> R<JsValue> {
+    let spot = int(spot)?;
+    let strike = int(strike)?;
+    let expiry = int(expiry)?;
+    let rate = int(rate)?;
+    let carry = int(carry)?;
+    let o = option(kind_, strike, expiry)?;
+    let (lo, hi) = optfix::svi_price_bounds(&o, &svi_market(spot, rate, carry)?, &slice.inner)?;
+    enclosure(lo.get(), hi.get())
+}
+
+/// The premiums of a strip whose legs take their volatility from the slice
+/// (`optfix::price_strip_svi`): `kinds[i]` and the raw `bigint` `strikes[i]` per leg. A
+/// failing leg throws its error (the prices before it are not returned).
+#[wasm_bindgen(js_name = priceStripSvi)]
+pub fn price_strip_svi(
+    slice: &SviParams,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] expiry: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] spot: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] rate: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] carry: JsValue,
+    kinds: Vec<String>,
+    strikes: Vec<JsValue>,
+) -> R<Vec<JsValue>> {
+    let expiry = int(expiry)?;
+    let spot = int(spot)?;
+    let rate = int(rate)?;
+    let carry = int(carry)?;
+    let legs = strip_legs(&kinds, strikes)?;
+    let mut out = vec![Price::MIN; legs.len()];
+    optfix::price_strip_svi(
+        Years::try_new(fx(expiry))?,
+        &svi_market(spot, rate, carry)?,
+        &slice.inner,
+        &legs,
+        &mut out,
+    )?;
+    Ok(out.iter().map(|p| JsValue::from(p.get().raw())).collect())
+}
+
+/// The wing condition `b (1 + |ρ|) < 2`, certain when `true` (`optfix::check_wings`).
+#[wasm_bindgen(js_name = checkWings)]
+#[must_use]
+pub fn check_wings(slice: &SviParams) -> bool {
+    optfix::check_wings(&slice.inner)
+}
+
+/// `{ lo, hi }` enclosing Durrleman's `g(k)` (`optfix::butterfly_g_bounds`).
+#[wasm_bindgen(js_name = butterflyGBounds)]
+pub fn butterfly_g_bounds(
+    slice: &SviParams,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] k: JsValue,
+) -> R<JsValue> {
+    let k = int(k)?;
+    let (lo, hi) = optfix::butterfly_g_bounds(&slice.inner, fx(k))?;
+    enclosure(lo, hi)
+}
+
+/// Durrleman's condition at every node of the grid `kMin..kMax` with `nodes` nodes (a
+/// `number`): `{ ok, firstFailure, min }` (`optfix::check_butterfly`).
+#[wasm_bindgen(js_name = checkButterfly)]
+pub fn check_butterfly(
+    slice: &SviParams,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] k_min: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] k_max: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number")] nodes: JsValue,
+) -> R<JsValue> {
+    let g = grid(k_min, k_max, nodes)?;
+    let r = optfix::check_butterfly(&slice.inner, g)?;
+    report(r.ok, r.first_failure, r.min)
+}
+
+/// The calendar condition `w_later(k) >= w_earlier(k)` at every node of the grid:
+/// `{ ok, firstFailure, min }` (`optfix::check_calendar`).
+#[wasm_bindgen(js_name = checkCalendar)]
+pub fn check_calendar(
+    earlier: &SviParams,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] expiry_earlier: JsValue,
+    later: &SviParams,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] expiry_later: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] k_min: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "bigint")] k_max: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number")] nodes: JsValue,
+) -> R<JsValue> {
+    let t_earlier = int(expiry_earlier)?;
+    let t_later = int(expiry_later)?;
+    let g = grid(k_min, k_max, nodes)?;
+    let r = optfix::check_calendar(
+        (&earlier.inner, Years::try_new(fx(t_earlier))?),
+        (&later.inner, Years::try_new(fx(t_later))?),
+        g,
+    )?;
+    report(r.ok, r.first_failure, r.min)
 }

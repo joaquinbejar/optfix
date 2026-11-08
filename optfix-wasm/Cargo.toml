@@ -14,6 +14,7 @@ categories = ["finance", "mathematics", "wasm"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+js-sys = { workspace = true }
 optfix = { workspace = true }
 wasm-bindgen = { workspace = true }
 
