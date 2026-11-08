@@ -413,6 +413,39 @@ is additive.
 and the fuzz smoke pass, the new rows are budgeted, and every existing row and downstream row is
 unchanged (or re-agreed with its cause written down).
 
+**As built (milestone 24).**
+
+- API and contract as planned, in `svi.rs`. `T = 0` is refused before anything is written, the
+  empty strip included; with `T > 0` an empty strip returns `Ok(())`.
+- Implementation:
+  - `bsm.rs` gains a crate-private `SviBase`: the values `Shared::new` and
+    `log_forward_moneyness` compute that depend neither on the strike nor on the volatility,
+    with the same operations.
+  - Per leg, the volatility's terms are recomputed in `Shared::new`'s order and the leg goes
+    through `Shared::leg`. That function is now a wrapper over `Shared::leg_ln`, which takes
+    `ln K` when the caller already has it.
+  - With that library change alone, every existing row of `docs/benchmarks.md` is
+    byte-identical (measured with the bench program and harness of milestone 23).
+- CU, net medians:
+  - `PriceStripSvi` rows: 16,946 for 1 leg, 28,805 for 2, 99,827 for 8 and 194,792 for 16.
+    Each budgeted by the usual rule (17,800 / 20,300 up to 204,600 / 215,600).
+  - Each extra leg costs 11,856, against 16,178 for `svi_vol` then `price` (estimate: about
+    13,000).
+  - The 16-leg worst case is 205,326, above the default 200,000 per instruction. The bench
+    raises the limit with a compute-budget instruction and subtracts its fixed 150 CU, which it
+    measures. The README's projection is 15 legs in the default budget and 112 in 1,400,000.
+  - The bench program's dispatch gained a tag, so existing net rows moved by −3 to +2 CU, as in
+    milestone 22. Every limit holds unchanged.
+- Tests (`tests/svi_strip_props.rs`):
+  - 20,000 random strips of 1 to 16 legs against `svi_vol` then `price`, bit for bit, including
+    the partial output: 132,369 legs priced, and 5,539 strips ending on a `DomainError`, 3,908
+    of them after the first leg.
+  - Flat slices (`b = 0`) against `price_strip`.
+  - Named cases: a volatility above 5 at the third leg, an `Overflow` at the first, a length
+    mismatch, `T = 0` and the empty strip.
+- Fuzz: the `pricing` target checks `price_strip_svi` on its three legs, with a slice read from
+  the trailing bytes: 4,962,102 runs (15 minutes) without a failure before the PR.
+
 ## Milestone 25: WASM and conformance generation 4
 
 - `optfix-wasm`:

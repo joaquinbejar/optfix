@@ -220,20 +220,23 @@ for bit and the error codes; one pricing takes at most about 15,200 CU.
 The example prices one option. For a strip in one instruction, a linear projection from the
 strip rows of `docs/benchmarks.md` at 0.3.0 gives a first idea (from the worst-case rows, the
 increment per leg between 1 and 16 legs: 5,215 CU for prices, 10,676 with greeks, which include
-rho; 9,969 and 15,497 for the first leg):
+rho; 9,969 and 15,497 for the first leg). `price_strip_svi`, whose legs take their volatility
+from an SVI slice, is projected the same way from its rows (12,400 per leg, 19,325 for the first
+leg, the slice built with `SviParams::try_new` included):
 
-| Budget | `price_strip` legs (projected) | `price_and_greeks_strip` legs (projected) |
-| --- | ---: | ---: |
-| 200,000 CU (default per instruction) | 37 | 18 |
-| 1,400,000 CU (the most a transaction can request) | 267 | 130 |
+| Budget | `price_strip` legs (projected) | `price_and_greeks_strip` legs (projected) | `price_strip_svi` legs (projected) |
+| --- | ---: | ---: | ---: |
+| 200,000 CU (default per instruction) | 37 | 18 | 15 |
+| 1,400,000 CU (the most a transaction can request) | 267 | 130 | 112 |
 
 These are illustrative projections, not bounds: only 1- and 16-leg strips are measured, and the
 figures leave nothing for your program's own work (entrypoint, account reads, decoding,
 serialization, return data). Reserve that overhead, and benchmark your actual largest
 instruction in LiteSVM (as `examples/pricer-program/tests/pricer.rs` does for one option)
-before relying on a size fitting. A transaction is at most 1,232 bytes, so legs passed in
-instruction data (a kind byte and a 16-byte strike each) stop near 60; above that, read the
-strikes from an account.
+before relying on a size fitting. A 16-leg `price_strip_svi` already needs more than the
+default (205,326 CU at worst in the bench), so request a higher limit with a compute-budget
+instruction. A transaction is at most 1,232 bytes, so legs passed in instruction data (a kind
+byte and a 16-byte strike each) stop near 60; above that, read the strikes from an account.
 
 ### Error Bounds
 
@@ -279,21 +282,21 @@ the Black-Scholes and implied-volatility rows still include decoding six argumen
 | `norm_cdf` | 1322 | 1382 |
 | `norm_pdf` | 573 | 596 |
 | `wide::mul_shr` | 316 | 332 |
-| `price` | 9225 | 9545 |
-| `price`, near the money | 11093 | 11469 |
+| `price` | 9222 | 9542 |
+| `price`, near the money | 11090 | 11466 |
 | `price_and_greeks` | 14497 | 14897 |
 | `price_and_greeks`, near the money | 16377 | 16822 |
-| `implied_vol` | 27123 | 32892 |
-| `implied_vol`, near the money | 32756 | 33589 |
-| `implied_vol`, worst case (every step taken) | 32755 | 33585 |
-| `price_black76` | 9261 | 9534 |
+| `implied_vol` | 27125 | 32894 |
+| `implied_vol`, near the money | 32758 | 33591 |
+| `implied_vol`, worst case (every step taken) | 32754 | 33584 |
+| `price_black76` | 9260 | 9533 |
 | `price_cash_or_nothing` | 7252 | 7525 |
 | `price_asset_or_nothing` | 6875 | 7144 |
 | `price_and_greeks_black76` | 14846 | 15180 |
-| `price_strip`, 1 leg | 9463 | 9792 |
-| `price_strip`, 16 legs | 80975 | 88006 |
-| `price_and_greeks_strip`, 1 leg | 14771 | 15169 |
-| `price_and_greeks_strip`, 16 legs | 165578 | 173382 |
+| `price_strip`, 1 leg | 9464 | 9793 |
+| `price_strip`, 16 legs | 80976 | 88007 |
+| `price_and_greeks_strip`, 1 leg | 14773 | 15171 |
+| `price_and_greeks_strip`, 16 legs | 165580 | 173384 |
 
 `implied_vol` takes at most 2 steps. A strip shares one expiry and market: each extra leg costs about 4767 CU in `price_strip` and 10053 in `price_and_greeks_strip` (medians, from 1 to 16 legs).
 <!-- /generated:cu -->

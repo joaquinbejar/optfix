@@ -16,7 +16,8 @@
 //!
 //! The SVI instructions (`docs/PLAN-phase2.md`, milestone 22) take the five slice parameters
 //! `a, b, ρ, m, σ` first and build the slice with `SviParams::try_new`, as a program reading a
-//! stored slice must.
+//! stored slice must. `PriceStripSvi` (milestone 24) takes the slice, then `[T, S, r, q]` and
+//! the legs of a strip, and returns what `PriceStrip` does.
 
 #![no_std]
 
@@ -120,6 +121,10 @@ pub enum Instruction {
     /// `SviParams::try_new`, then `optfix::svi_vol`: the five parameters and `S, K, T, r, q`;
     /// returns the volatility.
     SviVol = 27,
+    /// `SviParams::try_new`, then `optfix::price_strip_svi` (milestone 24): the five
+    /// parameters, `T, S, r, q` and up to [`MAX_LEGS`] legs as for `PriceStrip`; returns the
+    /// status byte and every price.
+    PriceStripSvi = 28,
 }
 
 impl Instruction {
@@ -163,6 +168,7 @@ impl Instruction {
             25 => Ok(Self::SviParamsNew),
             26 => Ok(Self::SviTotalVariance),
             27 => Ok(Self::SviVol),
+            28 => Ok(Self::PriceStripSvi),
             _ => Err(BenchError::UnknownInstruction),
         }
     }
@@ -261,6 +267,7 @@ pub fn process_instruction(
     match ix {
         Instruction::PriceStrip => return price_strip(args),
         Instruction::PriceAndGreeksStrip => return greeks_strip(args),
+        Instruction::PriceStripSvi => return svi_strip(args),
         Instruction::Digest => return digest_only(args),
         Instruction::PriceAndGreeksBlack76 => {
             set_return_data(&encode_priced(futures(
@@ -311,6 +318,7 @@ pub fn process_instruction(
         | Instruction::Baseline
         | Instruction::PriceStrip
         | Instruction::PriceAndGreeksStrip
+        | Instruction::PriceStripSvi
         | Instruction::Digest
         | Instruction::PriceAndGreeksBlack76 => return Err(BenchError::InvalidArguments.into()),
     };
@@ -779,5 +787,85 @@ fn digest_only(args: &[u8]) -> ProgramResult {
     let (_, tail) = out.split_at_mut(1);
     tail.copy_from_slice(&digest(priced.iter().take(n)));
     set_return_data(&out);
+    Ok(())
+}
+
+/// A decoded SVI strip: the slice, expiry, market and leg count.
+type SviStrip = (SviParams, Years, SviMarket, usize);
+
+/// Decodes `[a, b, ρ, m, σ, T, S, r, q]` and the legs into `legs`; returns the slice, expiry,
+/// market and leg count. A slice outside the domain or an argument outside its newtype's range
+/// is an error result. The leg decoding is `decode_strip`'s, restated so that the existing
+/// strip instructions keep their code.
+fn decode_svi_strip(
+    args: &[u8],
+    legs: &mut [optfix::StripLeg; MAX_LEGS],
+) -> Result<Result<SviStrip, PricingError>, BenchError> {
+    let head = args.get(..144).ok_or(BenchError::InvalidArguments)?;
+    let rest = args.get(144..).ok_or(BenchError::InvalidArguments)?;
+    let [a, b, rho, m, sigma, t, s, r, q]: [FixedBytes; 9] = decode(head)?;
+    let (chunks, tail) = rest.as_chunks::<LEG_LEN>();
+    if !tail.is_empty() || chunks.len() > MAX_LEGS {
+        return Err(BenchError::InvalidArguments);
+    }
+    let n = chunks.len();
+    for (slot, raw) in legs.iter_mut().zip(chunks) {
+        let (&kind, strike) = raw.split_first().ok_or(BenchError::InvalidArguments)?;
+        let kind = match kind {
+            0 => OptionKind::Call,
+            1 => OptionKind::Put,
+            _ => return Err(BenchError::InvalidArguments),
+        };
+        let strike: FixedBytes = decode(strike)?;
+        match Strike::try_new(strike.get()) {
+            Ok(strike) => *slot = optfix::StripLeg { kind, strike },
+            Err(e) => return Ok(Err(e)),
+        }
+    }
+    let inputs = || -> Result<(SviParams, Years, SviMarket), PricingError> {
+        Ok((
+            svi_params([a, b, rho, m, sigma])?,
+            Years::try_new(t.get())?,
+            SviMarket {
+                spot: Spot::try_new(s.get())?,
+                rate: Rate::try_new(r.get())?,
+                carry: Rate::try_new(q.get())?,
+            },
+        ))
+    };
+    Ok(inputs().map(|(slice, t, m)| (slice, t, m, n)))
+}
+
+#[inline(never)]
+fn svi_strip(args: &[u8]) -> ProgramResult {
+    let mut legs = [EMPTY_LEG; MAX_LEGS];
+    let mut prices = [Price::MIN; MAX_LEGS];
+    let mut out = [0u8; 1 + 16 * MAX_LEGS];
+    let result = decode_svi_strip(args, &mut legs)?.and_then(|(slice, t, m, n)| {
+        let legs = legs.get(..n).ok_or(PricingError::DomainError)?;
+        let prices = prices.get_mut(..n).ok_or(PricingError::DomainError)?;
+        optfix::price_strip_svi(t, &m, &slice, legs, prices)?;
+        Ok(n)
+    });
+    match result {
+        Ok(n) => {
+            for (chunk, p) in out
+                .get_mut(1..)
+                .unwrap_or(&mut [])
+                .as_chunks_mut::<16>()
+                .0
+                .iter_mut()
+                .zip(prices.iter())
+            {
+                chunk.copy_from_slice(&p.get().to_bytes().0);
+            }
+            let len = n
+                .checked_mul(16)
+                .and_then(|b| b.checked_add(1))
+                .ok_or(BenchError::InvalidArguments)?;
+            set_return_data(out.get(..len).ok_or(BenchError::InvalidArguments)?);
+        }
+        Err(e) => set_return_data(&[error_status(e)]),
+    }
     Ok(())
 }

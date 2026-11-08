@@ -1,7 +1,9 @@
 //! The pricing families against their own bounds and envelopes (`docs/PLAN-improvements.md`,
 //! milestone 16, target 4): vanilla `price`, `price_and_greeks`, Black-76 and strips;
 //! cash-or-nothing and asset-or-nothing at `T = 0` and above, with their parity and the
-//! asset − `K` cash = vanilla identity. Half the inputs are any in-range raw quantities (the
+//! asset − `K` cash = vanilla identity; and `price_strip_svi` (`docs/PLAN-phase2.md`,
+//! milestone 24) against its contract, `svi_vol` then `price` per leg, on the same legs with a
+//! slice from the remaining bytes. Half the inputs are any in-range raw quantities (the
 //! whole domain, `DomainError` exactly outside `S/K` in `[0.05, 20]`), half the weighted
 //! sampler of `optfix_fuzz::bsm_point`.
 #![no_main]
@@ -9,8 +11,9 @@
 use libfuzzer_sys::fuzz_target;
 use optfix::{
     price, price_and_greeks, price_and_greeks_black76, price_and_greeks_strip,
-    price_asset_or_nothing, price_black76, price_cash_or_nothing, price_strip, EuropeanOption,
-    Fixed, FuturesInputs, MarketInputs, OptionKind, Price, PricingError, Spot, Strike, StripLeg,
+    price_asset_or_nothing, price_black76, price_cash_or_nothing, price_strip, price_strip_svi,
+    svi_vol, EuropeanOption, Fixed, FuturesInputs, MarketInputs, OptionKind, Price, PricingError,
+    Spot, Strike, StripLeg, SviMarket, SviParams, Years,
 };
 use optfix_fuzz::contract::{
     asset_bounds, binary_identity, cash_bounds, cash_parity, moneyness_ok, vanilla_bounds,
@@ -25,6 +28,83 @@ fn flip(kind: OptionKind) -> OptionKind {
     match kind {
         OptionKind::Call => OptionKind::Put,
         OptionKind::Put => OptionKind::Call,
+    }
+}
+
+/// `ONE` in raw units.
+const ONE: i128 = 1 << 64;
+
+/// A slice from five raw values. With `scaled`, `a` in `[0, 4 T)` and `b` in `[0, min(T, 1) / 2)`,
+/// so most legs' volatilities fall in `[0.005, 5]`; otherwise every parameter anywhere in its
+/// range (`try_new` may still refuse a negative minimum).
+fn svi_slice(raw: [i128; 5], scaled: bool, t: Fixed) -> Option<SviParams> {
+    let [a, b, rho, m, sigma] = raw;
+    let sigma_min = 18_446_744_073_709;
+    let rho = Fixed::from_raw(rho % ONE);
+    let m = Fixed::from_raw(m % (10 * ONE + 1));
+    let sigma = Fixed::from_raw(sigma_min + sigma.rem_euclid(10 * ONE - sigma_min + 1));
+    let (a, b) = if scaled {
+        let short = t.min(Fixed::ONE);
+        (
+            t.mul_down(Fixed::from_raw(a.rem_euclid(4 * ONE))).ok()?,
+            short
+                .mul_down(Fixed::from_raw(b.rem_euclid(ONE / 2)))
+                .ok()?,
+        )
+    } else {
+        (
+            Fixed::from_raw(a % (1000 * ONE + 1)),
+            Fixed::from_raw(b.rem_euclid(10 * ONE + 1)),
+        )
+    };
+    SviParams::try_new(a, b, rho, m, sigma).ok()
+}
+
+/// `price_strip_svi` against `svi_vol` then `price` for each leg, with the partial-output
+/// contract.
+fn check_svi_strip(slice: &SviParams, t: Years, m: &SviMarket, legs: &[StripLeg]) {
+    let sentinel = Price::try_new(Fixed::from_raw(7)).expect("7 is a price");
+    let mut out = [sentinel; 3];
+    let r = price_strip_svi(t, m, slice, legs, &mut out);
+    if t.get() == Fixed::ZERO {
+        assert_eq!(r, Err(PricingError::DomainError), "T = 0");
+        assert!(out.iter().all(|p| *p == sentinel), "written at T = 0");
+        return;
+    }
+    let mut failed = false;
+    for (i, leg) in legs.iter().enumerate() {
+        if failed {
+            assert_eq!(out[i], sentinel, "SVI leg {i} written after an error");
+            continue;
+        }
+        let one = svi_vol(slice, t, m, leg.strike).and_then(|vol| {
+            let o = EuropeanOption {
+                kind: leg.kind,
+                strike: leg.strike,
+                expiry: t,
+            };
+            let mi = MarketInputs {
+                spot: m.spot,
+                vol,
+                rate: m.rate,
+                carry: m.carry,
+            };
+            price(&o, &mi)
+        });
+        match one {
+            Ok(v) => assert_eq!(out[i], v, "SVI strip leg {i} at {slice:?} {t:?} {m:?}"),
+            Err(e) => {
+                assert_eq!(
+                    r,
+                    Err(e),
+                    "SVI strip error at leg {i} at {slice:?} {t:?} {m:?}"
+                );
+                failed = true;
+            }
+        }
+    }
+    if !failed {
+        assert_eq!(r, Ok(()));
     }
 }
 
@@ -202,4 +282,16 @@ fuzz_target!(|data: &[u8]| {
         price_cash_or_nothing(&opt, &m, too_big),
         Err(PricingError::DomainError)
     );
+
+    // The same legs from an SVI slice (read last, so the earlier bytes keep their meaning).
+    let scaled = b.u8() & 1 == 0;
+    let raw = [b.i128(), b.i128(), b.i128(), b.i128(), b.i128()];
+    if let Some(slice) = svi_slice(raw, scaled, opt.expiry.get()) {
+        let sm = SviMarket {
+            spot: m.spot,
+            rate: m.rate,
+            carry: m.carry,
+        };
+        check_svi_strip(&slice, opt.expiry, &sm, &legs);
+    }
 });

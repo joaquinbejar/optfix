@@ -25,8 +25,9 @@ use std::path::PathBuf;
 use litesvm::LiteSVM;
 use optfix::{
     implied_vol, log_forward_moneyness, price_and_greeks, price_and_greeks_strip, price_strip,
-    svi_vol, EuropeanOption, Fixed, IvInputs, MarketInputs, OptionKind, Price, Priced,
-    PricingError, Rate, Rounding, Spot, Strike, StripLeg, SviMarket, SviParams, Volatility, Years,
+    price_strip_svi, svi_vol, EuropeanOption, Fixed, IvInputs, MarketInputs, OptionKind, Price,
+    Priced, PricingError, Rate, Rounding, Spot, Strike, StripLeg, SviMarket, SviParams, Volatility,
+    Years,
 };
 use optfix_bench::{check, Measured};
 use solana_address::Address;
@@ -64,6 +65,7 @@ enum Ix {
     SviParamsNew = 25,
     SviTotalVariance = 26,
     SviVol = 27,
+    PriceStripSvi = 28,
 }
 
 /// Status byte plus one 16-byte little-endian value.
@@ -88,6 +90,13 @@ const SEED: u64 = 0x0F7F_1C5B_E7C4_0002;
 const ONE: f64 = 18_446_744_073_709_551_616.0;
 
 const PROGRAM_ID: Address = Address::new_from_array([7u8; 32]);
+
+/// The compute-budget program (`ComputeBudget111111111111111111111111111111`).
+const COMPUTE_BUDGET_ID: Address =
+    Address::from_str_const("ComputeBudget111111111111111111111111111111");
+
+/// The limit the SVI strip rows request: the most a transaction can.
+const SVI_STRIP_CU_LIMIT: u32 = 1_400_000;
 
 /// The program ELF: `target/deploy` (`make program`), or `OPTFIX_BENCH_PROGRAM` (the
 /// `iv-profile` build of `make iv-profile`).
@@ -309,9 +318,22 @@ impl Vm {
 
     /// Runs one instruction; returns (CU consumed, return data).
     fn run_raw(&mut self, data: &[u8]) -> (u64, Vec<u8>) {
-        let ix = Instruction::new_with_bytes(PROGRAM_ID, data, vec![]);
+        self.run_limited(data, None)
+    }
+
+    /// [`Vm::run_raw`], preceded by a compute-budget instruction raising the limit to `limit`
+    /// CU when given (a 16-leg `PriceStripSvi` needs more than the default 200,000).
+    fn run_limited(&mut self, data: &[u8], limit: Option<u32>) -> (u64, Vec<u8>) {
+        let mut ixs = Vec::new();
+        if let Some(limit) = limit {
+            // ComputeBudgetInstruction::SetComputeUnitLimit: tag 2, then the limit (u32 LE).
+            let mut d = vec![2u8];
+            d.extend_from_slice(&limit.to_le_bytes());
+            ixs.push(Instruction::new_with_bytes(COMPUTE_BUDGET_ID, &d, vec![]));
+        }
+        ixs.push(Instruction::new_with_bytes(PROGRAM_ID, data, vec![]));
         let tx = Transaction::new_signed_with_payer(
-            &[ix],
+            &ixs,
             Some(&self.payer.pubkey()),
             &[&self.payer],
             self.svm.latest_blockhash(),
@@ -348,6 +370,8 @@ struct Measurement {
     strip: Vec<Vec<u64>>,
     /// One row per entry of [`SVI_ROWS`].
     svi: Vec<Vec<u64>>,
+    /// One row per entry of [`svi_strip_rows`].
+    svi_strip: Vec<Vec<u64>>,
 }
 
 /// The Black-Scholes rows: instruction, name, host function.
@@ -799,6 +823,82 @@ fn strip_expected(ix: Ix, t: Years, m: &MarketInputs, legs: &[StripLeg]) -> Vec<
     }
 }
 
+/// The SVI strip rows (`docs/PLAN-phase2.md`, milestone 24), named like
+/// `PriceStripSvi, 8 legs`.
+fn svi_strip_rows() -> Vec<(usize, String)> {
+    STRIP_LENGTHS
+        .iter()
+        .map(|&n| {
+            let legs = if n == 1 { "leg" } else { "legs" };
+            (n, format!("PriceStripSvi, {n} {legs}"))
+        })
+        .collect()
+}
+
+/// An SVI strip: the slice and market of `svi_input`, then 16 legs as `strip_input` draws them
+/// (`S/K` log-uniform in `[0.05, 20]`, random kind; a row of `n` legs takes the first `n`).
+fn svi_strip_input(rng: &mut Rng) -> (SviInput, Vec<StripLeg>) {
+    let x = svi_input(rng);
+    let s = x.market[0].raw() as f64 / ONE;
+    let legs = (0..16)
+        .map(|_| {
+            let u = (rng.next() >> 11) as f64 / (1u64 << 53) as f64;
+            let ratio = libm::pow(10.0, libm::log10(0.05) + libm::log10(400.0) * u);
+            let k = (s * ratio).clamp(1.01e-6, 0.99e9).clamp(s / 19.9, s * 19.9);
+            StripLeg {
+                kind: if rng.next() & 1 == 0 {
+                    OptionKind::Call
+                } else {
+                    OptionKind::Put
+                },
+                strike: Strike::try_new(Fixed::from_raw((k * ONE) as i128)).unwrap(),
+            }
+        })
+        .collect();
+    (x, legs)
+}
+
+/// Instruction data of an SVI strip row: tag, the slice, `T, S, r, q`, then kind byte and
+/// strike per leg.
+fn svi_strip_data(x: &SviInput, legs: &[StripLeg]) -> Vec<u8> {
+    let mut d = vec![Ix::PriceStripSvi as u8];
+    let [s, _, t, r, q] = x.market;
+    for v in x.slice.iter().chain(&[t, s, r, q]) {
+        d.extend_from_slice(&v.to_bytes().0);
+    }
+    for l in legs {
+        d.push(l.kind as u8);
+        d.extend_from_slice(&l.strike.get().to_bytes().0);
+    }
+    d
+}
+
+/// Expected return data of an SVI strip row, from the host's `price_strip_svi`.
+fn svi_strip_expected(x: &SviInput, legs: &[StripLeg]) -> Vec<u8> {
+    let [a, b, rho, m, sigma] = x.slice;
+    let [s, _, t, r, q] = x.market;
+    let mut out = vec![Price::MIN; legs.len()];
+    let run = |out: &mut [Price]| -> Result<(), PricingError> {
+        let slice = SviParams::try_new(a, b, rho, m, sigma)?;
+        let market = SviMarket {
+            spot: Spot::try_new(s)?,
+            rate: Rate::try_new(r)?,
+            carry: Rate::try_new(q)?,
+        };
+        price_strip_svi(Years::try_new(t)?, &market, &slice, legs, out)
+    };
+    match run(&mut out) {
+        Ok(()) => {
+            let mut d = vec![0u8];
+            for p in out {
+                d.extend_from_slice(&p.get().raw().to_le_bytes());
+            }
+            d
+        }
+        Err(e) => vec![1 + e as u8],
+    }
+}
+
 fn measure() -> Measurement {
     let mut vm = Vm::new();
     let mut rng = Rng(SEED);
@@ -932,6 +1032,51 @@ fn measure() -> Measurement {
                 .collect()
         })
         .collect();
+    let mut rng = Rng(SEED ^ 0x5F24);
+    let svi_strips: Vec<_> = (0..RANDOM_INPUTS)
+        .map(|_| svi_strip_input(&mut rng))
+        .collect();
+    // The budget instruction is counted in `compute_units_consumed` (150 CU, the builtin's
+    // fixed cost): measured on the first strips of one and two legs, the same both times, and
+    // subtracted, so the SVI strip rows compare with the others.
+    let budget_ix_cu = {
+        let (x, legs) = &svi_strips[0];
+        let deltas: Vec<u64> = [1, 2]
+            .iter()
+            .map(|&n| {
+                let probe = svi_strip_data(x, &legs[..n]);
+                let (plain, out) = vm.run_raw(&probe);
+                let (limited, out_limited) = vm.run_limited(&probe, Some(SVI_STRIP_CU_LIMIT));
+                assert_eq!(
+                    out, out_limited,
+                    "the budget instruction changes the result"
+                );
+                limited - plain
+            })
+            .collect();
+        assert_eq!(deltas[0], deltas[1], "the budget instruction's cost varies");
+        deltas[0]
+    };
+    let svi_strip = svi_strip_rows()
+        .iter()
+        .map(|(n, name)| {
+            svi_strips
+                .iter()
+                .map(|(x, legs)| {
+                    let legs = &legs[..*n];
+                    let (cu, out) =
+                        vm.run_limited(&svi_strip_data(x, legs), Some(SVI_STRIP_CU_LIMIT));
+                    let cu = cu - budget_ix_cu;
+                    assert_eq!(
+                        out,
+                        svi_strip_expected(x, legs),
+                        "{name} on-chain differs from host at {x:?} {legs:?}"
+                    );
+                    cu
+                })
+                .collect()
+        })
+        .collect();
     Measurement {
         noop,
         rows,
@@ -939,6 +1084,7 @@ fn measure() -> Measurement {
         iv,
         strip,
         svi,
+        svi_strip,
     }
 }
 
@@ -981,20 +1127,23 @@ fn budget_rows(m: &Measurement) -> Vec<Measured> {
         max: noop_hi,
     }];
     let strip_names: Vec<String> = strip_rows().into_iter().map(|r| r.2).collect();
+    let svi_strip_names: Vec<String> = svi_strip_rows().into_iter().map(|r| r.1).collect();
     let names = ROWS
         .iter()
         .map(|r| r.name)
         .chain(BSM_ROWS.iter().map(|r| r.1))
         .chain(IV_ROWS.iter().map(|r| r.1))
         .chain(strip_names.iter().map(String::as_str))
-        .chain(SVI_ROWS.iter().map(|r| r.1));
+        .chain(SVI_ROWS.iter().map(|r| r.1))
+        .chain(svi_strip_names.iter().map(String::as_str));
     let all = m
         .rows
         .iter()
         .chain(&m.bsm)
         .chain(&m.iv)
         .chain(&m.strip)
-        .chain(&m.svi);
+        .chain(&m.svi)
+        .chain(&m.svi_strip);
     for (name, cu) in names.zip(all) {
         let (_, med, hi) = stats(cu);
         out.push(Measured {
@@ -1041,6 +1190,28 @@ fn per_leg(m: &Measurement) -> String {
          for a `price_and_greeks` call.\n",
         (price16 - price1) / 15,
         (g16 - g1) / 15,
+    )
+}
+
+/// The cost of each extra SVI strip leg, next to `svi_vol` then `price` on one strike.
+fn svi_per_leg(m: &Measurement) -> String {
+    let median = |name: &str| {
+        let i = svi_strip_rows().iter().position(|r| r.1 == name).unwrap();
+        stats(&m.svi_strip[i]).1
+    };
+    let (one, sixteen) = (
+        median("PriceStripSvi, 1 leg"),
+        median("PriceStripSvi, 16 legs"),
+    );
+    let noop = stats(&m.noop).1;
+    // SviVol net of SviParamsNew (the slice is built once in a strip), plus Price.
+    let scalar = stats(&m.svi[2]).1 - stats(&m.svi[0]).1 + stats(&m.bsm[0]).1 - noop;
+    format!(
+        "`PriceStripSvi` (milestone 24) builds the slice the same way, then prices a strip on \
+         the SVI markets above, legs drawn as for the other strips. Each extra leg costs {} CU \
+         (median, from 1 to 16 legs) against {scalar} for `svi_vol` then `price` on one strike \
+         (`SviVol` net of `SviParamsNew`, plus `Price`).\n",
+        (sixteen - one) / 15,
     )
 }
 
@@ -1111,6 +1282,11 @@ fn table(m: &Measurement, budget: &str) -> String {
         let net = med.saturating_sub(noop_med);
         writeln!(s, "| `{name}` | {lo} | {med} | {hi} | {net} |").unwrap();
     }
+    for ((_, name), cu) in svi_strip_rows().iter().zip(&m.svi_strip) {
+        let (lo, med, hi) = stats(cu);
+        let net = med.saturating_sub(noop_med);
+        writeln!(s, "| `{name}` | {lo} | {med} | {hi} | {net} |").unwrap();
+    }
     writeln!(s).unwrap();
     s.push_str(&per_leg(m));
     writeln!(s).unwrap();
@@ -1125,6 +1301,8 @@ fn table(m: &Measurement, budget: &str) -> String {
          `log_forward_moneyness`, `SviVol` from `S, K, T, r, q`."
     )
     .unwrap();
+    writeln!(s).unwrap();
+    s.push_str(&svi_per_leg(m));
     let agave = std::env::var("OPTFIX_AGAVE").unwrap_or_else(|_| "unknown".into());
     writeln!(s).unwrap();
     writeln!(s, "## Budget").unwrap();
@@ -1179,6 +1357,10 @@ fn test_cu_table_is_deterministic_and_matches_host() {
     );
     assert_eq!(first.strip, second.strip, "strip CU differs between runs");
     assert_eq!(first.svi, second.svi, "SVI CU differs between runs");
+    assert_eq!(
+        first.svi_strip, second.svi_strip,
+        "SVI strip CU differs between runs"
+    );
     let path = budget_path();
     let text = std::fs::read_to_string(&path).unwrap();
     let report = check(&text, &budget_rows(&first));
