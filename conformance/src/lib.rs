@@ -8,23 +8,32 @@
 //! argument order of every function is in [`SIGNATURES`], which the file repeats. A priced
 //! result (`price_and_greeks`, its Black-76 and strip forms) is [`priced_width`] values per
 //! option: price, delta, gamma, vega, theta, and from generation 2 rho.
+//!
+//! From generation 4 (`docs/PLAN-phase2.md`, milestone 25) the SVI functions take a slice as
+//! their first five arguments `a, b, rho, m, sigma` (built by `SviParams::try_new`, whose
+//! `DomainError` is the case's error), a boolean result is `true` or `false`, an enclosure is
+//! its two ends `lo, hi`, and a grid report is `ok`, then the first failing node's `k` and
+//! `bound` when `ok` is `false`, then the smallest bound's `k` and `bound`.
 
 #![allow(clippy::indexing_slicing, clippy::missing_errors_doc)]
 
 use optfix::wide::mul_shr;
 use optfix::{
-    exp, implied_vol, ln, norm_cdf, norm_pdf, price, price_and_greeks, price_and_greeks_black76,
+    butterfly_g_bounds, check_butterfly, check_calendar, check_wings, exp, implied_vol, ln,
+    log_forward_moneyness, norm_cdf, norm_pdf, price, price_and_greeks, price_and_greeks_black76,
     price_and_greeks_strip, price_asset_or_nothing, price_black76, price_cash_or_nothing,
-    price_strip, EuropeanOption, Fixed, FuturesInputs, IvInputs, MarketInputs, OptionKind, Price,
-    Priced, PricingError, Rate, Rounding, Spot, Strike, StripLeg, Volatility, Years,
+    price_strip, price_strip_svi, svi_price_bounds, svi_vol, svi_vol_bounds, ButterflyReport,
+    CalendarReport, EuropeanOption, Fixed, FuturesInputs, IvInputs, MarketInputs, NodeBound,
+    OptionKind, Price, Priced, PricingError, Rate, Rounding, Spot, Strike, StripLeg, SviGrid,
+    SviMarket, SviParams, Volatility, Years,
 };
 use serde::{Deserialize, Serialize};
 
 /// The file format version.
 pub const FORMAT: u32 = 1;
 
-/// Every function and its argument names, in order. A strip's legs follow its five market
-/// arguments as `kind, strike` pairs.
+/// Every function and its argument names, in order. A strip's legs follow its market arguments
+/// as `kind, strike` pairs.
 pub const SIGNATURES: &[(&str, &[&str])] = &[
     ("mul_down", &["a", "b"]),
     ("mul_up", &["a", "b"]),
@@ -83,6 +92,67 @@ pub const SIGNATURES: &[(&str, &[&str])] = &[
     (
         "price_and_greeks_strip",
         &["expiry", "spot", "vol", "rate", "carry", "legs..."],
+    ),
+    // Generation 4 (docs/PLAN-phase2.md, milestone 25).
+    ("svi_min_total_variance", &["a", "b", "rho", "m", "sigma"]),
+    ("svi_total_variance", &["a", "b", "rho", "m", "sigma", "k"]),
+    (
+        "svi_total_variance_bounds",
+        &["a", "b", "rho", "m", "sigma", "k"],
+    ),
+    (
+        "log_forward_moneyness",
+        &["expiry", "spot", "rate", "carry", "strike"],
+    ),
+    (
+        "svi_vol",
+        &[
+            "a", "b", "rho", "m", "sigma", "expiry", "spot", "rate", "carry", "strike",
+        ],
+    ),
+    (
+        "svi_vol_bounds",
+        &[
+            "a", "b", "rho", "m", "sigma", "expiry", "spot", "rate", "carry", "strike",
+        ],
+    ),
+    (
+        "svi_price_bounds",
+        &[
+            "a", "b", "rho", "m", "sigma", "kind", "spot", "strike", "expiry", "rate", "carry",
+        ],
+    ),
+    (
+        "price_strip_svi",
+        &[
+            "a", "b", "rho", "m", "sigma", "expiry", "spot", "rate", "carry", "legs...",
+        ],
+    ),
+    ("check_wings", &["a", "b", "rho", "m", "sigma"]),
+    ("butterfly_g_bounds", &["a", "b", "rho", "m", "sigma", "k"]),
+    (
+        "check_butterfly",
+        &["a", "b", "rho", "m", "sigma", "k_min", "k_max", "nodes"],
+    ),
+    (
+        "check_calendar",
+        &[
+            "a_earlier",
+            "b_earlier",
+            "rho_earlier",
+            "m_earlier",
+            "sigma_earlier",
+            "expiry_earlier",
+            "a_later",
+            "b_later",
+            "rho_later",
+            "m_later",
+            "sigma_later",
+            "expiry_later",
+            "k_min",
+            "k_max",
+            "nodes",
+        ],
     ),
 ];
 
@@ -229,8 +299,9 @@ fn market(a: &[String], s: usize, v: usize, r: usize, c: usize) -> Result<Market
     })
 }
 
-fn legs(a: &[String]) -> Result<Vec<StripLeg>, Malformed> {
-    let rest = a.get(5..).ok_or_else(|| bad("strip without legs"))?;
+/// The legs of a strip whose market arguments end before `from`.
+fn legs(a: &[String], from: usize) -> Result<Vec<StripLeg>, Malformed> {
+    let rest = a.get(from..).ok_or_else(|| bad("strip without legs"))?;
     if rest.is_empty() || rest.len() % 2 != 0 {
         return Err(bad("strip legs are kind, strike pairs"));
     }
@@ -314,7 +385,7 @@ pub fn eval(f: &str, a: &[String]) -> Out {
         "price_strip" | "price_and_greeks_strip" => {
             let expiry = q(a, 0, Years::try_new)?;
             let m = market(a, 1, 2, 3, 4)?;
-            let legs = legs(a)?;
+            let legs = legs(a, 5)?;
             if f == "price_strip" {
                 let mut out = vec![Price::MIN; legs.len()];
                 price_strip(expiry, &m, &legs, &mut out)
@@ -324,6 +395,127 @@ pub fn eval(f: &str, a: &[String]) -> Out {
                 price_and_greeks_strip(expiry, &m, &legs, &mut out)
                     .map(|()| out.iter().flat_map(priced).collect())
             }
+        }
+        _ => return eval_svi(f, a),
+    })
+}
+
+/// The slice of arguments `i..i + 5`; its `DomainError` is a result, not a malformed case.
+fn slice(a: &[String], i: usize) -> Result<Result<SviParams, PricingError>, Malformed> {
+    let p = a.get(i..).ok_or_else(|| bad("missing slice"))?;
+    Ok(SviParams::try_new(
+        fx(p, 0)?,
+        fx(p, 1)?,
+        fx(p, 2)?,
+        fx(p, 3)?,
+        fx(p, 4)?,
+    ))
+}
+
+fn svi_market(a: &[String], s: usize, r: usize, c: usize) -> Result<SviMarket, Malformed> {
+    Ok(SviMarket {
+        spot: q(a, s, Spot::try_new)?,
+        rate: q(a, r, Rate::try_new)?,
+        carry: q(a, c, Rate::try_new)?,
+    })
+}
+
+/// The grid of arguments `i..i + 3`.
+fn grid(a: &[String], i: usize) -> Result<SviGrid, Malformed> {
+    let g = a.get(i..).ok_or_else(|| bad("missing grid"))?;
+    Ok(SviGrid {
+        k_min: fx(g, 0)?,
+        k_max: fx(g, 1)?,
+        nodes: int(g, 2)?,
+    })
+}
+
+fn pair(lo: Fixed, hi: Fixed) -> Vec<String> {
+    raws(&[lo, hi])
+}
+
+/// A grid report: `ok`, the first failure's `k` and `bound` if any, the minimum's.
+fn report(ok: bool, first_failure: Option<NodeBound>, min: NodeBound) -> Vec<String> {
+    let mut out = vec![ok.to_string()];
+    if let Some(f) = first_failure {
+        out.extend(raws(&[f.k, f.bound]));
+    }
+    out.extend(raws(&[min.k, min.bound]));
+    out
+}
+
+fn butterfly(r: ButterflyReport) -> Vec<String> {
+    report(r.ok, r.first_failure, r.min)
+}
+
+fn calendar(r: CalendarReport) -> Vec<String> {
+    report(r.ok, r.first_failure, r.min)
+}
+
+/// The generation 4 functions (`docs/PLAN-phase2.md`, milestone 25).
+fn eval_svi(f: &str, a: &[String]) -> Out {
+    if f == "log_forward_moneyness" {
+        let m = svi_market(a, 1, 2, 3)?;
+        return Ok(one(log_forward_moneyness(
+            q(a, 0, Years::try_new)?,
+            &m,
+            q(a, 4, Strike::try_new)?,
+        )));
+    }
+    if f == "check_calendar" {
+        let earlier = slice(a, 0)?;
+        let t_earlier = q(a, 5, Years::try_new)?;
+        let later = slice(a, 6)?;
+        let t_later = q(a, 11, Years::try_new)?;
+        let g = grid(a, 12)?;
+        return Ok(earlier.and_then(|e| {
+            later.and_then(|l| check_calendar((&e, t_earlier), (&l, t_later), g).map(calendar))
+        }));
+    }
+    let s = slice(a, 0)?;
+    Ok(match f {
+        "svi_min_total_variance" => s.map(|s| raws(&[s.min_total_variance()])),
+        "svi_total_variance" => {
+            let k = fx(a, 5)?;
+            s.and_then(|s| one(s.total_variance(k)))
+        }
+        "svi_total_variance_bounds" => {
+            let k = fx(a, 5)?;
+            s.and_then(|s| s.total_variance_bounds(k).map(|(lo, hi)| pair(lo, hi)))
+        }
+        "svi_vol" | "svi_vol_bounds" => {
+            let t = q(a, 5, Years::try_new)?;
+            let m = svi_market(a, 6, 7, 8)?;
+            let k = q(a, 9, Strike::try_new)?;
+            if f == "svi_vol" {
+                s.and_then(|s| svi_vol(&s, t, &m, k).map(|v| raws(&[v.get()])))
+            } else {
+                s.and_then(|s| svi_vol_bounds(&s, t, &m, k).map(|(lo, hi)| pair(lo, hi)))
+            }
+        }
+        "svi_price_bounds" => {
+            let o = option(a, 5, 7, 8)?;
+            let m = svi_market(a, 6, 9, 10)?;
+            s.and_then(|s| svi_price_bounds(&o, &m, &s).map(|(lo, hi)| pair(lo.get(), hi.get())))
+        }
+        "price_strip_svi" => {
+            let t = q(a, 5, Years::try_new)?;
+            let m = svi_market(a, 6, 7, 8)?;
+            let legs = legs(a, 9)?;
+            s.and_then(|s| {
+                let mut out = vec![Price::MIN; legs.len()];
+                price_strip_svi(t, &m, &s, &legs, &mut out)
+                    .map(|()| out.iter().map(|p| p.get().raw().to_string()).collect())
+            })
+        }
+        "check_wings" => s.map(|s| vec![check_wings(&s).to_string()]),
+        "butterfly_g_bounds" => {
+            let k = fx(a, 5)?;
+            s.and_then(|s| butterfly_g_bounds(&s, k).map(|(lo, hi)| pair(lo, hi)))
+        }
+        "check_butterfly" => {
+            let g = grid(a, 5)?;
+            s.and_then(|s| check_butterfly(&s, g).map(butterfly))
         }
         _ => return Err(bad("unknown function")),
     })

@@ -8,6 +8,12 @@
 //! strikes around its own, multiplications from the division pairs), and from a seeded
 //! sampler with edge sets for the kernels and the decimal text. Every result is the native
 //! [`optfix_conformance::eval`]. At most [`PER_FUNCTION`] cases per function, evenly spaced.
+//!
+//! The SVI functions of generation 4 (`docs/PLAN-phase2.md`, milestone 25) take their inputs
+//! from the fixtures of milestones 22 and 23 (`svi_w.csv`, `svi_e2e.csv`, `svi_g.csv`) and
+//! from named cases (domain edges, failures partway through a strip, the Vogt slice's
+//! butterfly report), which are always kept, ahead of the evenly spaced fixture cases. Nothing
+//! there draws from the samplers above, so every earlier function keeps generation 3's inputs.
 
 #![allow(
     clippy::unwrap_used,
@@ -46,6 +52,319 @@ impl Rng {
 }
 
 const ONE: i128 = 1 << 64;
+
+/// Raw SVI slice `a, b, ρ, m, σ`.
+type Slice = [i128; 5];
+
+/// The parsed rows of a fixture CSV whose fields are integers (`tag` columns excluded).
+fn rows(name: &str, skip: usize) -> Vec<Vec<i128>> {
+    std::fs::read_to_string(format!("{DATA}{name}"))
+        .unwrap()
+        .lines()
+        .map(|l| {
+            l.split(',')
+                .skip(skip)
+                .map(|v| if v == "-" { 0 } else { v.parse().unwrap() })
+                .collect()
+        })
+        .collect()
+}
+
+fn with(p: &Slice, rest: &[i128]) -> Vec<String> {
+    p.iter().chain(rest).map(s).collect()
+}
+
+/// Strikes of a strip around `k`, kinds alternating from `first`, as for `price_strip`.
+fn strip_legs(first: &str, k: i128) -> Vec<String> {
+    let (kmin, kmax) = (
+        optfix::Strike::MIN.get().raw(),
+        optfix::Strike::MAX.get().raw(),
+    );
+    let other = if first == "call" { "put" } else { "call" };
+    let mut out = Vec::new();
+    for (i, kk) in [k, k / 5 * 4, k / 4 * 5, k * 2]
+        .map(|x| x.clamp(kmin, kmax))
+        .iter()
+        .enumerate()
+    {
+        out.push(s(if i % 2 == 0 { first } else { other }));
+        out.push(s(kk));
+    }
+    out
+}
+
+/// Argument lists per function.
+type Inputs = BTreeMap<&'static str, Vec<Vec<String>>>;
+
+/// The SVI inputs of generation 4: `(named, fixture)`.
+#[allow(clippy::too_many_lines)]
+fn svi_inputs() -> (Inputs, Inputs) {
+    let mut named = Inputs::new();
+    let mut fixture = Inputs::new();
+    let pct = |n: i128| ONE / 100 * n;
+    let (sigma_min, years_max) = (18_446_744_073_709, optfix::Years::MAX.get().raw());
+
+    // svi_w.csv: a, b, ρ, m, σ, k, then w(k).
+    for r in rows("svi_w.csv", 0) {
+        let p: Slice = [r[0], r[1], r[2], r[3], r[4]];
+        let f = fixture.entry("svi_min_total_variance").or_default();
+        f.push(with(&p, &[]));
+        fixture
+            .entry("svi_total_variance")
+            .or_default()
+            .push(with(&p, &[r[5]]));
+        fixture
+            .entry("svi_total_variance_bounds")
+            .or_default()
+            .push(with(&p, &[r[5]]));
+    }
+
+    // svi_e2e.csv: a, b, ρ, m, σ, S, K, T, r, q, kind (0 call), then the references.
+    let e2e = rows("svi_e2e.csv", 0);
+    for (i, r) in e2e.iter().enumerate() {
+        let p: Slice = [r[0], r[1], r[2], r[3], r[4]];
+        let [sp, k, t, rate, carry] = [r[5], r[6], r[7], r[8], r[9]];
+        let kind = kind01(&r[10].to_string());
+        let at = |p: &Slice| with(p, &[t, sp, rate, carry, k]);
+        fixture
+            .entry("log_forward_moneyness")
+            .or_default()
+            .push(vec![s(t), s(sp), s(rate), s(carry), s(k)]);
+        fixture.entry("svi_vol").or_default().push(at(&p));
+        fixture.entry("svi_vol_bounds").or_default().push(at(&p));
+        let mut b = vec![s(kind)];
+        b.extend([sp, k, t, rate, carry].map(s));
+        fixture
+            .entry("svi_price_bounds")
+            .or_default()
+            .push(with(&p, &[]).into_iter().chain(b).collect());
+        let mut st = with(&p, &[t, sp, rate, carry]);
+        st.extend(strip_legs(kind, k));
+        fixture.entry("price_strip_svi").or_default().push(st);
+        // A calendar pair: this slice raised by 0.01 at twice its expiry (it passes unless an
+        // end is clamped), or the next row's slice and expiry (anything, a DomainError for a
+        // later expiry that is not later).
+        let (later, t_later) = if i % 2 == 0 {
+            (
+                [(p[0] + pct(1)).min(1000 * ONE), p[1], p[2], p[3], p[4]],
+                (t * 2).min(years_max),
+            )
+        } else {
+            let n = &e2e[(i + 1) % e2e.len()];
+            ([n[0], n[1], n[2], n[3], n[4]], n[7])
+        };
+        let (k_lo, k_hi, nodes) = if i % 4 < 2 {
+            (-ONE, ONE, 21)
+        } else {
+            (-3 * ONE, 3 * ONE, 61)
+        };
+        let mut c = with(&p, &[t]);
+        c.extend(with(&later, &[t_later, k_lo, k_hi, nodes]));
+        fixture.entry("check_calendar").or_default().push(c);
+    }
+
+    // svi_g.csv: tag, a, b, ρ, m, σ, k, then the references. The slices in file order, once
+    // each, for check_wings and check_butterfly.
+    let g_rows = rows("svi_g.csv", 1);
+    let mut seen = std::collections::BTreeSet::new();
+    let mut vogt: Option<Slice> = None;
+    for r in &g_rows {
+        let p: Slice = [r[0], r[1], r[2], r[3], r[4]];
+        fixture
+            .entry("butterfly_g_bounds")
+            .or_default()
+            .push(with(&p, &[r[5]]));
+        if !seen.insert(p) {
+            continue;
+        }
+        vogt.get_or_insert(p);
+        fixture
+            .entry("check_wings")
+            .or_default()
+            .push(with(&p, &[]));
+        let grid = match seen.len() % 4 {
+            0 => [-3 * ONE, 3 * ONE, 61],
+            1 => [-ONE, ONE, 21],
+            2 => [-32 * ONE, 32 * ONE, 65],
+            _ => [r[5], r[5], 1],
+        };
+        fixture
+            .entry("check_butterfly")
+            .or_default()
+            .push(with(&p, &grid));
+    }
+
+    // Named cases.
+    let mut name = |f: &'static str, a: Vec<String>| named.entry(f).or_default().push(a);
+    // The first svi_g.csv slice is Gatheral and Jacquier's example 3.1 (Vogt): it fails the
+    // butterfly check on [−2, 2], where its g is negative on about [0.65, 1.25].
+    let vogt = vogt.unwrap();
+    name("check_butterfly", with(&vogt, &[-2 * ONE, 2 * ONE, 401]));
+    name("check_wings", with(&vogt, &[]));
+    // A steep left wing at T = 0.01 (the milestone 24 test): σ(K = 100) ≈ 2.83, but at K = 8
+    // (S/K = 12.5, inside the moneyness range) σ ≈ 12 > 5.
+    let steep: Slice = [pct(4), ONE / 10 * 4, -ONE / 2, 0, ONE / 10];
+    let mkt = [pct(1), 100 * ONE, pct(4), pct(1)];
+    let leg = |kind: &str, k: i128| [s(kind), s(k * ONE)];
+    let strip = |p: &Slice, m: &[i128; 4], legs: &[[String; 2]]| -> Vec<String> {
+        let mut a = with(p, m);
+        a.extend(legs.iter().flatten().cloned());
+        a
+    };
+    // The leg at K = 8 fails partway (DomainError from svi_vol).
+    name(
+        "price_strip_svi",
+        strip(
+            &steep,
+            &mkt,
+            &[
+                leg("call", 100),
+                leg("put", 95),
+                leg("put", 8),
+                leg("call", 105),
+            ],
+        ),
+    );
+    // The same strip without that leg prices in full.
+    name(
+        "price_strip_svi",
+        strip(
+            &steep,
+            &mkt,
+            &[leg("call", 100), leg("put", 95), leg("call", 105)],
+        ),
+    );
+    // S/K = 0.04 at the third leg: DomainError from price's moneyness check.
+    let calm: Slice = [pct(4), ONE / 10, -ONE / 10 * 3, 0, ONE / 10 * 2];
+    let year = [ONE, 100 * ONE, pct(4), pct(1)];
+    name(
+        "price_strip_svi",
+        strip(
+            &calm,
+            &year,
+            &[leg("call", 100), leg("put", 90), leg("call", 2_500)],
+        ),
+    );
+    // T = 0 (DomainError before any leg) and T = 2^-64 (w / T overflows at the first leg).
+    name(
+        "price_strip_svi",
+        strip(&calm, &[0, 100 * ONE, pct(4), pct(1)], &[leg("call", 100)]),
+    );
+    let wide: Slice = [ONE, ONE / 10, 0, 0, ONE / 10];
+    name(
+        "price_strip_svi",
+        strip(
+            &wide,
+            &[1, 100 * ONE, pct(4), pct(1)],
+            &[leg("call", 100), leg("put", 90)],
+        ),
+    );
+    for (p, t, k) in [
+        (steep, pct(1), 8),   // σ > 5
+        (steep, pct(1), 100), // σ ≈ 2.83
+        (calm, 0, 100),       // T = 0
+        (wide, 1, 100),       // Overflow
+        // σ = sqrt(10^-8) = 10^-4 < 0.005
+        ([ONE / 100_000_000, 0, 0, 0, ONE / 10], ONE, 100),
+    ] {
+        let a = with(&p, &[t, 100 * ONE, pct(4), pct(1), k * ONE]);
+        name("svi_vol", a.clone());
+        name("svi_vol_bounds", a);
+    }
+    for (kind, k) in [("call", 100), ("put", 2_500), ("call", 8)] {
+        let a = with(&calm, &[0, 100 * ONE, k * ONE, ONE, pct(4), pct(1)]);
+        let mut a = a;
+        a[5] = s(kind);
+        name("svi_price_bounds", a);
+    }
+    // The steep slice at T = 0.01 and K = 8: an end of the volatility enclosure above 5.
+    {
+        let mut a = with(&steep, &[0, 100 * ONE, 8 * ONE, pct(1), pct(4), pct(1)]);
+        a[5] = s("put");
+        name("svi_price_bounds", a);
+    }
+    // Domain edges of SviParams::try_new, each side of every bound.
+    let base: Slice = [pct(4), ONE / 10 * 4, -ONE / 2, 0, ONE / 10];
+    let mut edges: Vec<Slice> = vec![base];
+    let mut set = |i: usize, v: i128| {
+        let mut p = base;
+        p[i] = v;
+        edges.push(p);
+    };
+    for (i, v) in [
+        (0, 1000 * ONE),
+        (0, 1000 * ONE + 1),
+        (0, -1000 * ONE),
+        (1, 0),
+        (1, -1),
+        (1, 10 * ONE),
+        (1, 10 * ONE + 1),
+        (2, ONE - 1),
+        (2, ONE),
+        (2, -ONE + 1),
+        (2, -ONE),
+        (3, 10 * ONE),
+        (3, 10 * ONE + 1),
+        (3, -10 * ONE),
+        (3, -10 * ONE - 1),
+        (4, sigma_min),
+        (4, sigma_min - 1),
+        (4, 10 * ONE),
+        (4, 10 * ONE + 1),
+    ] {
+        set(i, v);
+    }
+    // The minimum a + b σ sqrt(1 − ρ²) = a + 0.04 sqrt(0.75) ≈ a + 0.034641: just above and
+    // just below 0.
+    edges.push([-pct(3) - ONE / 10_000 * 46, base[1], base[2], 0, base[4]]);
+    edges.push([-pct(3) - ONE / 10_000 * 47, base[1], base[2], 0, base[4]]);
+    // The wing slope b (1 + |ρ|) each side of 2 (it cannot equal 2 in binary).
+    let third = ONE / 3;
+    edges.push([pct(4), ONE / 2 * 3, third - 1_000, 0, ONE / 10]);
+    edges.push([pct(4), ONE / 2 * 3, -(third + 1), 0, ONE / 10]);
+    for p in &edges {
+        name("svi_min_total_variance", with(p, &[]));
+        name("check_wings", with(p, &[]));
+    }
+    for k in [0, 32 * ONE, -32 * ONE, 32 * ONE + 1, -32 * ONE - 1] {
+        name("svi_total_variance", with(&base, &[k]));
+        name("svi_total_variance_bounds", with(&base, &[k]));
+        name("butterfly_g_bounds", with(&base, &[k]));
+    }
+    // A slice whose w is 0 at k = m (a = 0, b σ sqrt(1 − ρ²) = 0 with b = 0): g undefined.
+    name("butterfly_g_bounds", with(&[0, 0, 0, 0, ONE / 10], &[0]));
+    // Grids: valid, one node, and each refusal.
+    for grid in [
+        [-ONE, ONE, 21],
+        [ONE, ONE, 1],
+        [-ONE, ONE, 0],
+        [ONE, -ONE, 3],
+        [-32 * ONE, 32 * ONE + 1, 3],
+        [-32 * ONE - 1, 0, 3],
+    ] {
+        name("check_butterfly", with(&base, &grid));
+        let mut c = with(&base, &[ONE]);
+        c.extend(with(
+            &[base[0] + pct(1), base[1], base[2], base[3], base[4]],
+            &[2 * ONE],
+        ));
+        c.extend(grid.map(s));
+        name("check_calendar", c);
+    }
+    // Equal slices fail (the bounds overlap); equal expiries and reversed ones are refused.
+    for (te, tl) in [(ONE, 2 * ONE), (ONE, ONE), (2 * ONE, ONE)] {
+        let mut c = with(&base, &[te]);
+        c.extend(with(&base, &[tl, -ONE, ONE, 21]));
+        name("check_calendar", c);
+    }
+    for (t, k) in [(ONE, 100), (0, 100), (years_max, 2_000), (pct(1), 8)] {
+        name(
+            "log_forward_moneyness",
+            vec![s(t), s(100 * ONE), s(pct(4)), s(pct(1)), s(k * ONE)],
+        );
+    }
+    (named, fixture)
+}
 
 fn s(v: impl ToString) -> String {
     v.to_string()
@@ -277,17 +596,31 @@ fn main() {
         push("from_decimal_str", vec![s(bad), s("down")]);
     }
 
-    // Evenly spaced, at most PER_FUNCTION per function, in SIGNATURES order.
+    let (mut named, svi) = svi_inputs();
+    for (f, a) in svi {
+        inputs.entry(f).or_default().extend(a);
+    }
+
+    // The named cases, then the others evenly spaced, at most PER_FUNCTION per function, in
+    // SIGNATURES order. Only the SVI functions have named cases, so every earlier function's
+    // selection is generation 3's.
     let mut cases: Vec<Case> = Vec::new();
     for (f, _) in SIGNATURES {
+        let first = named.remove(f).unwrap_or_default();
         let all = inputs
             .remove(f)
             .unwrap_or_else(|| panic!("no inputs for {f}"));
-        let step = all.len().div_ceil(PER_FUNCTION).max(1);
-        for a in all.into_iter().step_by(step) {
+        let room = PER_FUNCTION - first.len();
+        let step = all.len().div_ceil(room).max(1);
+        for a in first.into_iter().chain(all.into_iter().step_by(step)) {
             cases.push(case(f, a).unwrap_or_else(|e| panic!("{f}: {e:?}")));
         }
     }
+    assert!(
+        named.is_empty(),
+        "named cases without a signature: {:?}",
+        named.keys()
+    );
     assert!(
         inputs.is_empty(),
         "inputs without a signature: {:?}",

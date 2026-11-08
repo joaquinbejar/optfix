@@ -1615,6 +1615,41 @@ fn test_conformance_vectors_on_sbf() {
                 }
                 (d, 1)
             }
+            // Generation 4 (docs/PLAN-phase2.md, milestone 25). `SviParamsNew` returns the
+            // minimum; `SviTotalVariance` reads the slice and `k` in the vector's order.
+            "svi_min_total_variance" | "svi_total_variance" => {
+                let tag = if c.f == "svi_min_total_variance" {
+                    Ix::SviParamsNew
+                } else {
+                    Ix::SviTotalVariance
+                };
+                let mut d = vec![tag as u8];
+                for x in a {
+                    d.extend_from_slice(&raw(x));
+                }
+                (d, 1)
+            }
+            "svi_vol" => {
+                // The program reads the slice, S, K, T, r, q; the vector has the slice, T, S,
+                // r, q, K.
+                let mut d = vec![Ix::SviVol as u8];
+                for i in [0, 1, 2, 3, 4, 6, 9, 5, 7, 8] {
+                    d.extend_from_slice(&raw(&a[i]));
+                }
+                (d, 1)
+            }
+            "price_strip_svi" => {
+                // The slice, T, S, r, q, then (kind, strike) legs: the program's order.
+                let mut d = vec![Ix::PriceStripSvi as u8];
+                for x in &a[..9] {
+                    d.extend_from_slice(&raw(x));
+                }
+                for leg in a[9..].chunks(2) {
+                    d.push(kind(&leg[0]));
+                    d.extend_from_slice(&raw(&leg[1]));
+                }
+                (d, a[9..].len() / 2)
+            }
             _ => continue,
         };
         let n = counts.entry(c.f.as_str()).or_default();
@@ -1662,6 +1697,10 @@ fn test_conformance_vectors_on_sbf() {
         "price_black76",
         "price_and_greeks_black76",
         "implied_vol",
+        "svi_min_total_variance",
+        "svi_total_variance",
+        "svi_vol",
+        "price_strip_svi",
     ] {
         let n = counts.get(f).copied().unwrap_or(0);
         assert!(n >= 50, "{f}: only {n} cases replayed on SBF");

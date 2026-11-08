@@ -28,6 +28,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # optfix-wasm (docs/PLAN-improvements.md, milestone 17): 0.2.130 checked on crates.io 2026-11-02.
 wasm-bindgen = "0.2"
+# optfix-wasm's plain result objects (docs/PLAN-phase2.md, milestone 25): 0.3.107 checked on
+# crates.io 2026-11-08, the version wasm-bindgen's own crates pair with.
+js-sys = "0.3"
 # Pinocchio 0.11 generation: decided exception to the latest-stable rule (docs/PLAN.md).
 pinocchio = { version = "0.11", default-features = false, features = ["cpi"] }
 # bench/ only: LiteSVM 0.18.1 (latest) pins these generations of the Solana client crates;

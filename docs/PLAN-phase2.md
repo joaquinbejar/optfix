@@ -466,6 +466,45 @@ unchanged (or re-agreed with its cause written down).
 
 *Done when* all four generations replay on the three targets.
 
+**As built (milestone 25).**
+
+- `optfix-wasm`:
+  - An `SviParams` class: its constructor throws `DomainError` as `try_new` does, with getters
+    `a`, `b`, `rho`, `m`, `sigma` and the methods `minTotalVariance`, `totalVariance` and
+    `totalVarianceBounds`.
+  - Functions taking an `SviParams`: `sviVol`, `sviVolBounds`, `sviPriceBounds`,
+    `priceStripSvi`, `checkWings`, `checkButterfly` and `checkCalendar`, plus
+    `butterflyGBounds`, which completes the milestone 23 surface. `logForwardMoneyness` takes
+    the market alone.
+  - Enclosures are plain objects `{ lo, hi }`; reports are `{ ok, firstFailure, min }` with
+    `{ k, bound }` nodes and `firstFailure` `null` when every node passes. They are built with
+    `js-sys`, a new direct dependency that the lock file already held through other crates.
+  - A grid's node count is a JavaScript `number` checked as the other small integers are. A
+    failing strip leg throws, as `priceStrip` does.
+  - New boundary tests cover the constructor, the result shapes and the grid arguments. The
+    README has an SVI section whose example runs as printed.
+- Conformance generation 4 (`conformance/vectors-g4.json`, 31,248 cases):
+  - It is generated from the commit that adds the generator's SVI inputs. Its 21,388 cases of
+    the generation 3 functions equal generation 3's, case for case. The SVI inputs draw from
+    no earlier sampler, and only the SVI functions have named cases, so every earlier
+    selection is unchanged.
+  - 9,860 SVI cases over 12 functions, each a slice's five parameters followed by the
+    function's arguments. Inputs come from the milestone 22 and 23 fixtures: `svi_w.csv` for
+    the total variance, `svi_e2e.csv` for the volatility, prices, strips and calendar pairs,
+    and `svi_g.csv` for `g`, the wing check and butterfly grids.
+  - Named cases, always kept, come first: every domain edge of `try_new` on each side, `|k|`
+    at 32 and one ulp past it, the volatility above 5 at the third leg of a strip, a
+    moneyness failure partway through a strip, `T = 0`, an `Overflow` at `T = 2^-64`, a
+    volatility below 0.005, invalid grids, equal and reversed calendar expiries, equal slices
+    and the Vogt slice's failing butterfly report on `[−2, 2]`.
+  - Generations 1 to 3 replay unchanged, with no new agreed change.
+- Replays: natively (`conformance/tests/replay.rs`, every generation) and through wasm on
+  Node.js (every generation, the SVI functions dispatched through `SviParams`). On SBF, the
+  latest generation is replayed as before, now including `svi_min_total_variance`,
+  `svi_total_variance`, `svi_vol` and `price_strip_svi` through the bench program's
+  `SviParamsNew`, `SviTotalVariance`, `SviVol` and `PriceStripSvi`: 100 cases of each of 19
+  functions.
+
 ## Milestone 26: release 0.4.0
 
 `CHANGELOG.md` [0.4.0] (Added only), README (`optfix = "0.4"`, an SVI section with the error

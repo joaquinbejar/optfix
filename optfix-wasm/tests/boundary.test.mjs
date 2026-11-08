@@ -66,3 +66,40 @@ test("strings and strips", () => {
   domainError(() => of.priceStrip(...m, ["call"], [1n << 130n]), "strike 2^130");
   domainError(() => of.priceStrip(...m, ["call", "put"], [100n * ONE]), "lengths differ");
 });
+
+// docs/PLAN-phase2.md, milestone 25: the SVI surface.
+test("SviParams: the constructor checks the domain and its arguments exactly", () => {
+  const p = [ONE / 25n, (ONE * 2n) / 5n, -ONE / 2n, 0n, ONE / 10n];
+  const s = new of.SviParams(...p);
+  assert.deepEqual([s.a, s.b, s.rho, s.m, s.sigma], p);
+  assert.ok(s.minTotalVariance() > 0n);
+  domainError(() => new of.SviParams(p[0], -1n, p[2], p[3], p[4]), "b < 0");
+  domainError(() => new of.SviParams(p[0], p[1], ONE, p[3], p[4]), "ρ = 1");
+  domainError(() => new of.SviParams(-ONE, p[1], p[2], p[3], p[4]), "a negative minimum");
+  domainError(() => new of.SviParams(p[0], p[1], p[2], p[3], 1n << 130n), "σ = 2^130");
+  domainError(() => new of.SviParams(0.04, p[1], p[2], p[3], p[4]), "a as a number");
+  domainError(() => s.totalVariance(33n * ONE), "|k| > 32");
+  domainError(() => s.totalVariance(1), "k as a number");
+});
+
+test("SVI results are plain objects of bigints; grids take an integer node count", () => {
+  const s = new of.SviParams(ONE / 25n, (ONE * 2n) / 5n, -ONE / 2n, 0n, ONE / 10n);
+  const w = s.totalVarianceBounds(0n);
+  assert.equal(Object.getPrototypeOf(w), Object.prototype);
+  assert.deepEqual(Object.keys(w), ["lo", "hi"]);
+  assert.ok(typeof w.lo === "bigint" && w.lo <= s.totalVariance(0n) && s.totalVariance(0n) <= w.hi);
+  const r = of.checkButterfly(s, -ONE, ONE, 21);
+  assert.deepEqual(Object.keys(r), ["ok", "firstFailure", "min"]);
+  assert.equal(r.ok, true);
+  assert.equal(r.firstFailure, null);
+  assert.deepEqual(Object.keys(r.min), ["k", "bound"]);
+  domainError(() => of.checkButterfly(s, -ONE, ONE, 21.5), "nodes 21.5");
+  domainError(() => of.checkButterfly(s, -ONE, ONE, 21n), "nodes as a bigint");
+  domainError(() => of.checkButterfly(s, -ONE, ONE, 0), "nodes 0");
+  domainError(() => of.checkCalendar(s, ONE, s, ONE, -ONE, ONE, 3), "equal expiries");
+  assert.throws(() => of.checkWings({ a: 0n }), "a plain object is not an SviParams");
+  const m = [ONE, 100n * ONE, ONE / 25n, ONE / 100n];
+  assert.equal(of.priceStripSvi(s, ...m, ["call", "put"], [100n * ONE, 90n * ONE]).length, 2);
+  domainError(() => of.priceStripSvi(s, ...m, ["call"], [100n * ONE, 90n * ONE]), "lengths differ");
+  domainError(() => of.priceStripSvi(s, 0n, ...m.slice(1), ["call"], [100n * ONE]), "T = 0");
+});
