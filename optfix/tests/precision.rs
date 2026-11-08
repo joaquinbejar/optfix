@@ -28,12 +28,12 @@ use common::{
 };
 use num_bigint::BigInt;
 use optfix::{
-    exp, ln, log_forward_moneyness, norm_cdf, norm_pdf, price_and_greeks, price_asset_or_nothing,
-    price_cash_or_nothing, svi_vol, svi_vol_bounds, Fixed, Price, PricingError, Spot,
-    BINARY_ERR_ABS, BINARY_ERR_REL, DELTA_ERR, EXP_MAX_ERROR_ULPS, GAMMA_ERR_REL, GREEK_ERR_ABS,
-    IV_ERR_PRICE_FACTOR, IV_ERR_REL, IV_VEGA_MIN_FACTOR, LN_MAX_ERROR_ULPS,
-    NORM_CDF_MAX_ERROR_ULPS, NORM_CDF_TAIL_REL_ERROR, NORM_PDF_MAX_ERROR_ULPS, PRICE_ERR_ABS,
-    PRICE_ERR_REL, RHO_ERR_ABS, RHO_ERR_REL, SVI_K_ERR, THETA_ERR_REL, VEGA_ERR_REL,
+    butterfly_g_bounds, exp, ln, log_forward_moneyness, norm_cdf, norm_pdf, price_and_greeks,
+    price_asset_or_nothing, price_cash_or_nothing, svi_vol, svi_vol_bounds, Fixed, Price,
+    PricingError, Spot, BINARY_ERR_ABS, BINARY_ERR_REL, DELTA_ERR, EXP_MAX_ERROR_ULPS,
+    GAMMA_ERR_REL, GREEK_ERR_ABS, IV_ERR_PRICE_FACTOR, IV_ERR_REL, IV_VEGA_MIN_FACTOR,
+    LN_MAX_ERROR_ULPS, NORM_CDF_MAX_ERROR_ULPS, NORM_CDF_TAIL_REL_ERROR, NORM_PDF_MAX_ERROR_ULPS,
+    PRICE_ERR_ABS, PRICE_ERR_REL, RHO_ERR_ABS, RHO_ERR_REL, SVI_K_ERR, THETA_ERR_REL, VEGA_ERR_REL,
 };
 use rust_decimal::Decimal;
 
@@ -535,6 +535,7 @@ fn test_precision_report() {
     s.push_str(&binary_section(n));
     s.push_str(&implied_vol_section(n));
     s.push_str(&svi_section(n));
+    s.push_str(&svi_arb_section());
     s.push_str(COMPARISON);
     s.push_str("\nRun `make precision` to regenerate this file.\n");
     println!("{s}");
@@ -622,6 +623,67 @@ fn svi_section(n: usize) -> String {
          {rel_width:.3e} relative to `σ̂`.\n"
     )
     .unwrap();
+    s
+}
+
+/// The section of the no-arbitrage checks (`docs/PLAN-phase2.md`, milestone 23): the widths
+/// of the `w` and `g` intervals on the committed mpmath fixture (`common::svi::g_fixture`, the
+/// rows of `svi_arb_fixture.rs`), and how many nodes fall inside the band `|g| <= width`, where
+/// the check may go either way.
+fn svi_arb_section() -> String {
+    let mut s = String::new();
+    write!(
+        s,
+        "\n## SVI no-arbitrage checks\n\n\
+         Interval widths of `total_variance_bounds` (`w`) and `butterfly_g_bounds` (Durrleman's \
+         `g`) on the committed fixture (`tests/data/svi_g.csv`, mpmath at 80 digits; groups as \
+         in `tools/svi_fixture/gen_arb_fixture.py`), in ulps. A node inside the band \
+         `|g| <= width` may pass or fail; outside it the check agrees with the sign of `g`. \
+         \"Closest\" is the smallest `|g| / width` over the group's nodes.\n\n\
+         | Group | Nodes | Max `w` width | Median `g` width | Max `g` width | Inside the band | Closest |\n\
+         | --- | ---: | ---: | ---: | ---: | ---: | ---: |\n"
+    )
+    .unwrap();
+    let rows = svi::g_fixture();
+    let mut names: Vec<String> = Vec::new();
+    for r in &rows {
+        let name = r.tag.trim_end_matches(char::is_numeric).to_string();
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    for name in names {
+        let (mut nodes, mut w_max, mut band, mut closest) = (0usize, 0i128, 0usize, f64::MAX);
+        let mut widths = Vec::new();
+        for r in rows
+            .iter()
+            .filter(|r| r.tag.trim_end_matches(char::is_numeric) == name)
+        {
+            nodes += 1;
+            let sl = svi::params(&r.p).unwrap();
+            let k = Fixed::from_raw(r.k);
+            let (lo, hi) = sl.total_variance_bounds(k).unwrap();
+            w_max = w_max.max(hi.raw() - lo.raw());
+            let (Some(g), Ok((g_lo, g_hi))) = (&r.g96, butterfly_g_bounds(&sl, k)) else {
+                continue;
+            };
+            let width = (g_hi.raw() - g_lo.raw()) as f64;
+            widths.push(width);
+            let g = g.to_string().parse::<f64>().unwrap() / 2f64.powi(32);
+            if g.abs() <= width {
+                band += 1;
+            }
+            closest = closest.min(g.abs() / width.max(1.0));
+        }
+        widths.sort_by(f64::total_cmp);
+        let median = widths[widths.len() / 2];
+        let max = widths[widths.len() - 1];
+        writeln!(
+            s,
+            "| {name} | {nodes} | {w_max} | {median:.0} | {max:.0} | {band} | {closest:.3e} |"
+        )
+        .unwrap();
+    }
     s
 }
 

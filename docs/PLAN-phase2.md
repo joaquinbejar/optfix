@@ -330,6 +330,37 @@ peaks).
 *Done when* those tests pass and `docs/precision.md` reports the interval widths of `w` and `g`
 on the fixture.
 
+**As built (milestone 23).**
+
+- API as planned, in `optfix/src/svi_arb.rs`, plus two items the plan left implicit:
+  `butterfly_g_bounds(&SviParams, k) -> Result<(Fixed, Fixed), PricingError>`, the enclosure of
+  `g` at one node (the grid check is a loop over it, and the tests compare it with the
+  reference), and `NodeBound { k, bound }` (`#[non_exhaustive]`), which both reports use for
+  `first_failure: Option<NodeBound>` and `min: NodeBound`. A node whose lower bound of `w` is
+  not positive reports `Fixed::MIN` as its bound (`g` is unbounded below there).
+- `SviGrid { k_min, k_max, nodes: u32 }`: node `i` is `k_min + floor((k_max − k_min) i /
+  (nodes − 1))` in raw units, so the last node is `k_max` exactly; one node is `k_min`.
+  `nodes = 0`, `k_min > k_max` or an end outside `|k| <= 32` is `DomainError`.
+- The chain: `s = sqrt(x² + σ²)` enclosed with the same split at `max(|x|, σ) = 1` as
+  `total_variance`, `x / s` and `σ / s` clamped to `[−1, 1]` and `[0, 1]`, and `w''` as
+  `(b / s) (σ / s)²`, so `σ = 10^-6` keeps its precision. `Overflow` is possible only where
+  `w < 10^-7` (`k w' / (2 w)` past `2^32`); no sample hit it.
+- Clean slices: four SSVI slices that satisfy theorem 4.2 of Gatheral and Jacquier (2014), in
+  raw form, and two symmetric slices with a small `b`, all checked by mpmath to have `g > 0` on
+  the grid (lowest 0.25), instead of fits copied from a paper: the theorem makes them clean by
+  construction rather than by a published claim.
+- Fixture `tests/data/svi_g.csv` (`tools/svi_fixture/gen_arb_fixture.py`, 12,007 nodes): Vogt
+  on `[−2, 2]` (mpmath: `g < 0` at 61 nodes, `k` in `[0.65, 1.25]`, minimum −0.03286; the check
+  fails at exactly those nodes), the clean slices on `[−3, 3]`, 6,000 random nodes, and 2,000
+  nodes within `10^-19` to `10^-2` of a sign change of `g`. Every `w` and `g` is enclosed; 186
+  of the 2,000 edge nodes are inside the band, none elsewhere. Widths: `w` at most 4 ulps, `g`
+  at most 15,057 ulps (median 17 to 34) on the fixture.
+- Proptests (`tests/svi_arb_props.rs`): 200,000 nodes per stratum against the 256-bit `g`
+  reference, 20,000 grids (report checked node by node, never a pass with `g < 0`), 50,000
+  calendar pairs and 50,000 wing slices. Relative to `max(|g|, 1)`, the width reaches `7 ×
+  10^-3` only in the cancelling-wing stratum, where `w` falls to about `10^-14` and its own
+  envelope dominates; it stays below `10^-4` elsewhere.
+
 ## Milestone 24: `price_strip_svi`
 
 ```

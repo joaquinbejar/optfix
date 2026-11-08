@@ -221,7 +221,7 @@ fn min_lower_bound(a: Fixed, b: Fixed, rho: Fixed, sigma: Fixed) -> Result<Fixed
 }
 
 /// `|x|`.
-fn abs(x: Fixed) -> Result<Fixed, PricingError> {
+pub(crate) fn abs(x: Fixed) -> Result<Fixed, PricingError> {
     if x < Fixed::ZERO {
         x.checked_neg()
     } else {
