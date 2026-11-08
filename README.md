@@ -8,7 +8,7 @@
 [![PRs](https://img.shields.io/github/issues-pr/joaquinbejar/optfix.svg)](https://github.com/joaquinbejar/optfix/pulls)
 [![no_std](https://img.shields.io/badge/no__std-yes-green.svg)](https://github.com/joaquinbejar/optfix/blob/main/docs/PLAN.md)
 
-## optfix v0.3.1: Fixed-Point Option Pricing for Solana
+## optfix v0.4.0: Fixed-Point Option Pricing for Solana
 
 ### Table of Contents
 1. [Introduction](#introduction)
@@ -18,12 +18,13 @@
 5. [Setup Instructions](#setup-instructions)
 6. [Usage Example](#usage-example)
 7. [Using optfix On Chain](#using-optfix-on-chain)
-8. [Error Bounds](#error-bounds)
-9. [Compute Units](#compute-units)
-10. [Testing and Benchmarks](#testing-and-benchmarks)
-11. [Documentation](#documentation)
-12. [Used by](#used-by)
-13. [Contribution and Contact](#contribution-and-contact)
+8. [SVI Volatility Slices](#svi-volatility-slices)
+9. [Error Bounds](#error-bounds)
+10. [Compute Units](#compute-units)
+11. [Testing and Benchmarks](#testing-and-benchmarks)
+12. [Documentation](#documentation)
+13. [Used by](#used-by)
+14. [Contribution and Contact](#contribution-and-contact)
 
 ### Introduction
 
@@ -73,7 +74,12 @@ measured in LiteSVM.
 - Answers within `4 E / vega + 2^-40 σ` where vega is at least `2^28 E`; returns
   `IllConditioned` below that.
 
-#### 5. **Type safety**
+#### 5. **SVI volatility slices**
+- `SviParams`, `svi_vol` and `price_strip_svi`, with enclosures (`svi_vol_bounds`,
+  `svi_price_bounds`) and host-side no-arbitrage checks (`check_wings`, `check_butterfly`,
+  `check_calendar`).
+
+#### 6. **Type safety**
 - Range-checked quantity newtypes `Spot`, `Strike`, `Volatility`, `Rate`, `Years` (with
   `Years::from_seconds`, 365-day years) and `Price`.
 - `PricingError` (`#[repr(u8)]`, `#[non_exhaustive]`): `Overflow`, `DomainError`,
@@ -134,7 +140,7 @@ Add optfix from crates.io:
 
 ```toml
 [dependencies]
-optfix = "0.3"
+optfix = "0.4"
 ```
 
 From JavaScript (Node.js), the WebAssembly bindings, bit-identical to the Rust crate:
@@ -238,6 +244,44 @@ before relying on a size fitting. A 16-leg `price_strip_svi` already needs more 
 default (205,326 CU at worst in the bench), so request a higher limit with a compute-budget
 instruction. A transaction is at most 1,232 bytes, so legs passed in instruction data (a kind
 byte and a 16-byte strike each) stop near 60; above that, read the strikes from an account.
+
+### SVI Volatility Slices
+
+A raw SVI slice gives the total variance at log-forward moneyness `k`:
+`w(k) = a + b (ρ (k − m) + sqrt((k − m)² + σ²))`. `SviParams::try_new` checks the domain,
+including a rigorous lower bound of the minimum variance `>= 0`, so an accepted slice has
+`w >= 0` everywhere.
+
+- `svi_vol` is `sqrt(w(k̂) / T)` with both operations rounded down, `k̂` being
+  `log_forward_moneyness`.
+- `price_strip_svi` prices a strip whose legs each take their volatility from the slice: every
+  output equals `price` at `svi_vol` for its strike, bit for bit. On the first failing leg it
+  returns that leg's error, with the earlier outputs written and the later ones untouched.
+- `check_wings`, `check_butterfly` and `check_calendar` are host-side no-arbitrage checks. A
+  grid check is conservative at its nodes and says nothing between them, so it is not a
+  certificate for the whole real line; pass the range of `k` you use, plus a margin.
+
+| Quantity | Error bound |
+| --- | --- |
+| `SviParams::total_variance` at an exact `k` | never above `w(k)`, within `SVI_W_ERR_REL` × `b` + `SVI_W_ERR_ABS` (5 ulps per unit of `b`, plus 1 ulp) |
+| `log_forward_moneyness` | within `SVI_K_ERR` (5 ulps), either sign |
+| `svi_vol_bounds` | a rigorous enclosure of the volatility at the exact inputs |
+| `svi_price_bounds` | a rigorous enclosure of the premium at that volatility |
+| `price_strip_svi` | `price`'s envelope around each price, at the leg's computed volatility |
+
+Net compute units (`docs/benchmarks.md`), each row building the slice with `try_new`:
+
+| Function | Median CU | Max CU |
+| --- | ---: | ---: |
+| `SviParams::try_new` | 2248 | 2874 |
+| `total_variance` | 5623 | 6620 |
+| `svi_vol` | 9204 | 10528 |
+| `price_strip_svi`, 1 leg | 16946 | 19325 |
+| `price_strip_svi`, 8 legs | 99827 | 105741 |
+| `price_strip_svi`, 16 legs | 194792 | 205326 |
+
+A 16-leg `price_strip_svi` can exceed the default 200,000 CU per instruction: request more
+with a compute-budget instruction. The grid checks are not benchmarked: they are for the host.
 
 ### Error Bounds
 

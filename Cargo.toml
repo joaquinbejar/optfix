@@ -4,7 +4,7 @@ exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 authors = ["Joaquin Bejar <jb@taunais.com>"]
 license = "MIT"
@@ -22,7 +22,7 @@ rust_decimal = "1.43"
 # bench/ input draws: pure-Rust libm (0.2.16, checked 2026-10-31) gives the same f64 on every
 # platform, so CI reproduces the committed CU table; dev-dependency only.
 libm = "0.2"
-optfix = { path = "optfix", version = "0.3" }
+optfix = { path = "optfix", version = "0.4" }
 # Conformance vectors (docs/PLAN-improvements.md, milestone 17): JSON, test tooling only.
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
