@@ -4,6 +4,26 @@ All notable changes to `optfix` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the crate follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-11-08
+
+Milestones 22 to 25 of `docs/PLAN-phase2.md`: raw SVI volatility slices. Additive: no existing
+item changed, every existing result is bit-identical to 0.3.1, and conformance generations 1
+to 3 replay unchanged.
+
+### Added
+
+- `SviParams` (`try_new`, `total_variance`, `total_variance_bounds`, `min_total_variance`),
+  `SviMarket`, `log_forward_moneyness`, `svi_vol`, `svi_vol_bounds`, `svi_price_bounds` and the
+  error constants `SVI_W_ERR_REL`, `SVI_W_ERR_ABS` and `SVI_K_ERR`.
+- `price_strip_svi`: a strip whose legs take their volatility from a slice, bit for bit `price`
+  at `svi_vol`, at 11,856 CU per extra leg against 16,178 for the two calls.
+- Host-side no-arbitrage checks: `check_wings`, `check_butterfly`, `butterfly_g_bounds` and
+  `check_calendar`, with `SviGrid`, `NodeBound`, `ButterflyReport` and `CalendarReport`.
+- `optfix-wasm`: an `SviParams` class and the SVI functions, with plain `{ lo, hi }` and
+  `{ ok, firstFailure, min }` results. `js-sys` is a new dependency of `optfix-wasm`.
+- Conformance generation 4 (31,248 cases): every earlier function again, plus the SVI
+  functions, including failing cases.
+
 ## [0.3.1] - 2026-11-07
 
 Documentation and packaging only: no change to the code, the public API or any result (every
