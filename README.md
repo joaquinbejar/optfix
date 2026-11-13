@@ -402,12 +402,11 @@ If you have any questions, issues, or would like to provide feedback, please fee
 
 
 ### **Contact Information**
-
-- **Author**: Joaquín Béjar García <https://joaquinbejar.capitaldelta.co/>
+- **Author**: Joaquín Béjar García
 - **Email**: jb@taunais.com
 - **Telegram**: [@joaquin_bejar](https://t.me/joaquin_bejar)
 - **Repository**: <https://github.com/joaquinbejar/optfix>
-- **Documentation**: <https://github.com/joaquinbejar/optfix/tree/main/docs>
+- **Documentation**: <https://docs.rs/optfix>
 
 We appreciate your interest and look forward to your contributions!
 
@@ -422,18 +421,16 @@ Repositories by the same author that this project depends on, and repositories t
 
 ### Depends on
 
-No runtime dependency by the same author. Used in development only:
-
 | Repository | Description |
 |------------|-------------|
-| [OptionStratLib](https://github.com/joaquinbejar/OptionStratLib) · [crates.io](https://crates.io/crates/optionstratlib) | Dev-dependency only: the numerical oracle the property tests check optfix against. |
+| [OptionStratLib](https://github.com/joaquinbejar/OptionStratLib) | Dev-dependency only: the floating-point oracle the property tests check optfix's pricing and greeks against. |
 
 ### Used by
 
 | Repository | Description |
 |------------|-------------|
-| [quotebook](https://github.com/joaquinbejar/quotebook) | RFQ on Solana: maker quotes signed off-chain with ed25519, verified and settled atomically on-chain by a Pinocchio program. |
-| [varswap](https://github.com/joaquinbejar/varswap) | Realized variance accumulated on-chain from Pyth prices, and variance swaps settled against it, on Solana. |
-| [metalbook](https://github.com/joaquinbejar/metalbook) | Cash-settled European options on gold and silver (XAU, XAG) on Solana, settled in USDC from Pyth. |
+| [metalbook](https://github.com/joaquinbejar/metalbook) | Cash-settled European options on gold and silver on Solana; uses optfix to price options on-chain. |
+| [quotebook](https://github.com/joaquinbejar/quotebook) | RFQ on Solana with ed25519-signed maker quotes; uses optfix for on-chain option pricing checks. |
+| [varswap](https://github.com/joaquinbejar/varswap) | Realized variance and variance swaps on Solana; uses optfix's fixed-point math. |
 
 <!-- related-projects:end -->
